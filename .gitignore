@@ -1,19 +1,14 @@
 # Python
 __pycache__/
 *.py[cod]
-*.pyo
-*.pyd
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
-.coverage
-htmlcov/
 
 # Virtual environments
 venv/
 .venv/
 env/
-ENV/
 
 # IDE/editor
 .vscode/
@@ -25,29 +20,34 @@ ENV/
 .DS_Store
 Thumbs.db
 
-# Logs
-*.log
+# Logs/runtime data
 logs/
+*.log
+clamav-db/
+clamav-runtime/
 
 # Build/package output
 build/
 dist/
 *.spec
 
-# App config/runtime data
-.config/
-clamav-db/
-clamav-runtime/
-updates/
+# Update manifests are tracked
+!updates/
+!updates/*.json
+
+# Update runtime/download artifacts are ignored
+updates/downloads/
+updates/tmp/
+updates/staging/
+updates/*.zip
+updates/*.7z
+updates/*.tar
+updates/*.tar.gz
+updates/*.tmp
 
 # Local config/secrets
 .env
 .env.*
 config.local.json
 
-# Tkinter/temporary
-*.tmp
-*.bak
-
 AGENTS.md
-
