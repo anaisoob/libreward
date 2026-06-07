@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# IDE/editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Build/package output
+build/
+dist/
+*.spec
+
+# App config/runtime data
+.config/
+clamav-db/
+clamav-runtime/
+updates/
+
+# Local config/secrets
+.env
+.env.*
+config.local.json
+
+# Tkinter/temporary
+*.tmp
+*.bak
+
+AGENTS.md
+
