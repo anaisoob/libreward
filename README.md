@@ -19,17 +19,34 @@ platform-specific backends.
 
 ## Running From Source
 
-Create or repair the virtual environment, install dependencies, then run:
+### Linux / macOS
 
 ```bash
+python3 -m venv venv
+source venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 python main.py
 ```
 
-If the application cannot import `customtkinter`, install the project
-dependencies in the active virtual environment:
+### Windows
 
-```bash
+```powershell
+py -m venv venv
+.\venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
+python main.py
+```
+
+If PowerShell blocks activation, run this once in the same PowerShell window:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python main.py
 ```
 
 For antivirus scanning on Linux, LibreWard expects ClamAV to be installed by the
@@ -46,15 +63,6 @@ LibreWard keeps mutable Windows runtime data under `%APPDATA%\LibreWard\`:
 - `freshclam.conf` generated for managed database updates.
 
 Do not store downloaded databases inside the ClamAV runtime directory.
-
-## Update Manifest
-
-The Windows runtime manifest lives in `updates/clamav-runtime-windows.json`.
-Manifest entries use the canonical `minimal_libreward_version` key. The old
-`minimum_libreward_version` spelling is intentionally unsupported.
-
-LibreWard hosts only the manifest. ClamAV ZIP downloads should come from
-official ClamAV upstream release URLs and must include SHA256 checksums.
 
 ## Licensing
 
