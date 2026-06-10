@@ -49,5 +49,9 @@ updates/*.tmp
 .env
 .env.*
 config.local.json
-
 AGENTS.md
+# Runtime updater staging directories
+updates/clamav-staging/
+updates/clamav-normalized/
+updates/clamav-runtime.zip
+current.installing/

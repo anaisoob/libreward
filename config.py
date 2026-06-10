@@ -1,13 +1,19 @@
+"""Cross-platform config management.
+
+Uses paths provided by the platform backend.
+- Windows: %APPDATA%\\LibreWard\\config.json
+- Linux:   $XDG_CONFIG_HOME/libreward/config.json (~/.config/libreward/config.json)
+"""
+
 import json
-from pathlib import Path
+
+from backends import backend
 
 
-APP_NAME = "libreward"
-CONFIG_DIR = Path.home() / ".config" / APP_NAME
-CONFIG_FILE = CONFIG_DIR / "config.json"
+CONFIG_FILE = backend.config_dir() / "config.json"
 
 
-def load_config():
+def load_config() -> dict | None:
     """Load config from disk. Returns dict or None if file missing/corrupt."""
     try:
         if not CONFIG_FILE.exists():
@@ -17,9 +23,9 @@ def load_config():
         return None
 
 
-def save_config(data):
+def save_config(data: dict) -> None:
     """Save config dict to disk. Raises on failure."""
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    backend.config_dir().mkdir(parents=True, exist_ok=True)
     CONFIG_FILE.write_text(
         json.dumps(data, indent=2, ensure_ascii=False),
         encoding="utf-8",

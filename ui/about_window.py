@@ -1,50 +1,31 @@
-import shutil
-import subprocess
+"""About window for LibreWard — shows version, licensing, and ClamAV info."""
+
 import tkinter as tk
 
 import customtkinter as ctk
 
+from backends import backend
+from core.constants import APP_NAME, APP_VERSION, CLAMAV_HOMEPAGE, CLAMAV_SOURCE
 
-LIBREWARD_VERSION = "0.1.0"
-CLAMAV_HOMEPAGE = "https://www.clamav.net"
-CLAMAV_SOURCE = "https://github.com/Cisco-Talos/clamav"
 
 LICENSE_TEXT = (
-    "LibreWard is licensed under the GNU General Public License (GPL).\n"
+    f"{APP_NAME} is licensed under the GNU General Public License (GPL).\n"
     "\n"
     "ClamAV is an open-source antivirus engine/toolkit\n"
     "licensed under the GNU General Public License (GPL).\n"
     "ClamAV is developed by Cisco Talos.\n"
     "\n"
-    "LibreWard executes ClamAV command-line tools\n"
+    f"{APP_NAME} executes ClamAV command-line tools\n"
     "(clamscan, freshclam) to perform scanning and\n"
     "database updates.\n"
     "\n"
-    "Windows builds of LibreWard may bundle ClamAV\n"
+    f"Windows builds of {APP_NAME} may bundle ClamAV\n"
     "command-line binaries as a third-party component.\n"
-    "LibreWard does not claim ownership of ClamAV.\n"
+    f"{APP_NAME} does not claim ownership of ClamAV.\n"
     "\n"
     f"ClamAV homepage:  {CLAMAV_HOMEPAGE}\n"
     f"ClamAV source:    {CLAMAV_SOURCE}"
 )
-
-
-def _run_cmd(*args):
-    """Run a command, return stripped stdout or None on failure."""
-    try:
-        result = subprocess.run(
-            list(args), capture_output=True, text=True, timeout=5
-        )
-        if result.returncode == 0:
-            return result.stdout.strip()
-    except Exception:
-        pass
-    return None
-
-
-def _find_binary(name):
-    """Locate a binary via PATH. Returns path or None."""
-    return shutil.which(name)
 
 
 class AboutWindow(ctk.CTkToplevel):
@@ -52,25 +33,28 @@ class AboutWindow(ctk.CTkToplevel):
         super().__init__(parent)
 
         self.parent = parent
-        self.title("About LibreWard")
+        self.title(f"About {APP_NAME}")
         self.transient(parent)
-        self.geometry("540x540")
+        self.geometry("540x560")
         self.resizable(False, False)
 
         self.after(100, self._center_and_modal)
 
-        clamav_version = _run_cmd("clamscan", "--version")
-        clamscan_path = _find_binary("clamscan")
-        freshclam_path = _find_binary("freshclam")
+        # ── detect ClamAV via backend ────────────────────────────
+        runtime = backend.detect_clamav_runtime()
 
-        # --- build UI ---
+        clamav_version = runtime.version
+        clamscan_path = runtime.clamscan
+        freshclam_path = runtime.freshclam
+
+        # ── build UI ─────────────────────────────────────────────
         container = ctk.CTkFrame(self)
         container.pack(fill="both", expand=True, padx=20, pady=20)
 
         # Title
         ctk.CTkLabel(
             container,
-            text=f"LibreWard v{LIBREWARD_VERSION}",
+            text=f"{APP_NAME} v{APP_VERSION}",
             font=ctk.CTkFont(size=22, weight="bold"),
         ).pack(pady=(0, 4))
 
@@ -80,7 +64,7 @@ class AboutWindow(ctk.CTkToplevel):
             font=ctk.CTkFont(size=13),
         ).pack(pady=(0, 14))
 
-        # --- ClamAV detection section ---
+        # ClamAV detection section
         detect_frame = ctk.CTkFrame(container)
         detect_frame.pack(fill="x", pady=(0, 12), padx=5)
 
@@ -97,10 +81,16 @@ class AboutWindow(ctk.CTkToplevel):
                 font=ctk.CTkFont(size=12),
                 anchor="w",
             ).pack(fill="x", padx=18, pady=(0, 2))
+            ctk.CTkLabel(
+                detect_frame,
+                text=f"Source:   {runtime.source}",
+                font=ctk.CTkFont(size=12),
+                anchor="w",
+            ).pack(fill="x", padx=18, pady=(0, 2))
         else:
             ctk.CTkLabel(
                 detect_frame,
-                text="Version:  not found (clamscan not in PATH)",
+                text="Version:  not found (no ClamAV detected)",
                 font=ctk.CTkFont(size=12),
                 anchor="w",
             ).pack(fill="x", padx=18, pady=(0, 2))
@@ -117,9 +107,32 @@ class AboutWindow(ctk.CTkToplevel):
             text=f"freshclam:  {freshclam_path or 'not found'}",
             font=ctk.CTkFont(size=12),
             anchor="w",
+        ).pack(fill="x", padx=18, pady=(0, 2))
+
+        # Platform info
+        ctk.CTkLabel(
+            detect_frame,
+            text=f"Platform:  {backend.platform_arch()}",
+            font=ctk.CTkFont(size=12),
+            anchor="w",
+        ).pack(fill="x", padx=18, pady=(0, 2))
+
+        # Data directories
+        ctk.CTkLabel(
+            detect_frame,
+            text=f"Config:    {backend.config_dir()}",
+            font=ctk.CTkFont(size=12),
+            anchor="w",
+        ).pack(fill="x", padx=18, pady=(0, 2))
+
+        ctk.CTkLabel(
+            detect_frame,
+            text=f"Database:  {backend.db_dir()}",
+            font=ctk.CTkFont(size=12),
+            anchor="w",
         ).pack(fill="x", padx=18, pady=(0, 10))
 
-        # --- License section ---
+        # License section
         license_frame = ctk.CTkFrame(container)
         license_frame.pack(fill="both", expand=True, pady=(0, 12), padx=5)
 

@@ -7,41 +7,52 @@
   "platforms": {
     "windows-x64": {
       "latest_version": "1.5.2",
+      "minimal_libreward_version": "0.1.0",
       "release_date": "2026-03-04",
       "source": "official-clamav-github-release",
       "download": {
         "url": "https://github.com/Cisco-Talos/clamav/releases/download/clamav-1.5.2/clamav-1.5.2.win.x64.zip",
         "sha256": "6f868ed7a7e5a15aced82c53a4fa9f3f42fa9d7f7de14a606ba8db0756518eed",
-        "extract_dir": "clamav-1.5.2.win.x64"
+        "extract_dir": "clamav-1.5.2.win.x64",
+        "runtime_root_mode": "contents-of-extract-dir"
       },
-      "required_files": [
-        "clamscan.exe",
-        "freshclam.exe",
-        "sigtool.exe"
-      ],
+      "validation": {
+        "commands": [
+          "clamscan.exe --version",
+          "freshclam.exe --version"
+        ]
+      },
       "notes": [
         "Official ClamAV Windows x64 portable ZIP.",
+        "LibreWard must keep the full extracted runtime folder, including executables, DLLs, configuration examples, and supporting files.",
+        "Do not copy only clamscan.exe or freshclam.exe.",
         "Virus database is not included and must be updated separately using freshclam.",
         "LibreWard stores writable database files under %APPDATA%\\LibreWard\\clamav-db."
       ]
     },
     "windows-x86": {
       "latest_version": "1.5.2",
+      "minimal_libreward_version": "0.1.0",
       "release_date": "2026-03-04",
       "source": "official-clamav-github-release",
       "download": {
         "url": "https://github.com/Cisco-Talos/clamav/releases/download/clamav-1.5.2/clamav-1.5.2.win.win32.zip",
         "sha256": "c8ed6a9128b3e5e9a7793d98c0d43dbb9cab55e2935ab6789264aaeb583046d6",
-        "extract_dir": "clamav-1.5.2.win.win32"
+        "extract_dir": "clamav-1.5.2.win.win32",
+        "runtime_root_mode": "contents-of-extract-dir"
       },
-      "required_files": [
-        "clamscan.exe",
-        "freshclam.exe",
-        "sigtool.exe"
-      ],
+      "validation": {
+        "commands": [
+          "clamscan.exe --version",
+          "freshclam.exe --version"
+        ]
+      },
       "notes": [
         "Official ClamAV Windows 32-bit portable ZIP.",
-        "Only use this on 32-bit Windows."
+        "Only use this on 32-bit Windows.",
+        "LibreWard must keep the full extracted runtime folder, including executables, DLLs, configuration examples, and supporting files.",
+        "Do not copy only clamscan.exe or freshclam.exe.",
+        "Virus database is not included and must be updated separately using freshclam."
       ]
     }
   }

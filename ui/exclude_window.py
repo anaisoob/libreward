@@ -1,10 +1,18 @@
 import os
 import tkinter as tk
-import tkinter.filedialog as fd
+from .file_picker import FilePickerDialog
 
 import customtkinter as ctk
 
-from excludes import COMMON_EXCLUDES
+from excludes import get_common_excludes
+
+
+ACCENT_COLOR = ("#247A59", "#2F8F68")
+ACCENT_HOVER = ("#1E684C", "#267A58")
+DANGER_COLOR = ("#B54444", "#A53A3A")
+DANGER_HOVER = ("#973737", "#C04747")
+TEXT_SECONDARY = ("#26362D", "#D8E1DC")
+WHITE_TEXT = "#FFFFFF"
 
 
 class ExcludeWindow(ctk.CTkToplevel):
@@ -82,7 +90,7 @@ class ExcludeWindow(ctk.CTkToplevel):
             font=ctk.CTkFont(size=16, weight="bold"),
         ).pack(anchor="w", padx=10, pady=(10, 5))
 
-        for label in COMMON_EXCLUDES:
+        for label in get_common_excludes():
             var = tk.BooleanVar(value=False)
             self.common_vars[label] = var
 
@@ -111,14 +119,18 @@ class ExcludeWindow(ctk.CTkToplevel):
         ctk.CTkButton(
             user_buttons,
             text="Add folder",
+            fg_color=ACCENT_COLOR,
+            hover_color=ACCENT_HOVER,
+            text_color=WHITE_TEXT,
             command=self.add_folder_from_window,
         ).pack(side="left", padx=(0, 8))
 
         ctk.CTkButton(
             user_buttons,
             text="Clear user list",
-            fg_color="darkred",
-            hover_color="red",
+            fg_color=DANGER_COLOR,
+            hover_color=DANGER_HOVER,
+            text_color=WHITE_TEXT,
             command=self.clear_user_list,
         ).pack(side="left", padx=8)
 
@@ -128,12 +140,18 @@ class ExcludeWindow(ctk.CTkToplevel):
         ctk.CTkButton(
             bottom,
             text="Save",
+            fg_color=ACCENT_COLOR,
+            hover_color=ACCENT_HOVER,
+            text_color=WHITE_TEXT,
             command=self.save_and_close,
         ).pack(side="right", padx=8, pady=8)
 
         ctk.CTkButton(
             bottom,
             text="Cancel",
+            fg_color="transparent",
+            border_width=1,
+            text_color=TEXT_SECONDARY,
             command=self.cancel,
         ).pack(side="right", padx=8, pady=8)
 
@@ -167,14 +185,19 @@ class ExcludeWindow(ctk.CTkToplevel):
                 row,
                 text="Remove",
                 width=90,
-                fg_color="darkred",
-                hover_color="red",
+                fg_color=DANGER_COLOR,
+                hover_color=DANGER_HOVER,
+                text_color=WHITE_TEXT,
                 command=lambda p=path: self.remove_path(p),
             )
             remove_button.pack(side="right", padx=8, pady=6)
 
     def add_folder_from_window(self):
-        folder = fd.askdirectory(parent=self)
+        folder = FilePickerDialog.ask_directory(
+            self,
+            title="Add exclude folder",
+            start_dir=os.path.expanduser("~"),
+        )
         if not folder:
             return
 

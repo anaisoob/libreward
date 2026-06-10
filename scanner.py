@@ -1,58 +1,89 @@
+"""Scan orchestration: file collection, command building, output parsing."""
+
 import os
 
+from backends import backend
 from excludes import path_is_excluded, build_clamscan_exclude_args
 
 
-def collect_files(scan_root, exclude_patterns, check_stop):
-    """Walk *scan_root*, skip excluded paths, return list of file paths.
+def collect_files(scan_roots, exclude_patterns, check_stop):
+    """Walk one or more *scan_roots*, skip excluded paths, return list of file paths.
 
+    *scan_roots* may be a single path string or a list of path strings.
     *check_stop* is a callable that returns True when scanning should abort early.
     """
+    if isinstance(scan_roots, str):
+        scan_roots = [scan_roots]
+
     files = []
-    scan_root_abs = os.path.abspath(scan_root)
-
-    for root, dirs, filenames in os.walk(scan_root_abs):
-        if check_stop():
-            break
-
-        root_abs = os.path.abspath(root)
-
-        kept_dirs = []
-        for dirname in dirs:
-            dir_path = os.path.join(root_abs, dirname)
-            if not path_is_excluded(dir_path, exclude_patterns):
-                kept_dirs.append(dirname)
-
-        dirs[:] = kept_dirs
-
-        if path_is_excluded(root_abs, exclude_patterns):
-            dirs[:] = []
+    for scan_root in scan_roots:
+        scan_root_abs = os.path.abspath(scan_root)
+        if not os.path.isdir(scan_root_abs):
             continue
 
-        for filename in filenames:
-            full_path = os.path.join(root_abs, filename)
+        for root, dirs, filenames in os.walk(scan_root_abs):
+            if check_stop():
+                return files
 
-            try:
-                if os.path.isfile(full_path):
-                    files.append(os.path.abspath(full_path))
-            except OSError:
+            root_abs = os.path.abspath(root)
+
+            kept_dirs = []
+            for dirname in dirs:
+                dir_path = os.path.join(root_abs, dirname)
+                if not path_is_excluded(dir_path, exclude_patterns):
+                    kept_dirs.append(dirname)
+
+            dirs[:] = kept_dirs
+
+            if path_is_excluded(root_abs, exclude_patterns):
+                dirs[:] = []
                 continue
+
+            for filename in filenames:
+                full_path = os.path.join(root_abs, filename)
+
+                try:
+                    if os.path.isfile(full_path):
+                        files.append(os.path.abspath(full_path))
+                except OSError:
+                    continue
 
     return files
 
 
-def build_clamscan_command(scan_root, exclude_patterns):
-    """Build the clamscan command-line argument list."""
+def build_clamscan_command(scan_roots, exclude_patterns, clamscan_path=None):
+    """Build the clamscan command-line argument list.
+
+    *scan_roots* may be a single path string or a list of path strings.
+    Uses *clamscan_path* if provided; otherwise resolves from the backend.
+    """
+    if isinstance(scan_roots, str):
+        scan_roots = [scan_roots]
+
+    if clamscan_path is None:
+        runtime = backend.detect_clamav_runtime()
+        if not runtime.found:
+            raise FileNotFoundError("clamscan not found")
+        clamscan_path = runtime.clamscan
+
     cmd = [
-        "clamscan",
+        clamscan_path,
         "-r",
         "--verbose",
         "--scan-archive=yes",
         "--alert-encrypted=yes",
     ]
 
+    # Only pass --database on platforms that manage their own DB (Windows).
+    # On Linux, the system clamscan already knows where the database lives.
+    if backend.manages_own_database():
+        db_dir = backend.db_dir()
+        if db_dir is not None and db_dir.exists() and any(db_dir.iterdir()):
+            cmd.append(f"--database={str(db_dir.resolve())}")
+
     cmd.extend(build_clamscan_exclude_args(exclude_patterns))
-    cmd.append(os.path.abspath(scan_root))
+    for root in scan_roots:
+        cmd.append(os.path.abspath(root))
 
     return cmd
 
