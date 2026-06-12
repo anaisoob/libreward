@@ -1144,13 +1144,23 @@ class ClamAVGui(ctk.CTk):
         if not backend.manages_own_runtime():
             distro = backend.distro_info()
             if distro.get("unknown") == "true":
-                msg = "ClamAV updates are handled by your system's package manager.\n"
-            else:
                 msg = (
-                    f"ClamAV updates are handled by {distro.get('pkg_manager', 'your package manager')}.\n"
-                    f"To update, run: {distro.get('update_cmd', '')}\n"
+                    "ClamAV updates are handled by your Linux package manager.\n\n"
+                    "Update ClamAV using your distribution's normal software update tools."
                 )
-            self._show_info_dialog("ClamAV Update", msg)
+                command_text = None
+            else:
+                command_text = distro.get("update_cmd", "")
+                msg = (
+                    f"ClamAV updates are handled by {distro.get('pkg_manager', 'your package manager')}.\n\n"
+                    "Run the command below in a terminal to update system packages, "
+                    "including ClamAV."
+                )
+            self._show_info_dialog(
+                "ClamAV Update",
+                msg,
+                command_text=command_text or None,
+            )
             return
 
         dialog = UpdateProgressDialog(self, title="Update ClamAV")
@@ -1213,10 +1223,17 @@ class ClamAVGui(ctk.CTk):
 
         dialog.run_in_thread(_do_update)
 
-    def _show_info_dialog(self, title: str, message: str):
-        """Show a simple info dialog — used for Linux package manager messages."""
-        from tkinter import messagebox
-        messagebox.showinfo(title, message)
+    def _show_info_dialog(
+        self,
+        title: str,
+        message: str,
+        *,
+        command_text: str | None = None,
+    ):
+        """Show a styled info dialog."""
+        from ui.info_dialog import InfoDialog
+
+        InfoDialog(self, title, message, command_text=command_text)
 
     def _switch_page(self, key: str):
         """Show the page identified by *key* and hide all others."""
