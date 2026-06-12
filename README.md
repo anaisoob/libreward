@@ -66,11 +66,12 @@ Do not store downloaded databases inside the ClamAV runtime directory.
 
 ## Licensing
 
-LibreWard is intended to be released under the GNU General Public License.
+LibreWard is licensed under the GNU General Public License version 2 or later:
+`GPL-2.0-or-later`. See [LICENSE](LICENSE).
 
 LibreWard executes ClamAV tools such as `clamscan` and `freshclam`. ClamAV is
-developed by the ClamAV project/Cisco Talos and is licensed under the GNU General
-Public License.
+developed by the ClamAV project/Cisco Talos and is licensed separately under the
+GNU General Public License version 2.
 
-Release archives that bundle ClamAV must include LibreWard license files and the
-ClamAV license/copyright files from the official ClamAV distribution.
+Release archives that bundle ClamAV must include this LibreWard license file and
+the ClamAV license/copyright files from the official ClamAV distribution.

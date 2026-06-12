@@ -9,10 +9,12 @@ from core.constants import APP_NAME, APP_VERSION, CLAMAV_HOMEPAGE, CLAMAV_SOURCE
 
 
 LICENSE_TEXT = (
-    f"{APP_NAME} is licensed under the GNU General Public License (GPL).\n"
+    f"{APP_NAME} is licensed under the GNU General Public License\n"
+    "version 2 or later (GPL-2.0-or-later).\n"
     "\n"
     "ClamAV is an open-source antivirus engine/toolkit\n"
-    "licensed under the GNU General Public License (GPL).\n"
+    "licensed separately under the GNU General Public License\n"
+    "version 2.\n"
     "ClamAV is developed by Cisco Talos.\n"
     "\n"
     f"{APP_NAME} executes ClamAV command-line tools\n"
