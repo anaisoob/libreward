@@ -55,6 +55,8 @@ def check_startup(log: Callable[[str], None] | None = None) -> StartupStatus:
             log(f"  clamscan:   {runtime.clamscan}\n")
             if runtime.version:
                 log(f"  version:    {runtime.version}\n")
+            else:
+                log("  version:    unavailable (clamscan --version failed)\n")
             log(f"  source:     {runtime.source}\n")
         else:
             log("  No ClamAV runtime found.\n")
@@ -90,7 +92,7 @@ def check_startup(log: Callable[[str], None] | None = None) -> StartupStatus:
             if freshclam_ok:
                 log(f"  freshclam:  {runtime.freshclam}\n")
             else:
-                log(f"  freshclam:  {runtime.freshclam} (failed --version)\n")
+                log(f"  freshclam:  {runtime.freshclam} (version check failed)\n")
 
     return StartupStatus(
         runtime=runtime,

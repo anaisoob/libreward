@@ -279,12 +279,14 @@ def _validate_runtime(runtime_dir: Path, validation_commands: list[str]) -> None
             )
 
         try:
+            cmd = _validation_command(runtime_dir, exe_path, exe_args)
             result = subprocess.run(
-                [str(exe_path)] + exe_args,
+                cmd,
                 capture_output=True,
                 text=True,
                 timeout=30,
                 cwd=str(runtime_dir),
+                env=_runtime_validation_env(runtime_dir),
                 # On Windows, suppress console windows during validation
                 **(
                     {"creationflags": subprocess.CREATE_NO_WINDOW}
@@ -294,13 +296,62 @@ def _validate_runtime(runtime_dir: Path, validation_commands: list[str]) -> None
             )
             if result.returncode != 0:
                 raise RuntimeError(
-                    f"Validation failed: {cmd_str!r} returned {result.returncode}\n"
-                    f"stderr: {result.stderr.strip()}"
+                    _format_validation_failure(
+                        cmd_str,
+                        result.returncode,
+                        result.stdout,
+                        result.stderr,
+                    )
                 )
         except subprocess.TimeoutExpired:
             raise RuntimeError(f"Validation timed out: {cmd_str!r}")
         except FileNotFoundError:
             raise RuntimeError(f"Validation failed: {exe_name} not found")
+
+
+def _validation_command(runtime_dir: Path, exe_path: Path, exe_args: list[str]) -> list[str]:
+    """Build a validation command, adding freshclam config on Windows."""
+    if exe_path.name.lower() == "freshclam.exe" and "--version" in exe_args:
+        from core.db_manager import generate_freshclam_conf
+
+        conf_path = generate_freshclam_conf(str(exe_path))
+        if conf_path:
+            return [str(exe_path), "--config-file", conf_path, *exe_args]
+
+    return [str(exe_path), *exe_args]
+
+
+def _runtime_validation_env(runtime_dir: Path) -> dict[str, str]:
+    """Return env with runtime_dir prefixed to PATH for portable DLL loading."""
+    env = os.environ.copy()
+    path_key = next((k for k in env if k.upper() == "PATH"), "PATH")
+    current_path = env.get(path_key, "")
+    runtime_path = str(runtime_dir)
+    path_parts = current_path.split(os.pathsep) if current_path else []
+    if runtime_path not in path_parts:
+        env[path_key] = runtime_path + (
+            os.pathsep + current_path if current_path else ""
+        )
+    return env
+
+
+def _format_validation_failure(
+    cmd_str: str,
+    returncode: int,
+    stdout: str | None,
+    stderr: str | None,
+) -> str:
+    lines = [f"Validation failed: {cmd_str!r} returned {returncode}"]
+    if returncode == 3221225781:
+        lines.append(
+            "Windows reported 0xC0000135, which usually means a required DLL "
+            "or Visual C++ runtime dependency could not be loaded."
+        )
+    if stdout and stdout.strip():
+        lines.append(f"stdout: {stdout.strip()}")
+    if stderr and stderr.strip():
+        lines.append(f"stderr: {stderr.strip()}")
+    return "\n".join(lines)
 
 
 def _install_runtime_with_rollback(new_runtime_dir: Path) -> None:

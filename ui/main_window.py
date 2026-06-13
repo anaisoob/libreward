@@ -1441,7 +1441,27 @@ class ClamAVGui(ctk.CTk):
             self._show_startup_dialog()
             return
 
-        if self._startup_status is not None and not self._startup_status.db_found:
+        status = self._startup_status
+        if status is None or status.runtime.clamscan != runtime.clamscan:
+            status = check_startup()
+            self._startup_status = status
+
+        if not status.runtime_ok:
+            self._show_info_dialog(
+                "ClamAV Runtime Not Ready",
+                "LibreWard found clamscan, but it could not run "
+                "`clamscan --version` successfully.\n\n"
+                "On Windows this usually means the portable runtime is incomplete "
+                "or a required Microsoft Visual C++ runtime dependency is missing.\n\n"
+                "Use Update ClamAV to reinstall the runtime, then try again.",
+            )
+            self.log(
+                "Scan cancelled because the ClamAV runtime failed validation. "
+                "Use 'Update ClamAV' to reinstall it.\n"
+            )
+            return
+
+        if not status.db_found:
             self._offer_database_update(
                 "Virus database not found.\n\n"
                 "LibreWard will not start a scan until the database is ready.\n\n"

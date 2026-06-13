@@ -133,7 +133,8 @@ def _try_privileged_freshclam(freshclam_path: str, log_callback=None) -> tuple[b
 def _run_freshclam_cmd(cmd: list[str], log_callback=None) -> tuple[bool, str]:
     """Execute a command and capture output. Returns (success, output_text)."""
     if log_callback:
-        log_callback(f"Running: {' '.join(cmd)}\n")
+        tool = os.path.basename(cmd[0]) if cmd else "freshclam"
+        log_callback(f"Running: {tool}\n")
 
     try:
         proc = backend.start_process(

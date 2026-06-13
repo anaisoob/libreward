@@ -1,4 +1,5 @@
 import re
+import os
 import shutil
 import tempfile
 import unittest
@@ -127,6 +128,24 @@ class CoreBehaviourTests(unittest.TestCase):
         finally:
             updater.shutil.move = original_move
             updater.backend = old_backend
+
+    def test_runtime_validation_error_explains_windows_dll_failure(self):
+        msg = updater._format_validation_failure(
+            "clamscan.exe --version",
+            3221225781,
+            "",
+            "",
+        )
+        self.assertIn("0xC0000135", msg)
+        self.assertIn("DLL", msg)
+
+    def test_runtime_validation_env_prefixes_runtime_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime_dir = Path(tmp)
+            env = updater._runtime_validation_env(runtime_dir)
+            path_key = next(k for k in env if k.upper() == "PATH")
+            first_path = env[path_key].split(os.pathsep)[0]
+            self.assertEqual(first_path, str(runtime_dir))
 
     def test_quarantine_list_and_delete(self):
         old_backend = quarantine.backend
