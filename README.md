@@ -6,6 +6,8 @@ is prepared for firewall controls, internet protection, DNS/privacy features,
 and other system security integrations behind shared core logic and
 platform-specific backends.
 
+![LibreWard screenshot](assets/libreward.png)
+
 ## Current Features
 
 - CustomTkinter desktop UI with scan, quarantine, settings, firewall, and
