@@ -10,7 +10,7 @@ from pathlib import Path
 from backends.base import RuntimeInfo
 from backends.windows import WindowsBackend
 from excludes import build_clamscan_exclude_args, path_is_excluded
-from scanner import parse_clamscan_result_line
+from scanner import parse_clamscan_result_line, parse_clamscan_summary_value
 import scanner as scanner_module
 import core.updater as updater
 import core.quarantine as quarantine
@@ -125,6 +125,15 @@ class CoreBehaviourTests(unittest.TestCase):
             )
             self.assertEqual(parsed_path, str(Path(file_path).resolve()))
             self.assertEqual(status, "Can't get file status ERROR")
+
+    def test_parse_clamscan_summary_scanned_files(self):
+        self.assertEqual(
+            parse_clamscan_summary_value("Scanned files: 423\n", "Scanned files"),
+            423,
+        )
+        self.assertIsNone(
+            parse_clamscan_summary_value("Scanned directories: 38\n", "Scanned files")
+        )
 
     def test_check_for_updates_uses_only_minimal_version_key(self):
         old_backend = updater.backend

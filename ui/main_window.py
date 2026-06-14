@@ -16,6 +16,7 @@ from scanner import (
     collect_files,
     build_clamscan_command,
     parse_clamscan_result_line,
+    parse_clamscan_summary_value,
     should_log_line,
 )
 from core.constants import APP_NAME, APP_VERSION
@@ -1544,6 +1545,7 @@ class ClamAVGui(ctk.CTk):
         infected = []
         total = 0
         scan_summary_lines: list[str] = []
+        clamav_scanned_files = None
         admin_hint = self._scan_may_need_admin(scan_root)
 
         try:
@@ -1629,6 +1631,11 @@ class ClamAVGui(ctk.CTk):
                         self.output_queue.put(line)
                         if self.summary_started:
                             scan_summary_lines.append(line)
+                            summary_scanned = parse_clamscan_summary_value(
+                                line, "Scanned files"
+                            )
+                            if summary_scanned is not None:
+                                clamav_scanned_files = summary_scanned
 
             if self.process is not None:
                 return_code = self.process.wait()
@@ -1675,7 +1682,11 @@ class ClamAVGui(ctk.CTk):
             result = {
                 "infected": infected,
                 "total": total,
-                "scanned": self.scanned_files,
+                "scanned": (
+                    clamav_scanned_files
+                    if clamav_scanned_files is not None
+                    else self.scanned_files
+                ),
                 "stopped": self.stop_requested,
                 "errors": errors_found,
                 "warnings": warnings_found,

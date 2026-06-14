@@ -84,6 +84,20 @@ class ScanResultWindow(ctk.CTkToplevel):
             font=ctk.CTkFont(size=14),
         ).pack(pady=(0, 12))
 
+        if total and scanned < total:
+            ctk.CTkLabel(
+                container,
+                text=(
+                    "The final scanned count can be lower than the file count "
+                    "because ClamAV may skip files that changed, were locked, "
+                    "could not be accessed, or were handled internally during scanning."
+                ),
+                wraplength=660,
+                justify="left",
+                font=ctk.CTkFont(size=12),
+                text_color=TEXT_SECONDARY,
+            ).pack(fill="x", padx=8, pady=(0, 12))
+
         if warnings:
             warning_text = (
                 "Some files could not be opened because they were locked, "

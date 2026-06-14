@@ -1,6 +1,7 @@
 """Scan orchestration: file collection, command building, output parsing."""
 
 import os
+import re
 
 from backends import backend
 from excludes import path_is_excluded, build_clamscan_exclude_args
@@ -150,3 +151,15 @@ def should_log_line(line, summary_started):
         return True, True
 
     return False, summary_started
+
+
+def parse_clamscan_summary_value(line: str, label: str) -> int | None:
+    """Return an integer value from a ClamAV summary line.
+
+    Example:
+        "Scanned files: 423" with label "Scanned files" returns 423.
+    """
+    match = re.match(rf"^{re.escape(label)}:\s+([0-9]+)\s*$", line.strip())
+    if not match:
+        return None
+    return int(match.group(1))
