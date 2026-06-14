@@ -74,6 +74,7 @@ class ClamAVGui(ctk.CTk):
         self.user_excludes = []
         self.exclude_window = None
         self.about_window = None
+        self.suppress_clamav_setup_prompt = False
 
         # Startup status (set after health check)
         self._startup_status: StartupStatus | None = None
@@ -108,10 +109,14 @@ class ClamAVGui(ctk.CTk):
                 for path in user_excludes
                 if isinstance(path, str)
             ]
+            self.suppress_clamav_setup_prompt = bool(
+                data.get("suppress_clamav_setup_prompt", False)
+            )
 
         except Exception:
             self.enabled_common_excludes = set()
             self.user_excludes = []
+            self.suppress_clamav_setup_prompt = False
 
     def save_config(self):
         try:
@@ -119,6 +124,7 @@ class ClamAVGui(ctk.CTk):
                 "scan_path": self.scan_path.get().strip(),
                 "enabled_common_excludes": sorted(self.enabled_common_excludes),
                 "user_excludes": self.user_excludes,
+                "suppress_clamav_setup_prompt": self.suppress_clamav_setup_prompt,
             }
             config_save(data)
         except Exception as e:
@@ -149,7 +155,13 @@ class ClamAVGui(ctk.CTk):
 
         if status.is_first_run:
             # No ClamAV at all — offer download
-            self.output_queue.put(("__NO_CLAMAV__", None))
+            if self.suppress_clamav_setup_prompt:
+                _log(
+                    "ClamAV runtime not found. Antivirus features are disabled "
+                    "until ClamAV is installed.\n\n"
+                )
+            else:
+                self.output_queue.put(("__NO_CLAMAV__", None))
         elif not status.db_found:
             _log(
                 "Virus database not found.\n"
@@ -166,7 +178,11 @@ class ClamAVGui(ctk.CTk):
     def _open_download_dialog(self):
         StartupDownloadDialog(self, on_done=self._on_download_done)
 
-    def _on_download_done(self, success: bool):
+    def _on_download_done(self, success: bool, suppress_prompt: bool = False):
+        if suppress_prompt:
+            self.suppress_clamav_setup_prompt = True
+            self.save_config()
+
         if success:
             self.log("\nRe-checking ClamAV runtime after install...\n")
 
@@ -1177,7 +1193,7 @@ class ClamAVGui(ctk.CTk):
             error = perform_update(
                 platform_entry,
                 log=dialog_log,
-                progress=None,  # could add progress bar later
+                progress=lambda phase, done, total: dialog.set_progress(done, total),
             )
 
             if error:

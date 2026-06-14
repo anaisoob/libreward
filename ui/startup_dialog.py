@@ -39,6 +39,7 @@ class StartupDownloadDialog(ctk.CTkToplevel):
         self.parent = parent
         self.on_done = on_done
         self._result = False
+        self._dont_show_var = tk.BooleanVar(value=False)
 
         self.title("ClamAV Not Found - LibreWard Setup")
         self.transient(parent)
@@ -105,6 +106,13 @@ class StartupDownloadDialog(ctk.CTkToplevel):
             container, text="", font=ctk.CTkFont(size=12)
         )
         self._progress_label.pack(pady=(0, 12))
+
+        ctk.CTkCheckBox(
+            container,
+            text="Don't show this prompt again",
+            variable=self._dont_show_var,
+            text_color=TEXT_SECONDARY,
+        ).pack(anchor="w", padx=16, pady=(0, 12))
 
         btn_frame = ctk.CTkFrame(container, fg_color="transparent")
         btn_frame.pack(fill="x", padx=16, pady=(0, 16))
@@ -247,6 +255,13 @@ class StartupDownloadDialog(ctk.CTkToplevel):
             justify="left",
         ).pack(fill="x", padx=16, pady=(0, 12))
 
+        ctk.CTkCheckBox(
+            container,
+            text="Don't show this prompt again",
+            variable=self._dont_show_var,
+            text_color=TEXT_SECONDARY,
+        ).pack(anchor="w", padx=16, pady=(0, 12))
+
         ctk.CTkButton(
             container,
             text="OK",
@@ -294,6 +309,6 @@ class StartupDownloadDialog(ctk.CTkToplevel):
             pass
 
         if self.on_done:
-            self.on_done(self._result)
+            self.on_done(self._result, self._dont_show_var.get())
 
         self.destroy()

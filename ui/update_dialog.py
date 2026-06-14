@@ -73,6 +73,14 @@ class UpdateProgressDialog(ctk.CTkToplevel):
         self._activity.pack(fill="x", padx=16, pady=(0, 12))
         self._activity.start()
 
+        self._progress_label = ctk.CTkLabel(
+            container,
+            text="",
+            font=ctk.CTkFont(size=12),
+            text_color=TEXT_MUTED,
+        )
+        self._progress_label.pack(anchor="w", padx=16, pady=(0, 8))
+
         # Log textbox
         self._log_box = ctk.CTkTextbox(
             container,
@@ -103,6 +111,10 @@ class UpdateProgressDialog(ctk.CTkToplevel):
         """Thread-safe: append text to the log box."""
         self.after(0, self._append, text)
 
+    def set_progress(self, done: int, total: int | None) -> None:
+        """Thread-safe: switch to determinate download progress."""
+        self.after(0, self._set_progress, done, total)
+
     def _append(self, text: str):
         """Called on the main thread to update the UI."""
         if not self._log_box.winfo_exists():
@@ -110,12 +122,31 @@ class UpdateProgressDialog(ctk.CTkToplevel):
         self._log_box.insert("end", text)
         self._log_box.see("end")
 
+    def _set_progress(self, done: int, total: int | None) -> None:
+        if not self._activity.winfo_exists():
+            return
+        if total and total > 0:
+            self._activity.configure(mode="determinate")
+            self._activity.stop()
+            self._activity.set(min(done / total, 1.0))
+            if total > 1_000_000:
+                self._progress_label.configure(
+                    text=f"Downloading: {done / 1_000_000:.1f} / {total / 1_000_000:.1f} MB"
+                )
+            else:
+                self._progress_label.configure(
+                    text=f"Downloading: {done:,} / {total:,} bytes"
+                )
+        else:
+            self._progress_label.configure(text="Downloading...")
+
     def done(self):
         """Mark the operation as finished — enables the Close button."""
         self._running = False
         if self._activity.winfo_exists():
             self._activity.stop()
-            self._activity.pack_forget()
+        if self._progress_label.winfo_exists():
+            self._progress_label.configure(text="Done")
         if self._close_btn.winfo_exists():
             self._close_btn.configure(state="normal")
 

@@ -166,7 +166,6 @@ class WindowsBackend(PlatformBackend):
             "ConnectTimeout 30",
             "ReceiveTimeout 60",
             "Foreground yes",
-            "ScriptedSecurity yes",
             "Checks 1",
             "LogVerbose no",
         ]

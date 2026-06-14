@@ -13,6 +13,7 @@ from excludes import build_clamscan_exclude_args, path_is_excluded
 from scanner import parse_clamscan_result_line
 import core.updater as updater
 import core.quarantine as quarantine
+import core.db_manager as db_manager
 
 
 class FakeBackend:
@@ -146,6 +147,34 @@ class CoreBehaviourTests(unittest.TestCase):
             path_key = next(k for k in env if k.upper() == "PATH")
             first_path = env[path_key].split(os.pathsep)[0]
             self.assertEqual(first_path, str(runtime_dir))
+
+    def test_generated_freshclam_conf_uses_supported_options(self):
+        old_backend = db_manager.backend
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+
+                class B:
+                    def manages_own_database(self):
+                        return True
+
+                    def db_dir(self):
+                        return root / "clamav-db"
+
+                    def log_dir(self):
+                        return root / "logs"
+
+                    def data_dir(self):
+                        return root
+
+                db_manager.backend = B()
+                conf_path = Path(db_manager.generate_freshclam_conf("freshclam.exe"))
+                text = conf_path.read_text(encoding="utf-8")
+                self.assertIn("DatabaseDirectory", text)
+                self.assertIn("Foreground yes", text)
+                self.assertNotIn("ScriptedSecurity", text)
+        finally:
+            db_manager.backend = old_backend
 
     def test_quarantine_list_and_delete(self):
         old_backend = quarantine.backend
