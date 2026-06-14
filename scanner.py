@@ -77,8 +77,8 @@ def build_clamscan_command(scan_roots, exclude_patterns, clamscan_path=None):
     # Only pass --database on platforms that manage their own DB (Windows).
     # On Linux, the system clamscan already knows where the database lives.
     if backend.manages_own_database():
-        db_dir = backend.db_dir()
-        if db_dir is not None and db_dir.exists() and any(db_dir.iterdir()):
+        db_dir = _first_database_dir()
+        if db_dir is not None:
             cmd.append(f"--database={str(db_dir.resolve())}")
 
     cmd.extend(build_clamscan_exclude_args(exclude_patterns))
@@ -86,6 +86,19 @@ def build_clamscan_command(scan_roots, exclude_patterns, clamscan_path=None):
         cmd.append(os.path.abspath(root))
 
     return cmd
+
+
+def _first_database_dir():
+    """Return the first configured database directory containing ClamAV DB files."""
+    for db_dir in backend.system_db_locations():
+        try:
+            if not db_dir.is_dir():
+                continue
+            if any(p.suffix.lower() in (".cvd", ".cld") for p in db_dir.iterdir()):
+                return db_dir
+        except OSError:
+            continue
+    return None
 
 
 def parse_clamscan_result_line(line, known_files):

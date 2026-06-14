@@ -11,6 +11,7 @@ from backends.base import RuntimeInfo
 from backends.windows import WindowsBackend
 from excludes import build_clamscan_exclude_args, path_is_excluded
 from scanner import parse_clamscan_result_line
+import scanner as scanner_module
 import core.updater as updater
 import core.quarantine as quarantine
 import core.db_manager as db_manager
@@ -48,6 +49,50 @@ class CoreBehaviourTests(unittest.TestCase):
         patterns = WindowsBackend().default_common_excludes()["Git directories (.git)"]
         self.assertTrue(re.search(patterns[0], "C:/Users/me/project/.git/config", re.I))
 
+    def test_windows_backend_checks_common_system_install_dirs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            program_files = Path(tmp) / "Program Files"
+            clamav_dir = program_files / "ClamAV"
+            old_env = os.environ.copy()
+            try:
+                os.environ["ProgramFiles"] = str(program_files)
+                backend = WindowsBackend()
+                self.assertIn(clamav_dir, backend._system_install_dirs())
+            finally:
+                os.environ.clear()
+                os.environ.update(old_env)
+
+    def test_clamscan_command_uses_detected_windows_database_dir(self):
+        old_backend = scanner_module.backend
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                db_dir = root / "runtime" / "db"
+                db_dir.mkdir(parents=True)
+                (db_dir / "main.cvd").write_text("db")
+
+                class B:
+                    def manages_own_database(self):
+                        return True
+
+                    def system_db_locations(self):
+                        return [db_dir]
+
+                    def detect_clamav_runtime(self):
+                        return RuntimeInfo(
+                            source="system-install",
+                            clamscan="clamscan.exe",
+                            freshclam="freshclam.exe",
+                            version="ClamAV 1.5.2",
+                            version_num="1.5.2",
+                        )
+
+                scanner_module.backend = B()
+                cmd = scanner_module.build_clamscan_command(str(root), [])
+                self.assertIn(f"--database={str(db_dir.resolve())}", cmd)
+        finally:
+            scanner_module.backend = old_backend
+
     def test_posix_absolute_exclude_and_clamscan_arg(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -69,6 +114,17 @@ class CoreBehaviourTests(unittest.TestCase):
             )
             self.assertEqual(parsed_path, str(Path(file_path).resolve()))
             self.assertEqual(status, "OK")
+
+    def test_parse_clamscan_result_line_handles_file_status_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            file_path = str(Path(tmp) / "sample.rar")
+            Path(file_path).write_text("x")
+            parsed_path, status = parse_clamscan_result_line(
+                f"{file_path}: Can't get file status ERROR\n",
+                {str(Path(file_path).resolve())},
+            )
+            self.assertEqual(parsed_path, str(Path(file_path).resolve()))
+            self.assertEqual(status, "Can't get file status ERROR")
 
     def test_check_for_updates_uses_only_minimal_version_key(self):
         old_backend = updater.backend

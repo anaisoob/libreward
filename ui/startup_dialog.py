@@ -43,11 +43,12 @@ class StartupDownloadDialog(ctk.CTkToplevel):
 
         self.title("ClamAV Not Found - LibreWard Setup")
         self.transient(parent)
+        self.withdraw()
         self.resizable(False, False)
         self.configure(fg_color=BG_COLOR)
 
         if backend.manages_own_runtime():
-            self._build_windows_ui()
+            self._build_windows_consent_ui()
         else:
             self._build_linux_ui()
 
@@ -60,6 +61,79 @@ class StartupDownloadDialog(ctk.CTkToplevel):
 
     # ── Windows UI: download flow ──────────────────────────────────
 
+    def _clear_content(self):
+        for child in self.winfo_children():
+            child.destroy()
+
+    def _build_windows_consent_ui(self):
+        self.geometry("640x520")
+
+        container = ctk.CTkFrame(self, fg_color=SURFACE_COLOR, corner_radius=8)
+        container.pack(fill="both", expand=True, padx=24, pady=24)
+
+        ctk.CTkLabel(
+            container,
+            text="Enable Antivirus Features",
+            font=ctk.CTkFont(size=22, weight="bold"),
+            text_color=WARNING_COLOR,
+        ).pack(anchor="w", padx=16, pady=(16, 8))
+
+        ctk.CTkLabel(
+            container,
+            text=(
+                "LibreWard uses ClamAV for antivirus scanning. ClamAV is a "
+                "third-party open-source antivirus project developed separately "
+                "from LibreWard.\n\n"
+                "To use antivirus features, LibreWard needs your permission to "
+                "download and run the official ClamAV command-line runtime "
+                "and to download ClamAV virus database updates.\n\n"
+                "LibreWard and ClamAV are provided with absolutely no warranty, "
+                "to the extent permitted by law."
+            ),
+            font=ctk.CTkFont(size=13),
+            justify="left",
+            wraplength=560,
+            text_color=TEXT_SECONDARY,
+        ).pack(fill="x", padx=16, pady=(0, 16))
+
+        ctk.CTkCheckBox(
+            container,
+            text="Don't show this prompt again",
+            variable=self._dont_show_var,
+            text_color=TEXT_SECONDARY,
+        ).pack(anchor="w", padx=16, pady=(0, 18))
+
+        btn_frame = ctk.CTkFrame(container, fg_color="transparent")
+        btn_frame.pack(fill="x", padx=16, pady=(0, 16))
+
+        ctk.CTkButton(
+            btn_frame,
+            text="Accept and Continue",
+            command=self._accept_windows_terms,
+            height=40,
+            corner_radius=8,
+            fg_color=ACCENT_COLOR,
+            hover_color=ACCENT_HOVER,
+            text_color=WHITE_TEXT,
+        ).pack(side="left", padx=(0, 12))
+
+        ctk.CTkButton(
+            btn_frame,
+            text="Not Now",
+            fg_color="transparent",
+            border_width=1,
+            border_color=BORDER_COLOR,
+            text_color=TEXT_SECONDARY,
+            hover_color=SECONDARY_HOVER,
+            command=self._close,
+        ).pack(side="left", padx=8)
+
+    def _accept_windows_terms(self):
+        self.withdraw()
+        self._clear_content()
+        self._build_windows_ui()
+        self.after(10, self._center_and_modal)
+
     def _build_windows_ui(self):
         self.geometry("620x480")
 
@@ -68,7 +142,7 @@ class StartupDownloadDialog(ctk.CTkToplevel):
 
         ctk.CTkLabel(
             container,
-            text="ClamAV Runtime Required",
+            text="Download ClamAV",
             font=ctk.CTkFont(size=22, weight="bold"),
             text_color=WARNING_COLOR,
         ).pack(anchor="w", padx=16, pady=(16, 8))
@@ -106,13 +180,6 @@ class StartupDownloadDialog(ctk.CTkToplevel):
             container, text="", font=ctk.CTkFont(size=12)
         )
         self._progress_label.pack(pady=(0, 12))
-
-        ctk.CTkCheckBox(
-            container,
-            text="Don't show this prompt again",
-            variable=self._dont_show_var,
-            text_color=TEXT_SECONDARY,
-        ).pack(anchor="w", padx=16, pady=(0, 12))
 
         btn_frame = ctk.CTkFrame(container, fg_color="transparent")
         btn_frame.pack(fill="x", padx=16, pady=(0, 16))
@@ -296,6 +363,7 @@ class StartupDownloadDialog(ctk.CTkToplevel):
             pass
 
         try:
+            self.deiconify()
             self.lift()
             self.focus_force()
             self.grab_set()

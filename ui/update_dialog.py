@@ -37,6 +37,7 @@ class UpdateProgressDialog(ctk.CTkToplevel):
         self.parent = parent
         self.title(title)
         self.transient(parent)
+        self.withdraw()
         self.geometry("580x440")
         self.resizable(False, False)
         self.configure(fg_color=BG_COLOR)
@@ -190,6 +191,7 @@ class UpdateProgressDialog(ctk.CTkToplevel):
             pass
 
         try:
+            self.deiconify()
             self.lift()
             self.focus_force()
             self.grab_set()

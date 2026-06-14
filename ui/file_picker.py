@@ -93,6 +93,7 @@ class FilePickerDialog(ctk.CTkToplevel):
         # Window setup
         self.title(title)
         self.transient(parent)
+        self.withdraw()
         self.geometry("800x580")
         self.minsize(620, 440)
         self.protocol("WM_DELETE_WINDOW", self._cancel)
@@ -147,6 +148,7 @@ class FilePickerDialog(ctk.CTkToplevel):
             x = min(max(x, 0), max(sw - w, 0))
             y = min(max(y, 0), max(sh - h, 0))
             self.geometry(f"{w}x{h}+{x}+{y}")
+            self.deiconify()
         except Exception:
             pass
 

@@ -197,12 +197,9 @@ class ClamAVGui(ctk.CTk):
                 if not status.db_found:
                     self.log(
                         "Virus database not found.\n"
-                        "Update the database before scanning.\n"
+                        "Starting database update before scanning is enabled.\n"
                     )
-                    self._offer_database_update(
-                        "ClamAV is installed, but the virus database is missing.\n\n"
-                        "Update the database now?"
-                    )
+                    self.after(100, self._settings_update_database)
             else:
                 self.log(
                     "WARNING: ClamAV still not detected after install.\n"
@@ -1543,9 +1540,11 @@ class ClamAVGui(ctk.CTk):
     def run_scan(self, scan_root, exclude_patterns, clamscan_path):
         infected_found = False
         errors_found = False
+        warnings_found = False
         infected = []
         total = 0
         scan_summary_lines: list[str] = []
+        admin_hint = self._scan_may_need_admin(scan_root)
 
         try:
             self.output_queue.put("Counting files before scan...\n")
@@ -1586,6 +1585,8 @@ class ClamAVGui(ctk.CTk):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 bufsize=1,
             )
 
@@ -1614,7 +1615,7 @@ class ClamAVGui(ctk.CTk):
                             self.output_queue.put(line)
 
                         elif "ERROR" in status:
-                            errors_found = True
+                            warnings_found = True
                             self.output_queue.put(line)
 
                         continue
@@ -1623,6 +1624,8 @@ class ClamAVGui(ctk.CTk):
                         line, self.summary_started
                     )
                     if should_log:
+                        if "WARNING" in line or "ERROR" in line:
+                            warnings_found = True
                         self.output_queue.put(line)
                         if self.summary_started:
                             scan_summary_lines.append(line)
@@ -1638,7 +1641,7 @@ class ClamAVGui(ctk.CTk):
             if return_code == 1:
                 infected_found = True
             elif return_code and return_code > 1:
-                errors_found = True
+                warnings_found = True
 
             self.output_queue.put("\n========================================\n")
             self.output_queue.put("GUI RESULT\n")
@@ -1649,15 +1652,23 @@ class ClamAVGui(ctk.CTk):
             elif infected_found:
                 self.output_queue.put("Result: infected files found!\n")
             elif errors_found:
-                self.output_queue.put("Result: scan finished with errors.\n")
+                self.output_queue.put("Result: scan failed.\n")
+            elif warnings_found:
+                self.output_queue.put("Result: scan completed with warnings.\n")
+                self.output_queue.put(
+                    "Some files could not be opened because they were locked, "
+                    "changed during scanning, or access was denied.\n"
+                )
             else:
                 self.output_queue.put("Result: no infected files found.\n")
 
         except FileNotFoundError:
+            errors_found = True
             self.output_queue.put(
                 "ERROR: clamscan not found. Please install ClamAV first.\n"
             )
         except Exception as e:
+            errors_found = True
             self.output_queue.put(f"ERROR: {e}\n")
         finally:
             self.process = None
@@ -1667,9 +1678,44 @@ class ClamAVGui(ctk.CTk):
                 "scanned": self.scanned_files,
                 "stopped": self.stop_requested,
                 "errors": errors_found,
+                "warnings": warnings_found,
+                "admin_hint": admin_hint,
                 "summary_lines": scan_summary_lines,
             }
             self.output_queue.put(("__SCAN_DONE__", result))
+
+    @staticmethod
+    def _scan_may_need_admin(scan_roots) -> bool:
+        """True when a Windows scan target is commonly protected."""
+        if os.name != "nt":
+            return False
+
+        roots = [scan_roots] if isinstance(scan_roots, str) else list(scan_roots)
+        windir = os.path.abspath(os.environ.get("WINDIR", r"C:\Windows")).lower()
+        program_files = [
+            os.path.abspath(path).lower()
+            for path in (
+                os.environ.get("ProgramFiles"),
+                os.environ.get("ProgramFiles(x86)"),
+                os.environ.get("ProgramW6432"),
+            )
+            if path
+        ]
+
+        for root in roots:
+            root_abs = os.path.abspath(root).lower()
+            drive, tail = os.path.splitdrive(root_abs)
+            if drive and tail in ("\\", "/"):
+                return True
+            if root_abs == windir or root_abs.startswith(windir + os.sep):
+                return True
+            if any(
+                root_abs == pf or root_abs.startswith(pf + os.sep)
+                for pf in program_files
+            ):
+                return True
+
+        return False
 
     def stop_scan(self):
         self.stop_requested = True

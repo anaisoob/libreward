@@ -22,6 +22,7 @@ class ExcludeWindow(ctk.CTkToplevel):
         self.parent = parent
         self.title("Exclude list")
         self.transient(parent)
+        self.withdraw()
         self.geometry("860x760")
         self.minsize(780, 680)
         self.protocol("WM_DELETE_WINDOW", self.save_and_close)
@@ -59,6 +60,7 @@ class ExcludeWindow(ctk.CTkToplevel):
             y = min(max(y, 0), max(screen_height - height, 0))
 
             self.geometry(f"{width}x{height}+{x}+{y}")
+            self.deiconify()
         except tk.TclError:
             pass
 

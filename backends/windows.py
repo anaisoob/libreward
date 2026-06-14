@@ -4,7 +4,8 @@ ClamAV runtime detection order on Windows:
 
     1. %APPDATA%\\LibreWard\\clamav-runtime\\current\\   (user-updated, writable)
     2. <app_dir>\\runtime\\default-clamav\\                 (bundled, read-only)
-    3. system PATH (shutil.which)
+    3. common system install folders, e.g. C:\\Program Files\\ClamAV
+    4. system PATH (shutil.which)
 
 Only #1 and #2 provide a full runtime folder. PATH lookup is a fallback
 that may yield just clamscan.exe without its required DLLs.
@@ -66,8 +67,18 @@ class WindowsBackend(PlatformBackend):
         return True
 
     def system_db_locations(self) -> list[Path]:
-        db = self.db_dir()
-        return [db] if db.exists() else []
+        locations: list[Path] = []
+
+        app_db = self.db_dir()
+        if app_db.exists():
+            locations.append(app_db)
+
+        for runtime_dir in self._candidate_runtime_dirs():
+            runtime_db = runtime_dir / "db"
+            if runtime_db.exists() and runtime_db not in locations:
+                locations.append(runtime_db)
+
+        return locations
 
     def log_dir(self) -> Path:
         return self.data_dir() / "logs"
@@ -105,6 +116,49 @@ class WindowsBackend(PlatformBackend):
         if app_dir is None:
             return None
         return app_dir / "runtime" / "default-clamav"
+
+    def _system_install_dirs(self) -> list[Path]:
+        """Common Windows ClamAV install directories not necessarily on PATH."""
+        candidates: list[Path] = []
+        for env_name in ("ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"):
+            base = os.environ.get(env_name)
+            if base:
+                candidates.append(Path(base) / "ClamAV")
+
+        for path in (
+            Path(r"C:\Program Files\ClamAV"),
+            Path(r"C:\Program Files (x86)\ClamAV"),
+        ):
+            if path not in candidates:
+                candidates.append(path)
+
+        return candidates
+
+    def _path_runtime_dirs(self) -> list[Path]:
+        """Runtime directories discovered from PATH executables."""
+        dirs: list[Path] = []
+        for exe_name in ("clamscan", "clamscan.exe"):
+            found = shutil.which(exe_name)
+            if found:
+                parent = Path(found).parent
+                if parent not in dirs:
+                    dirs.append(parent)
+        return dirs
+
+    def _candidate_runtime_dirs(self) -> list[Path]:
+        """Runtime folders that might also contain a local db directory."""
+        candidates = [self._runtime_current_dir()]
+        bundled = self._bundled_runtime_dir()
+        if bundled is not None:
+            candidates.append(bundled)
+        candidates.extend(self._system_install_dirs())
+        candidates.extend(self._path_runtime_dirs())
+
+        unique: list[Path] = []
+        for path in candidates:
+            if path not in unique:
+                unique.append(path)
+        return unique
 
     def _check_runtime_dir(self, directory: Path) -> tuple[str | None, str | None]:
         """Check a directory for clamscan.exe and freshclam.exe.
@@ -202,7 +256,20 @@ class WindowsBackend(PlatformBackend):
                     version_num=_parse_version(version_raw),
                 )
 
-        # 3 — system PATH fallback
+        # 3 — common system install folders
+        for system_dir in self._system_install_dirs():
+            cs, fc = self._check_runtime_dir(system_dir)
+            if cs:
+                version_raw = self.get_clamav_version(cs)
+                return RuntimeInfo(
+                    source="system-install",
+                    clamscan=cs,
+                    freshclam=fc,
+                    version=version_raw,
+                    version_num=_parse_version(version_raw),
+                )
+
+        # 4 — system PATH fallback
         cs = shutil.which("clamscan")
         fc = shutil.which("freshclam")
         if cs:

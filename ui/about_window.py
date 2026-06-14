@@ -37,6 +37,7 @@ class AboutWindow(ctk.CTkToplevel):
         self.parent = parent
         self.title(f"About {APP_NAME}")
         self.transient(parent)
+        self.withdraw()
         self.geometry("540x560")
         self.resizable(False, False)
 
@@ -179,6 +180,7 @@ class AboutWindow(ctk.CTkToplevel):
             pass
 
         try:
+            self.deiconify()
             self.lift()
             self.focus_force()
             self.grab_set()

@@ -31,6 +31,7 @@ class ScanResultWindow(ctk.CTkToplevel):
         self.parent = parent
         self.title("Scan Result")
         self.transient(parent)
+        self.withdraw()
         self.geometry("760x620")
         self.minsize(600, 460)
 
@@ -42,6 +43,8 @@ class ScanResultWindow(ctk.CTkToplevel):
         scanned = result.get("scanned", 0)
         stopped = result.get("stopped", False)
         errors = result.get("errors", False)
+        warnings = result.get("warnings", False)
+        admin_hint = result.get("admin_hint", False)
         summary_lines = result.get("summary_lines", [])
 
         # ── Outcome ─────────────────────────────────────────────────
@@ -52,7 +55,10 @@ class ScanResultWindow(ctk.CTkToplevel):
             outcome = "Infected files found!"
             outcome_color = DANGER_COLOR
         elif errors:
-            outcome = "Scan finished with errors"
+            outcome = "Scan failed"
+            outcome_color = DANGER_COLOR
+        elif warnings:
+            outcome = "Scan completed with warnings"
             outcome_color = WARNING_COLOR
         else:
             outcome = "No threats found"
@@ -77,6 +83,25 @@ class ScanResultWindow(ctk.CTkToplevel):
             text=f"Files scanned: {scanned_str}",
             font=ctk.CTkFont(size=14),
         ).pack(pady=(0, 12))
+
+        if warnings:
+            warning_text = (
+                "Some files could not be opened because they were locked, "
+                "changed during scanning, or access was denied."
+            )
+            if admin_hint:
+                warning_text += (
+                    "\n\nFor deeper scans of protected Windows locations, "
+                    "restart LibreWard as Administrator and scan again."
+                )
+            ctk.CTkLabel(
+                container,
+                text=warning_text,
+                wraplength=660,
+                justify="left",
+                font=ctk.CTkFont(size=12),
+                text_color=TEXT_SECONDARY,
+            ).pack(fill="x", padx=8, pady=(0, 12))
 
         # ── Infected list (with actions) ────────────────────────────
         if infected:
@@ -321,6 +346,7 @@ class ScanResultWindow(ctk.CTkToplevel):
         except tk.TclError:
             pass
         try:
+            self.deiconify()
             self.lift()
             self.focus_force()
             self.grab_set()

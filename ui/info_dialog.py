@@ -37,6 +37,7 @@ class InfoDialog(ctk.CTkToplevel):
 
         self.title(title)
         self.transient(parent)
+        self.withdraw()
         self.geometry("560x360" if command_text else "520x260")
         self.minsize(460, 240)
         self.resizable(False, False)
@@ -137,6 +138,7 @@ class InfoDialog(ctk.CTkToplevel):
             pass
 
         try:
+            self.deiconify()
             self.lift()
             self.focus_force()
             self.grab_set()
