@@ -33,7 +33,7 @@ class ScanSafetyTests(unittest.TestCase):
         fake = SimpleNamespace(start_process=start, stop_process=lambda p: None,
                                scan_may_need_admin=lambda roots: False)
         with patch.object(scans, 'backend', fake), \
-             patch.object(scans, 'collect_files', return_value=['/known']), \
+             patch('core.file_discovery.iter_scan_files', return_value=iter(['/known'])), \
              patch.object(scans, 'build_clamscan_command', return_value=['clamscan']):
             service.run('/scan', [], 'clamscan')
         return service
@@ -82,7 +82,7 @@ class ScanSafetyTests(unittest.TestCase):
             )
         fake = SimpleNamespace(start_process=start, scan_may_need_admin=lambda roots: False)
         with patch.object(scans, 'backend', fake), \
-             patch.object(scans, 'collect_files', return_value=['/known']), \
+             patch('core.file_discovery.iter_scan_files', return_value=iter(['/known'])), \
              patch.object(scans, 'build_clamscan_command', return_value=['clamscan']):
             service.run('/scan', [], 'clamscan')
         self.assertEqual(len(service.result['infected']), 1)

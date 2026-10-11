@@ -80,6 +80,9 @@ class UpdateProgressDialog(QDialog):
         self.resize(640, 400)
         self.active = True
         layout = QVBoxLayout(self)
+        self.status = QLabel('Operation in progress…')
+        self.status.setWordWrap(True)
+        layout.addWidget(self.status)
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
         self.log.setMaximumBlockCount(5000)
@@ -102,12 +105,21 @@ class UpdateProgressDialog(QDialog):
         else:
             self.progress.setRange(0, 0)
 
-    def finish(self, success):
+    def finish(self, success, message=''):
         self.active = False
+        self.status.setText('Completed successfully. Review the details below.' if success else
+                            'Operation failed. Review the error below.')
+        if message:
+            self.append(message)
         self.progress.setRange(0, 100)
         if success:
             self.progress.setValue(100)
         self.close_button.setEnabled(True)
+        self.close_button.setFocus()
+
+    def accept(self):
+        if not self.active:
+            super().accept()
 
     def reject(self):
         if not self.active:
@@ -117,13 +129,14 @@ class UpdateProgressDialog(QDialog):
         if self.active:
             event.ignore()
         else:
-            event.accept()
+            super().closeEvent(event)
 
 
 class ScanReportDialog(QDialog):
     """Complete scan report, including warnings and ClamAV summary output."""
     def __init__(self, parent, result):
         from core.scan_service import scan_outcome
+        from core.scan_warnings import warning_report
         super().__init__(parent)
         self.setWindowTitle("Scan report")
         self.resize(680, 460)
@@ -132,17 +145,19 @@ class ScanReportDialog(QDialog):
         title.setObjectName("pageTitle")
         layout.addWidget(title)
         count_label = 'Processed' if result.get('parallel') else 'Scanned'
+        incomplete = result.get('warning_count', 'yes' if result.get('warnings') else 0)
         summary = QLabel(
             f"{count_label}: {result.get('scanned', 0)} / estimated {result.get('total', 0)}\n"
             f"Detected files: {len(result.get('infected', []))}\n"
-            f"Warnings: {'yes' if result.get('warnings') else 'none'}\n"
+            f"Incomplete checks: {incomplete}\n"
             f"Errors: {'yes' if result.get('errors') else 'none'}"
         )
         layout.addWidget(summary)
         report = QPlainTextEdit()
         report.setReadOnly(True)
         lines = result.get('summary_lines', [])
-        report.setPlainText(''.join(lines) if lines else 'No ClamAV summary is available for this scan.')
+        engine_report = ''.join(lines) if lines else 'No ClamAV summary is available for this scan.'
+        report.setPlainText(warning_report(result) + '\n' + engine_report)
         layout.addWidget(report)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.reject)

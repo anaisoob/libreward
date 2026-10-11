@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
+from core.scan_policy import scan_limits
 
 
 class ScanCancelled(Exception):
@@ -102,8 +103,9 @@ def scan_file(endpoint, path, stopped, *, direct=False):
 
 class ClamdSession:
     """Reuse a responding daemon; only stop a process started by this object."""
-    def __init__(self, backend):
+    def __init__(self, backend, scan_profile='standard'):
         self.backend = backend
+        self.limits = scan_limits(scan_profile)
         self.process = None
         self.directory = None
         self.log = None
@@ -127,7 +129,8 @@ class ClamdSession:
         self.endpoint, listener = self.backend.clamd_listen_config(work)
         config = work / 'clamd.conf'
         lines = ['Foreground yes', f'DatabaseDirectory "{database}"',
-                 'MaxThreads 4', 'MaxQueue 16', 'StreamMaxLength 2048M',
+                 f'MaxThreads {self.limits.workers}', 'MaxQueue 16', 'StreamMaxLength 2048M',
+                 f'MaxFileSize {self.limits.file_size}', f'MaxScanSize {self.limits.scan_size}',
                  'ScanArchive yes', 'AlertEncrypted yes', 'AlertExceedsMax yes', *listener]
         config.write_text('\n'.join(lines) + '\n', encoding='utf-8')
         self.log = (work / 'startup.log').open('wb')

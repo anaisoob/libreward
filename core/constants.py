@@ -1,5 +1,5 @@
 APP_NAME = "LibreWard"
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.2.0"
 
 # URL of the update manifest hosted in the LibreWard repository.
 # The manifest points to official ClamAV releases on GitHub.

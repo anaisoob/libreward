@@ -6,8 +6,9 @@ commands to run the app.
 | Guide | Contents |
 | --- | --- |
 | [Setup](setup.md) | Component checks, installation, updates and data locations |
+| [Firewall](firewall.md) | Linux detection, activation and connection rules |
 | [Scanning](scanning.md) | Quick scans, parallelism, exclusions, progress and results |
 | [Development](development.md) | Architecture, tests and release checks |
 
-Antivirus scanning is the current working security module. Firewall, internet
-monitoring and DNS/privacy features are planned.
+Antivirus scanning and Linux firewall management are available.
+Internet monitoring and DNS/privacy features are planned.

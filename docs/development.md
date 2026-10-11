@@ -7,8 +7,8 @@ LibreWard uses one GUI, one shared core layer and separate platform backends.
 | Location | Responsibility |
 | --- | --- |
 | `ui/` | PySide6 / Qt interface, dialogs, themes and widgets |
-| `core/` | Scans, ClamD protocol/lifecycle, health checks, updates, database handling and quarantine |
-| `backends/` | Platform runtime detection, paths, processes and installation guidance |
+| `core/` | Scans, ClamD protocol/lifecycle, health checks, updates, database handling, quarantine and firewall rule validation |
+| `backends/` | Platform runtime detection, paths, processes, firewall commands/authorization and installation guidance |
 | `scanner.py` | File collection, commands and ClamAV output parsing |
 | `excludes.py` | Shared matching and ClamAV regex arguments |
 | `tests/` | Core, socket-protocol, launcher and Qt workflow regressions |
@@ -43,7 +43,8 @@ QT_QPA_PLATFORM=offscreen python -m unittest discover -s tests -v
 Qt tests require PySide6 and platform libraries; otherwise those tests are
 skipped and core tests still run. Protocol tests use a local test server with
 real socket framing, parallel requests, ownership checks and large-file handling.
-GUI installation/update operations are simulated. The suite does not download
+GUI installation/update and firewall mutation operations are simulated. Automated
+tests never enable the host firewall or modify its rules. The suite does not download
 ClamAV or benchmark real antivirus scans.
 
 ## Release smoke checks
@@ -59,6 +60,8 @@ Verify on Windows and a desktop Linux installation:
 - Large files, changing/inaccessible files, cancellation, progress and reports.
 - Navigation away from an active scan and the sidebar activity indicator.
 - Confirmed quarantine/restore/delete, including an occupied restore destination.
+- Linux firewall detection, cancelled authorization, activation and LAN/all-address rules
+  in a disposable VM. Verify matching traffic and UFW/firewalld persistence.
 - Themes, exclusions and reopening resized or maximized windows.
 
 The [README screenshot](../assets/libreward.png) is stored at

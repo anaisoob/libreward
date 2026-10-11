@@ -12,6 +12,11 @@ import re
 from backends import backend
 
 
+def mandatory_exclude_patterns():
+    """Quarantined files must not be rediscovered as active threats."""
+    return [os.path.abspath(backend.quarantine_dir())]
+
+
 def get_common_excludes() -> dict[str, list[str]]:
     """Return the platform-appropriate common excludes from the backend."""
     return backend.default_common_excludes()
@@ -22,7 +27,7 @@ def get_active_exclude_patterns(
 ) -> list[str]:
     """Build a flat list of active exclude patterns from enabled common + user excludes."""
     common = get_common_excludes()
-    patterns: list[str] = []
+    patterns: list[str] = mandatory_exclude_patterns()
 
     for label in enabled_common_excludes:
         patterns.extend(common.get(label, []))

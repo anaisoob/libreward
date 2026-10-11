@@ -5,6 +5,7 @@ import re
 
 from backends import backend
 from excludes import path_is_excluded, build_clamscan_exclude_args
+from core.scan_policy import scan_limits
 
 
 def collect_files(scan_roots, exclude_patterns, check_stop):
@@ -52,7 +53,45 @@ def collect_files(scan_roots, exclude_patterns, check_stop):
     return files
 
 
-def build_clamscan_command(scan_roots, exclude_patterns, clamscan_path=None):
+def normalize_scan_roots(scan_roots):
+    """Remove duplicate/overlapping roots without storing every file path."""
+    roots = [scan_roots] if isinstance(scan_roots, str) else scan_roots
+    unique = []
+    for root in sorted({os.path.abspath(root) for root in roots}, key=len):
+        if any(os.path.normcase(root) == os.path.normcase(parent) or
+               os.path.normcase(root).startswith(os.path.normcase(parent).rstrip(os.sep) + os.sep)
+               for parent in unique):
+            continue
+        unique.append(root)
+    return unique
+
+
+def iter_scan_files(scan_roots, exclude_patterns, check_stop):
+    """Discover files lazily, pruning overlapping roots without a file-sized set."""
+    unique = [root for root in normalize_scan_roots(scan_roots)
+              if os.path.isdir(root) and not path_is_excluded(root, exclude_patterns)]
+    pending = list(reversed(unique))
+    while pending and not check_stop():
+        folder = pending.pop()
+        try:
+            with os.scandir(folder) as entries:
+                for entry in entries:
+                    if check_stop():
+                        return
+                    if path_is_excluded(entry.path, exclude_patterns):
+                        continue
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            pending.append(entry.path)
+                        elif entry.is_file():
+                            yield entry.path
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+
+
+def build_clamscan_command(scan_roots, exclude_patterns, clamscan_path=None, *, scan_profile='standard'):
     """Build the clamscan command-line argument list.
 
     *scan_roots* may be a single path string or a list of path strings.
@@ -73,6 +112,9 @@ def build_clamscan_command(scan_roots, exclude_patterns, clamscan_path=None):
         "--verbose",
         "--scan-archive=yes",
         "--alert-encrypted=yes",
+        '--alert-exceeds-max=yes',
+        f'--max-filesize={scan_limits(scan_profile).file_size}',
+        f'--max-scansize={scan_limits(scan_profile).scan_size}',
     ]
 
     # Only pass --database on platforms that manage their own DB (Windows).
@@ -83,7 +125,7 @@ def build_clamscan_command(scan_roots, exclude_patterns, clamscan_path=None):
             cmd.append(f"--database={str(db_dir.resolve())}")
 
     cmd.extend(build_clamscan_exclude_args(exclude_patterns))
-    for root in scan_roots:
+    for root in normalize_scan_roots(scan_roots):
         cmd.append(os.path.abspath(root))
 
     return cmd

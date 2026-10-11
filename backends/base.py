@@ -193,3 +193,18 @@ class PlatformBackend(ABC):
             listener.bind(("127.0.0.1", 0))
             port = listener.getsockname()[1]
         return ("tcp", ("127.0.0.1", port)), ["TCPAddr 127.0.0.1", f"TCPSocket {port}"]
+
+    def inspect_firewall(self, *, privileged=False, tool_name=None):
+        """Read firewall state without changing rules or requesting privileges."""
+        from core.firewall import FirewallSnapshot
+        return FirewallSnapshot()
+
+    def firewall_change_preview(self, tool_name, *, rule=None, enabled=True):
+        raise NotImplementedError('Firewall changes are not available on this platform.')
+
+    def change_firewall(self, tool_name, *, rule=None, enabled=True):
+        raise NotImplementedError('Firewall changes are not available on this platform.')
+
+    def firewall_networks(self):
+        """Connected LAN candidates as (interface, CIDR) pairs."""
+        return []

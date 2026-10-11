@@ -11,7 +11,7 @@ from unittest.mock import patch
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 try:
     from PySide6.QtCore import QEvent
-    from PySide6.QtWidgets import QApplication, QDialog, QTableWidgetItem
+    from PySide6.QtWidgets import QApplication, QDialog, QMessageBox, QTableWidgetItem
     from ui.main_window import QtMainWindow
     from ui.dialogs import UpdateProgressDialog
     QT_AVAILABLE = True
@@ -79,6 +79,166 @@ class QtFrontendTests(unittest.TestCase):
         self.assertTrue(self.window.scan_button.isEnabled())
         self.assertTrue(self.window.database_button.isEnabled())
         self.assertIn('Database ready', self.window.runtime_info.toPlainText())
+
+    def test_firewall_refresh_prefers_active_tool_and_switches_rules(self):
+        from core.firewall import FirewallSnapshot, FirewallTool
+        snapshot = FirewallSnapshot(True, [
+            FirewallTool('UFW', 'Inactive', 'saved UFW rules', 'sudo ufw status verbose'),
+            FirewallTool('firewalld', 'Running', 'runtime zones', 'sudo firewall-cmd --list-all-zones'),
+        ], 'Read-only inspection')
+        query = self.patch('ui.main_window.backend.inspect_firewall', return_value=snapshot)
+        self.window.switch_page('firewall')
+        self.wait_idle()
+        query.assert_called_once()
+        self.assertEqual(self.window.firewall_tools.currentText(), 'firewalld')
+        self.assertIn('runtime zones', self.window.firewall_rules.toPlainText())
+        self.window.firewall_tools.setCurrentIndex(0)
+        self.assertIn('Inactive', self.window.firewall_status.text())
+        self.assertEqual(self.window.firewall_status.property('severity'), 'danger')
+        self.assertIn('saved UFW rules', self.window.firewall_rules.toPlainText())
+
+    def test_firewall_auto_check_is_cached_and_refresh_button_is_removed(self):
+        from core.firewall import FirewallSnapshot
+        query = self.patch('ui.main_window.backend.inspect_firewall', return_value=FirewallSnapshot(True))
+        self.window.switch_page('firewall')
+        self.wait_idle()
+        self.window.switch_page('scan')
+        self.window.switch_page('firewall')
+        self.window.poll_events()
+        query.assert_called_once()
+        from PySide6.QtWidgets import QPushButton
+        page = self.window.pages.widget(self.window.page_indices['firewall'])
+        self.assertNotIn('Refresh', [button.text() for button in page.findChildren(QPushButton)])
+
+    def test_firewall_auto_check_waits_for_running_operation(self):
+        from core.firewall import FirewallSnapshot
+        release = threading.Event()
+        self.addCleanup(release.set)
+        query = self.patch('ui.main_window.backend.inspect_firewall', return_value=FirewallSnapshot(True))
+        self.window.start_task('scan', lambda: release.wait(2))
+        self.window.switch_page('firewall')
+        query.assert_not_called()
+        self.assertTrue(self.window.firewall_refresh_pending)
+        release.set()
+        self.wait_idle()
+        query.assert_called_once()
+        self.assertIsNotNone(self.window.firewall_snapshot)
+
+    def test_deferred_firewall_check_does_not_run_after_leaving_page(self):
+        from core.firewall import FirewallSnapshot
+        release = threading.Event()
+        self.addCleanup(release.set)
+        query = self.patch('ui.main_window.backend.inspect_firewall', return_value=FirewallSnapshot(True))
+        self.window.start_task('scan', lambda: release.wait(2))
+        self.window.switch_page('firewall')
+        self.window.switch_page('scan')
+        release.set()
+        self.wait_idle()
+        query.assert_not_called()
+        self.window.switch_page('firewall')
+        self.wait_idle()
+        query.assert_called_once()
+
+    def test_firewall_authorization_updates_only_selected_tool(self):
+        from core.firewall import FirewallSnapshot, FirewallTool
+        original = FirewallSnapshot(True, [
+            FirewallTool('UFW', 'Inactive', 'ufw rules', 'sudo ufw status verbose'),
+            FirewallTool('nftables', 'Unknown', 'denied', 'sudo nft list ruleset'),
+        ], 'Read only')
+        self.window.apply_firewall_snapshot(original)
+        self.window.firewall_tools.setCurrentIndex(1)
+        result = FirewallSnapshot(True, [FirewallTool('nftables', 'Rules present', 'nft rules', 'sudo nft list ruleset')], 'Read only')
+        query = self.patch('ui.main_window.backend.inspect_firewall', return_value=result)
+        self.window.authorize_firewall()
+        self.wait_idle()
+        query.assert_called_once_with(privileged=True, tool_name='nftables')
+        self.assertEqual(self.window.firewall_tools.count(), 2)
+        self.assertEqual(self.window.firewall_tools.currentText(), 'nftables')
+        self.assertIn('nft rules', self.window.firewall_rules.toPlainText())
+
+    def test_firewall_enable_cancel_does_not_run_command(self):
+        from core.firewall import FirewallSnapshot, FirewallTool
+        self.window.apply_firewall_snapshot(FirewallSnapshot(True, [FirewallTool('UFW', 'Inactive', '', '')]))
+        self.assertTrue(self.window.firewall_enable_button.isEnabled())
+        change = self.patch('ui.main_window.backend.change_firewall')
+        self.patch('ui.main_window.QMessageBox.question', return_value=QMessageBox.StandardButton.No)
+        self.window.enable_firewall()
+        change.assert_not_called()
+
+    def test_firewall_enable_confirmed_refreshes_state_and_toggle(self):
+        from core.firewall import FirewallSnapshot, FirewallTool
+        self.window.apply_firewall_snapshot(FirewallSnapshot(True, [FirewallTool('UFW', 'Inactive', 'old rules', '')]))
+        from core.firewall import FirewallChangeResult
+        refreshed = FirewallSnapshot(True, [FirewallTool('UFW', 'Active', 'new rules', '')])
+        change = self.patch('ui.main_window.backend.change_firewall', return_value=FirewallChangeResult(True, 'Firewall is active', refreshed))
+        self.patch('ui.main_window.QMessageBox.question', return_value=QMessageBox.StandardButton.Yes)
+        self.window.enable_firewall()
+        self.wait_idle()
+        change.assert_called_once_with('UFW', rule=None, enabled=True)
+        self.assertIn('Change completed', self.window.firewall_change_result.text())
+        self.assertIn('Active', self.window.firewall_status.text())
+        self.assertIn('new rules', self.window.firewall_rules.toPlainText())
+        self.assertEqual(self.window.firewall_enable_button.text(), 'Disable firewall')
+        self.assertTrue(self.window.firewall_enable_button.isEnabled())
+
+    def test_firewall_disable_refreshes_state_and_toggle(self):
+        from core.firewall import FirewallChangeResult, FirewallSnapshot, FirewallTool
+        self.window.apply_firewall_snapshot(FirewallSnapshot(True, [FirewallTool('UFW', 'Active', '', '')]))
+        result = FirewallChangeResult(True, 'Firewall stopped', FirewallSnapshot(True, [FirewallTool('UFW', 'Inactive', 'Status: inactive', '')]))
+        change = self.patch('ui.main_window.backend.change_firewall', return_value=result)
+        self.patch('ui.main_window.QMessageBox.question', return_value=QMessageBox.StandardButton.Yes)
+        self.window.enable_firewall()
+        self.wait_idle()
+        change.assert_called_once_with('UFW', rule=None, enabled=False)
+        self.assertEqual(self.window.firewall_enable_button.text(), 'Enable firewall')
+        self.assertEqual(self.window.firewall_status.property('severity'), 'danger')
+
+    def test_unverified_firewall_change_does_not_show_old_state_as_current(self):
+        from core.firewall import FirewallSnapshot, FirewallTool
+        self.window.apply_firewall_snapshot(FirewallSnapshot(True, [FirewallTool('UFW', 'Inactive', 'old rules', '')]))
+        self.patch('ui.main_window.backend.change_firewall', side_effect=RuntimeError('Timed out'))
+        self.window.run_firewall_change('UFW')
+        self.wait_idle()
+        self.assertIn('Unknown', self.window.firewall_status.text())
+        self.assertFalse(self.window.firewall_enable_button.isEnabled())
+        self.assertIn('Previous snapshot', self.window.firewall_rules.toPlainText())
+
+    def test_firewall_rule_dialog_prefills_and_switches_detected_network(self):
+        from ui.firewall_dialog import FirewallRuleDialog
+        dialog = FirewallRuleDialog(self.window, 'UFW', networks=[('eth0', '192.168.8.0/23'), ('wlan0', '10.0.0.0/24')])
+        self.assertEqual(dialog.subnet.text(), '192.168.8.0/23')
+        dialog.detected_networks.setCurrentIndex(1)
+        self.assertEqual(dialog.subnet.text(), '10.0.0.0/24')
+        dialog.direction.setCurrentIndex(dialog.direction.findData('both'))
+        dialog.port.setText('443')
+        self.assertEqual(dialog.rule().direction, 'both')
+        dialog.deleteLater()
+
+    def test_raw_firewall_tool_cannot_be_changed_and_busy_disables_actions(self):
+        from core.firewall import FirewallSnapshot, FirewallTool
+        self.window.apply_firewall_snapshot(FirewallSnapshot(True, [FirewallTool('nftables', 'Rules present', '', '')]))
+        self.assertFalse(self.window.firewall_add_button.isEnabled())
+        self.assertFalse(self.window.firewall_enable_button.isEnabled())
+        self.window.apply_firewall_snapshot(FirewallSnapshot(True, [FirewallTool('UFW', 'Inactive', '', '')]))
+        self.window.set_busy('firewall-change')
+        self.assertFalse(self.window.firewall_add_button.isEnabled())
+        self.assertFalse(self.window.firewall_tools.isEnabled())
+        self.window.set_busy(None)
+        self.assertTrue(self.window.firewall_add_button.isEnabled())
+
+    def test_firewall_rule_dialog_lan_and_internet_are_distinct(self):
+        from ui.firewall_dialog import FirewallRuleDialog
+        dialog = FirewallRuleDialog(self.window, 'UFW')
+        dialog.port.setText('22')
+        with self.assertRaises(ValueError):
+            dialog.rule()
+        dialog.subnet.setText('192.168.5.42/24')
+        self.assertEqual(dialog.rule().subnet, '192.168.5.0/24')
+        dialog.scope.setCurrentIndex(1)
+        self.assertFalse(dialog.subnet.isEnabled())
+        self.assertEqual(dialog.rule().subnet, '')
+        self.assertIn('including both LAN and Internet', dialog.hint.text())
+        dialog.deleteLater()
 
     def test_navigation_keeps_operation_locked(self):
         release = threading.Event()
@@ -191,8 +351,38 @@ class QtFrontendTests(unittest.TestCase):
              patch.object(self.window, 'update_database') as update_db:
             self.window.confirm_runtime_update({'latest_version': '1.5.2'})
             self.wait_idle()
+            update_db.assert_not_called()
+            dialog = self.window.findChildren(UpdateProgressDialog)[-1]
+            self.assertTrue(dialog.isVisible())
+            self.assertFalse(dialog.active)
+            dialog.accept()
         install.assert_called_once()
         update_db.assert_called_once_with(confirm=False)
+
+    def test_successful_update_remains_open_until_acknowledged(self):
+        from unittest.mock import Mock
+        callback = Mock()
+        self.window.start_task('database', lambda: 'result', on_done=callback,
+                               title='Update virus database')
+        self.wait_idle()
+        dialog = self.window.findChildren(UpdateProgressDialog)[-1]
+        self.assertTrue(dialog.isVisible())
+        self.assertTrue(dialog.close_button.isEnabled())
+        self.assertIn('successfully', dialog.status.text())
+        callback.assert_not_called()
+        dialog.close()
+        callback.assert_called_once_with('result')
+
+    def test_failed_update_remains_open_with_error(self):
+        def fail():
+            raise RuntimeError('Download failed')
+        self.window.start_task('database', fail, title='Update virus database')
+        self.wait_idle()
+        dialog = self.window.findChildren(UpdateProgressDialog)[-1]
+        self.assertTrue(dialog.isVisible())
+        self.assertIn('failed', dialog.status.text())
+        self.assertIn('Download failed', dialog.log.toPlainText())
+        dialog.accept()
 
     def test_quarantine_and_restore_round_trip_through_qt(self):
         import core.quarantine as quarantine_core
@@ -231,6 +421,18 @@ class QtFrontendTests(unittest.TestCase):
         self.window.poll_events()
         self.assertEqual(self.window.progress.value(), 99)
         self.assertEqual(self.window.status.text(), 'Infected files found!')
+
+    def test_discovery_shows_counts_then_switches_to_percentage(self):
+        self.window.events.put(('__DISCOVERY__', 2000, 500, False, 6))
+        self.window.poll_events()
+        self.assertEqual(self.window.progress.maximum(), 0)
+        self.assertEqual(self.window.percent.text(), 'Scanning…')
+        self.assertIn('2,000', self.window.summary.text())
+        self.assertIn('Scanning files as they are found', self.window.status.text())
+        self.window.events.put(('__DISCOVERY__', 2000, 500, True, 7))
+        self.window.poll_events()
+        self.assertEqual(self.window.progress.maximum(), 100)
+        self.assertEqual(self.window.percent.text(), '25%')
 
     def test_active_progress_dialog_cannot_be_dismissed(self):
         dialog = UpdateProgressDialog(self.window, 'Update')

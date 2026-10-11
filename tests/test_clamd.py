@@ -154,7 +154,7 @@ class ClamdTests(unittest.TestCase):
         backend.scan_may_need_admin.return_value = False
         service = ScanService()
         with patch('core.scan_service.backend', backend), \
-             patch('core.scan_service.collect_files', return_value=['file']), \
+             patch('core.file_discovery.iter_scan_files', side_effect=lambda *args: iter(['file'])), \
              patch('core.scan_service._first_database_dir', return_value=None), \
              patch('core.scan_service.scan_file', side_effect=OSError('connection lost')):
             service.run('root', [], 'clamscan', parallel=True)
@@ -205,7 +205,7 @@ class ClamdTests(unittest.TestCase):
         backend.start_process.return_value = process
         service = ScanService()
         with patch('core.scan_service.backend', backend), \
-             patch('core.scan_service.collect_files', return_value=['file']), \
+             patch('core.file_discovery.iter_scan_files', side_effect=lambda *args: iter(['file'])), \
              patch('core.scan_service._first_database_dir', return_value=None), \
              patch('core.scan_service.build_clamscan_command', return_value=['clamscan']):
             service.run('root', [], 'clamscan', parallel=True)

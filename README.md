@@ -2,13 +2,15 @@
 
 LibreWard is a security and privacy desktop application for Linux and Windows,
 built with Python and PySide6 / Qt. It provides antivirus scanning through
-ClamAV, with firewall, internet monitoring and DNS/privacy tools planned
-for future releases.
+ClamAV and Linux firewall management. Internet monitoring and
+DNS/privacy tools are planned for future releases.
 
 ![LibreWard Virus scan page in the dark theme](assets/libreward.png)
 
 ## Features
 
+- Linux firewall detection, rule inspection and UFW installation guidance.
+- Confirmed UFW/firewalld activation, automatic status refresh and LAN or all-address rules.
 - Folder scans and Quick system scans with configurable exclusions.
 - Parallel scanning with `clamd` and standard scanning with `clamscan`.
 - Live progress, current-file information, cancellation and scan reports.
@@ -50,8 +52,10 @@ parallel scanning. See the [setup guide](docs/setup.md) for details.
 
 ## Documentation
 
+- [Release notes](CHANGELOG.md)
 - [Documentation index](docs/README.md)
 - [Setup, updates and data locations](docs/setup.md)
+- [Linux firewall setup and rules](docs/firewall.md)
 - [Scanning, exclusions and results](docs/scanning.md)
 - [Development, tests and release checks](docs/development.md)
 

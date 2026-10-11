@@ -29,6 +29,7 @@ def stylesheet(dark):
     QLabel#muted {{ color: {c['muted']}; font-size: 12px; }}
     QLabel#statusValue {{ font-size: 16px; font-weight: 600; }}
     QLabel#statusValue[severity="danger"] {{ color: {'#f0a5a5' if dark else '#a33232'}; }}
+    QLabel#statusValue[severity="success"] {{ color: {c['accent']}; }}
     QLabel#statusValue[severity="warning"] {{ color: {'#dfbf79' if dark else '#856311'}; }}
     QLabel#sidebarStatus[ready="false"] {{ color: {'#dfbf79' if dark else '#856311'}; }}
     QLabel#currentFile {{ font-size: 12px; }}

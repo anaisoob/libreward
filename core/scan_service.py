@@ -9,22 +9,27 @@ import time
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 
 from core.clamd import ClamdSession, ScanCancelled, FileScanWarning, scan_file
+from core.file_discovery import FileDiscovery
+from core.scan_policy import scan_limits
+from core.scan_warnings import WarningSummary, alert_warning, clean_reason
+from excludes import mandatory_exclude_patterns
 
 from backends import backend
-from scanner import (collect_files, build_clamscan_command,
+from scanner import (build_clamscan_command,
                      parse_clamscan_result_line, should_log_line,
                      parse_clamscan_summary_value, _first_database_dir)
 
 
 class ScanService:
-    def __init__(self, output_queue=None):
+    def __init__(self, output_queue=None, *, scan_profile='standard'):
         self.output_queue = output_queue if output_queue is not None else queue.Queue()
         self._stop = threading.Event()
         self.process = None
-        self.counted_files = set()
         self.scanned_files = 0
         self.summary_started = False
         self.result = None
+        self.scan_profile = scan_profile
+        self.warning_summary = WarningSummary()
 
     @property
     def stop_requested(self):
@@ -49,36 +54,17 @@ class ScanService:
         total = 0
         scan_summary_lines: list[str] = []
         clamav_scanned_files = None
+        clamav_alert_count = None
+        non_threat_alerts = 0
         admin_hint = backend.scan_may_need_admin(scan_root)
         daemon = None
         used_parallel = False
+        discovery = None
 
         try:
-            self.output_queue.put("Counting files before scan...\n")
-            self.output_queue.put(("__STATUS__", "counting files"))
-            self.output_queue.put(("__ACTIVITY__", "Activity: counting files..."))
-
-            files = collect_files(
-                scan_root, exclude_patterns, lambda: self.stop_requested
-            )
-            files = list(dict.fromkeys(files))
-            known_files = set(files)
-            total = len(files)
-
-            self.output_queue.put(("__SET_TOTAL__", total))
-
-            if self.stop_requested:
-                self.output_queue.put("\nScan stopped while counting files.\n")
-                return
-
-            if total == 0:
-                self.output_queue.put("No files found.\n")
-                return
-
-            self.output_queue.put(f"Files to scan: {total}\n\n")
-
+            exclude_patterns = list(dict.fromkeys([*exclude_patterns, *mandatory_exclude_patterns()]))
             if parallel:
-                daemon = ClamdSession(backend)
+                daemon = ClamdSession(backend, self.scan_profile)
                 self.output_queue.put(("__STATUS__", "Preparing parallel scanner…"))
                 try:
                     endpoint = daemon.acquire(clamscan_path, _first_database_dir(),
@@ -92,12 +78,30 @@ class ScanService:
                 else:
                     used_parallel = True
                     source = 'existing' if daemon.reused else 'LibreWard-managed'
-                    self.output_queue.put(f"Parallel scan: {source} clamd, up to 4 files at once.\n")
+                    self.output_queue.put(f"Parallel scan: {source} clamd, up to {scan_limits(self.scan_profile).workers} files at once.\n")
+                    if daemon.reused and self.scan_profile == 'extended':
+                        self.output_queue.put('Existing clamd retains its configured scan limits. Use standard scanning to apply LibreWard large-file limits.\n')
                     self.output_queue.put(("__STATUS__", "scanning in parallel"))
                     self.output_queue.put(("__ACTIVITY__", "Activity: parallel scanning…"))
                     started = time.monotonic()
-                    infected, warnings_found, errors_found = self._run_parallel(
-                        files, endpoint, direct=not daemon.reused)
+                    self.output_queue.put('Counting independently while scanning (scan queue limited to 256 files)...\n')
+                    discovery = FileDiscovery(scan_root, exclude_patterns,
+                                              lambda: self.stop_requested,
+                                              lambda event: None, lambda: self.scanned_files)
+                    counter = FileDiscovery(scan_root, exclude_patterns,
+                                            lambda: self.stop_requested,
+                                            self.output_queue.put, lambda: self.scanned_files,
+                                            count_only=True)
+                    self.progress_counter = counter
+                    try:
+                        with counter, discovery:
+                            infected, warnings_found, errors_found = self._run_parallel(
+                                discovery, endpoint, direct=not daemon.reused)
+                            counter.finish()
+                    finally:
+                        self.progress_counter = None
+                    total = discovery.total
+                    self.output_queue.put(('__SET_TOTAL__', total))
                     infected_found = bool(infected)
                     clamav_scanned_files = self.scanned_files
                     if not self.stop_requested:
@@ -114,8 +118,19 @@ class ScanService:
                         self.output_queue.put(line)
                     return
 
+            self.output_queue.put('Counting files alongside standard scanning...\n')
+            discovery = FileDiscovery(scan_root, exclude_patterns,
+                                      lambda: self.stop_requested,
+                                      self.output_queue.put, lambda: self.scanned_files,
+                                      count_only=True)
+            discovery.__enter__()
+            known_files = set()
+            if self.stop_requested:
+                return
+
             cmd = build_clamscan_command(
-                scan_root, exclude_patterns, clamscan_path=clamscan_path
+                scan_root, exclude_patterns, clamscan_path=clamscan_path,
+                scan_profile=self.scan_profile,
             )
 
             self.output_queue.put(
@@ -149,16 +164,21 @@ class ScanService:
                     )
 
                     if file_path:
-                        if file_path not in self.counted_files:
-                            self.counted_files.add(file_path)
-                            self.scanned_files += 1
+                        self.scanned_files += 1
 
                         self.output_queue.put(("__CURRENT_FILE__", file_path))
-                        self.output_queue.put(
-                            ("__PROGRESS__", self.scanned_files, total, False)
-                        )
+                        if discovery.done.is_set():
+                            self.output_queue.put(("__PROGRESS__", self.scanned_files, discovery.total, False))
+                        else:
+                            discovery.notify()
 
-                        if "FOUND" in status:
+                        category = alert_warning(status)
+                        if category:
+                            non_threat_alerts += 1
+                            warnings_found = True
+                            self.warning_summary.add(file_path, status, category)
+                            self.output_queue.put(f'{file_path}: {clean_reason(status)} WARNING\n')
+                        elif "FOUND" in status:
                             infected_found = True
                             infected.append((file_path, status))
                             self.output_queue.put(line)
@@ -166,7 +186,8 @@ class ScanService:
                         elif "ERROR" in status:
                             warnings_found = True
                             file_warning_found = True
-                            self.output_queue.put(line)
+                            self.warning_summary.add(file_path, status)
+                            self.output_queue.put(f'{file_path}: {clean_reason(status)} WARNING\n')
 
                         continue
 
@@ -181,8 +202,11 @@ class ScanService:
                             ))
                             if access_problem:
                                 file_warning_found = True
+                                self.warning_summary.add('', line)
                             elif "ERROR" in line:
                                 fatal_output_found = True
+                            elif 'WARNING' in line:
+                                self.warning_summary.add('', line)
                         self.output_queue.put(line)
                         if self.summary_started:
                             scan_summary_lines.append(line)
@@ -191,17 +215,25 @@ class ScanService:
                             )
                             if summary_scanned is not None:
                                 clamav_scanned_files = summary_scanned
+                            summary_alerts = parse_clamscan_summary_value(line, 'Infected files')
+                            if summary_alerts is not None:
+                                clamav_alert_count = summary_alerts
 
             if self.process is not None:
                 return_code = self.process.wait()
             else:
                 return_code = 2
 
+            discovery.finish()
+            total = discovery.total
+            self.output_queue.put(('__SET_TOTAL__', total))
+
             if not self.stop_requested and return_code in (0, 1):
                 self.output_queue.put(("__PROGRESS__", total, total, True))
 
             if return_code == 1:
-                infected_found = True
+                if infected or not non_threat_alerts or clamav_alert_count is None or clamav_alert_count > non_threat_alerts:
+                    infected_found = True
             elif return_code != 0 and not self.stop_requested:
                 # Per-file access failures with a scan summary remain warnings.
                 if return_code == 2 and file_warning_found and self.summary_started and not fatal_output_found:
@@ -237,6 +269,9 @@ class ScanService:
             errors_found = True
             self.output_queue.put(f"ERROR: {e}\n")
         finally:
+            if discovery is not None:
+                discovery.__exit__()
+                total = discovery.total
             if daemon is not None:
                 try:
                     daemon.close()
@@ -270,6 +305,11 @@ class ScanService:
                 "admin_hint": admin_hint,
                 "summary_lines": scan_summary_lines,
                 "parallel": used_parallel,
+                'warning_counts': dict(self.warning_summary.counts),
+                'warning_details': self.warning_summary.details,
+                'warning_count': sum(self.warning_summary.counts.values()),
+                'scan_profile': self.scan_profile,
+                'uses_system_daemon': bool(daemon and daemon.reused),
             }
             self.result = result
             self.output_queue.put(("__SCAN_DONE__", result))
@@ -279,11 +319,12 @@ class ScanService:
         infected, warnings, errors = [], False, False
         self.parallel_warnings = self.parallel_errors = 0
         paths = iter(files)
-        with ThreadPoolExecutor(max_workers=4, thread_name_prefix='clamd-scan') as pool:
+        workers = scan_limits(self.scan_profile).workers
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix='clamd-scan') as pool:
             pending = {}
 
             def submit():
-                while len(pending) < 4 and not self.stop_requested:
+                while len(pending) < workers and not self.stop_requested:
                     path = next(paths, None)
                     if path is None:
                         break
@@ -303,23 +344,33 @@ class ScanService:
                     except (PermissionError, FileNotFoundError, IsADirectoryError, FileScanWarning) as exc:
                         warnings = True
                         self.parallel_warnings += 1
-                        self.output_queue.put(f"{path}: {exc} WARNING\n")
+                        self.warning_summary.add(path, str(exc))
+                        self.output_queue.put(f"{path}: {clean_reason(exc)} WARNING\n")
                     except OSError as exc:
                         # A transport or stream-limit failure is never a clean scan.
                         errors = True
                         self.parallel_errors += 1
                         self.output_queue.put(f"{path}: {exc} ERROR\n")
                     else:
-                        if status.startswith('Heuristics.Limits.Exceeded'):
+                        category = alert_warning(status)
+                        if category:
                             warnings = True
                             self.parallel_warnings += 1
-                            self.output_queue.put(f"{path}: scan limit reached; file was not fully checked WARNING\n")
+                            self.warning_summary.add(path, status, category)
+                            reason = 'scan limit reached; file was not fully checked' if category == 'limits' else 'encrypted contents could not be checked'
+                            self.output_queue.put(f"{path}: {reason} WARNING\n")
                         elif status.endswith(' FOUND'):
                             infected.append((path, status))
                             self.output_queue.put(f"{path}: {status}\n")
                     self.scanned_files += 1
                     self.output_queue.put(("__CURRENT_FILE__", path))
-                    self.output_queue.put(("__PROGRESS__", self.scanned_files, len(files), False))
+                    progress = getattr(self, 'progress_counter', None)
+                    if progress is None:
+                        progress = files
+                    if isinstance(progress, FileDiscovery) and not progress.done.is_set():
+                        progress.notify()
+                    else:
+                        self.output_queue.put(("__PROGRESS__", self.scanned_files, len(progress), False))
                 submit()
         return infected, warnings, errors
 
@@ -333,5 +384,5 @@ def scan_outcome(result):
     if result.get("errors"):
         return "Scan failed"
     if result.get("warnings"):
-        return "Scan completed with warnings"
+        return "Scan completed — some files could not be fully checked"
     return "No threats found"
