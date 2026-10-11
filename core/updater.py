@@ -100,7 +100,7 @@ def get_platform_entry(manifest: dict) -> dict | None:
 
 # ── update check ────────────────────────────────────────────────────
 
-def check_for_updates(log: Callable[[str], None] | None = None) -> dict | None:
+def check_for_updates(log: Callable[[str], None] | None = None, *, repair=False) -> dict | None:
     """Check if a ClamAV runtime update is available.
 
     Only works on platforms that manage their own runtime (Windows).
@@ -141,13 +141,15 @@ def check_for_updates(log: Callable[[str], None] | None = None) -> dict | None:
         log(f"Current ClamAV: {current_ver or 'unknown'}\n")
         log(f"Latest ClamAV:  {latest_ver}\n")
 
-    if current_ver and latest_ver and not is_newer_version(latest_ver, current_ver):
+    if current_ver and latest_ver and not is_newer_version(latest_ver, current_ver) and not (
+        repair and _version_tuple(latest_ver) == _version_tuple(current_ver)
+    ):
         if log:
             log("ClamAV runtime is up to date.\n")
         return None
 
     if log:
-        log("Update available.\n")
+        log("Runtime repair available.\n" if repair and current_ver == latest_ver else "Update available.\n")
 
     return platform_entry
 

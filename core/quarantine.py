@@ -17,7 +17,7 @@ import stat
 import subprocess
 import sys
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from backends import backend
 
@@ -32,15 +32,19 @@ def list_quarantined_files() -> list[dict]:
     for meta_path in sorted(qdir.glob("*.json")):
         try:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError, UnicodeError):
             continue
 
+        if not isinstance(meta, dict) or meta_path.is_symlink():
+            continue
         quarantine_name = meta.get("quarantine_name")
         if not isinstance(quarantine_name, str) or not quarantine_name:
             quarantine_name = meta_path.stem
 
-        qpath = qdir / quarantine_name
-        if not qpath.is_file():
+        qpath = _quarantine_path(qdir, quarantine_name)
+        if meta_path.name != quarantine_name + ".json":
+            continue
+        if qpath is None or not qpath.is_file():
             continue
 
         meta["quarantine_name"] = quarantine_name
@@ -66,7 +70,7 @@ def quarantine_file(original_path: str, threat_name: str) -> str:
     if not src.exists():
         return f"File not found: {original_path}"
 
-    if not src.is_file():
+    if src.is_symlink() or not src.is_file():
         return f"Not a regular file: {original_path}"
 
     qdir = backend.quarantine_dir()
@@ -79,32 +83,34 @@ def quarantine_file(original_path: str, threat_name: str) -> str:
     qname = f"{unique}_{safe_suffix}"
     dest = qdir / qname
 
+    # Persist restore information before moving anything. If metadata cannot
+    # be saved, leave the original file untouched.
+    meta_path = qdir / (qname + ".json")
+    try:
+        meta = {
+            "schema_version": 1,
+            "original_path": str(src.absolute()),
+            "original_mode": stat.S_IMODE(src.stat().st_mode),
+            "threat_name": threat_name,
+            "quarantined_at": ts,
+            "original_size": src.stat().st_size,
+            "quarantine_name": qname,
+        }
+        meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    except OSError as exc:
+        meta_path.unlink(missing_ok=True)
+        return f"Cannot quarantine: cannot save restore metadata: {exc}"
+
     try:
         shutil.move(str(src), str(dest))
-    except (OSError, PermissionError) as exc:
+    except OSError as exc:
+        meta_path.unlink(missing_ok=True)
         return f"Cannot quarantine: {exc}"
 
-    # Strip permissions — make non-executable, read-only
     try:
         _strip_permissions(dest)
     except OSError:
-        pass  # best-effort
-
-    # Write metadata
-    meta = {
-        "schema_version": 1,
-        "original_path": str(src.resolve()),
-        "threat_name": threat_name,
-        "quarantined_at": ts,
-        "original_size": _file_size(dest),
-        "quarantine_name": qname,
-    }
-
-    meta_path = qdir / f"{unique}_{safe_suffix}.json"
-    try:
-        meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
-    except OSError:
-        pass  # file is already moved, this is non-critical
+        pass  # best-effort; metadata still allows restoration
 
     return f"Quarantined: {original_path}"
 
@@ -136,7 +142,9 @@ def restore_file(quarantine_name: str, *, overwrite: bool = False) -> str:
     *quarantine_name* is the name of the quarantined file (not the .json).
     """
     qdir = backend.quarantine_dir()
-    qpath = qdir / quarantine_name
+    qpath = _quarantine_path(qdir, quarantine_name)
+    if qpath is None:
+        return "Invalid quarantine name or path"
 
     if not qpath.exists():
         return f"Quarantined file not found: {quarantine_name}"
@@ -148,10 +156,17 @@ def restore_file(quarantine_name: str, *, overwrite: bool = False) -> str:
 
     try:
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, OSError, UnicodeError):
         return f"Corrupt metadata for: {quarantine_name}"
 
-    original = Path(meta.get("original_path", ""))
+    if not isinstance(meta, dict) or not isinstance(meta.get("original_path"), str):
+        return f"Corrupt metadata for: {quarantine_name}"
+    original = Path(meta["original_path"])
+    if not original.is_absolute():
+        return f"Invalid original location: {original}"
+    mode = meta.get("original_mode", stat.S_IRUSR | stat.S_IWUSR)
+    if not isinstance(mode, int) or not 0 <= mode <= 0o7777:
+        return f"Corrupt metadata for: {quarantine_name}"
     if not original.parent.exists():
         return f"Original location no longer exists: {original}"
     if original.exists() and not overwrite:
@@ -163,7 +178,7 @@ def restore_file(quarantine_name: str, *, overwrite: bool = False) -> str:
         if original.exists() and overwrite:
             original.unlink()
         shutil.move(str(qpath), str(original))
-        os.chmod(original, stat.S_IRUSR | stat.S_IWUSR)  # restore write perm
+        os.chmod(original, mode & 0o777)  # do not restore special privilege bits
         meta_path.unlink(missing_ok=True)
         return f"Restored: {original}"
     except (OSError, PermissionError) as exc:
@@ -173,7 +188,9 @@ def restore_file(quarantine_name: str, *, overwrite: bool = False) -> str:
 def delete_quarantined_file(quarantine_name: str) -> str:
     """Permanently delete a quarantined file and its metadata."""
     qdir = backend.quarantine_dir()
-    qpath = qdir / quarantine_name
+    qpath = _quarantine_path(qdir, quarantine_name)
+    if qpath is None:
+        return "Invalid quarantine name or path"
 
     if not qpath.exists():
         return f"Quarantined file not found: {quarantine_name}"
@@ -242,16 +259,18 @@ def _file_size(path: Path) -> int:
         return 0
 
 
+def _quarantine_path(qdir: Path, name: str) -> Path | None:
+    """Accept a direct child only; never follow symlinks outside quarantine."""
+    if (not isinstance(name, str) or not name or name in (".", "..")
+            or "/" in name or "\\" in name or PureWindowsPath(name).drive):
+        return None
+    path = qdir / name
+    if path.is_symlink() or path.resolve().parent != qdir.resolve():
+        return None
+    return path
+
+
 def _find_meta_for(qdir: Path, quarantine_name: str) -> Path | None:
-    """Find the .json metadata file for a quarantined file."""
-    meta_path = qdir / (quarantine_name + ".json")
-    if meta_path.exists():
-        return meta_path
-
-    # Fallback: scan for .json files with matching prefix
-    prefix = quarantine_name.split("_")[0] if "_" in quarantine_name else ""
-    if prefix:
-        for candidate in sorted(qdir.glob(f"{prefix}_*.json")):
-            return candidate
-
-    return None
+    """Match only the exact metadata file for this quarantined item."""
+    meta_path = _quarantine_path(qdir, quarantine_name + ".json")
+    return meta_path if meta_path is not None and meta_path.is_file() else None

@@ -34,6 +34,28 @@ def _parse_version(raw: str | None) -> str | None:
 class LinuxBackend(PlatformBackend):
     """Platform backend for Linux."""
 
+    def clamd_endpoints(self):
+        endpoints = [("unix", path) for path in (
+            "/run/clamav/clamd.ctl", "/run/clamd.scan/clamd.sock",
+            "/run/clamd/clamd.sock", "/tmp/clamd.socket")]
+        for config in (Path('/etc/clamav/clamd.conf'), Path('/etc/clamd.d/scan.conf')):
+            try:
+                for line in config.read_text().splitlines():
+                    parts = line.strip().split(maxsplit=1)
+                    if len(parts) == 2 and parts[0] == 'LocalSocket':
+                        endpoints.insert(0, ('unix', parts[1].strip('"')))
+                    elif len(parts) == 2 and parts[0] == 'TCPSocket':
+                        port = int(parts[1])
+                        if 0 < port < 65536:
+                            endpoints.insert(0, ('tcp', ('127.0.0.1', port)))
+            except (OSError, ValueError, UnicodeError):
+                pass
+        return endpoints + super().clamd_endpoints()
+
+    def clamd_listen_config(self, work_dir):
+        path = str(work_dir / 'clamd.sock')
+        return ('unix', path), [f'LocalSocket {path}', 'LocalSocketMode 600']
+
     # ── process management ──────────────────────────────────────────
 
     def start_process(self, cmd, **kwargs):
@@ -126,13 +148,13 @@ class LinuxBackend(PlatformBackend):
                 "Could not identify your Linux distribution.\n\n"
                 "Please install ClamAV using your system's package manager.\n"
                 "Common package names:\n"
-                "  • Debian/Ubuntu:  clamav clamav-freshclam\n"
-                "  • Fedora/RHEL:    clamav clamav-update\n"
+                "  • Debian/Ubuntu:  clamav clamav-freshclam clamav-daemon\n"
+                "  • Fedora/RHEL:    clamav clamav-update clamd\n"
                 "  • Arch/Manjaro:   clamav\n"
                 "  • openSUSE:       clamav\n"
                 "  • Gentoo:         app-antivirus/clamav\n"
                 "  • Alpine:         clamav clamav-daemon\n\n"
-                "After installing, restart LibreWard."
+                "After installing, use Check status in LibreWard."
             )
 
         lines = [
@@ -147,8 +169,9 @@ class LinuxBackend(PlatformBackend):
             "",
             f"  {distro['install_cmd']}",
             "",
-            "After installation, restart LibreWard and the scanner",
-            "will be detected automatically.",
+            "After installation, use Check status in LibreWard.",
+            "The daemon provides optional parallel scanning. LibreWard reuses",
+            "a running local daemon or starts the installed daemon when needed.",
             "",
             "Your package manager will also handle ClamAV updates.",
         ])
@@ -275,37 +298,37 @@ class LinuxBackend(PlatformBackend):
             },
             "ubuntu": {
                 "pkg_manager": "apt",
-                "install_cmd": "sudo apt install clamav clamav-freshclam",
+                "install_cmd": "sudo apt install clamav clamav-freshclam clamav-daemon",
                 "update_cmd": "sudo apt upgrade",
             },
             "debian": {
                 "pkg_manager": "apt",
-                "install_cmd": "sudo apt install clamav clamav-freshclam",
+                "install_cmd": "sudo apt install clamav clamav-freshclam clamav-daemon",
                 "update_cmd": "sudo apt upgrade",
             },
             "linuxmint": {
                 "pkg_manager": "apt",
-                "install_cmd": "sudo apt install clamav clamav-freshclam",
+                "install_cmd": "sudo apt install clamav clamav-freshclam clamav-daemon",
                 "update_cmd": "sudo apt upgrade",
             },
             "pop": {
                 "pkg_manager": "apt",
-                "install_cmd": "sudo apt install clamav clamav-freshclam",
+                "install_cmd": "sudo apt install clamav clamav-freshclam clamav-daemon",
                 "update_cmd": "sudo apt upgrade",
             },
             "fedora": {
                 "pkg_manager": "dnf",
-                "install_cmd": "sudo dnf install clamav clamav-update",
+                "install_cmd": "sudo dnf install clamav clamav-update clamd",
                 "update_cmd": "sudo dnf upgrade",
             },
             "rhel": {
                 "pkg_manager": "dnf",
-                "install_cmd": "sudo dnf install clamav clamav-update",
+                "install_cmd": "sudo dnf install clamav clamav-update clamd",
                 "update_cmd": "sudo dnf upgrade",
             },
             "centos": {
                 "pkg_manager": "dnf",
-                "install_cmd": "sudo dnf install clamav clamav-update",
+                "install_cmd": "sudo dnf install clamav clamav-update clamd",
                 "update_cmd": "sudo dnf upgrade",
             },
             "opensuse-tumbleweed": {

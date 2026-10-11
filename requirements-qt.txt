@@ -1,0 +1,2 @@
+# Compatibility with the former Qt preview installation command.
+-r requirements.txt

@@ -1,1889 +1,891 @@
-"""Main application window — ClamAV GUI."""
-
+"""PySide6 frontend using shared core services and platform backends."""
 import os
-import subprocess
-import threading
 import queue
-from .file_picker import FilePickerDialog
-from tkinter import messagebox
+import threading
 
-import customtkinter as ctk
-
-from config import load_config as config_load, save_config as config_save
-from backends import backend
-from excludes import get_common_excludes, get_active_exclude_patterns
-from scanner import (
-    collect_files,
-    build_clamscan_command,
-    parse_clamscan_result_line,
-    parse_clamscan_summary_value,
-    should_log_line,
+from PySide6.QtCore import Qt, QTimer, QSize, QByteArray
+from PySide6.QtWidgets import (
+    QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog,
+    QFileDialog, QHBoxLayout, QLabel, QLineEdit, QListWidget, QMainWindow,
+    QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
+    QTableWidget, QTableWidgetItem, QStackedWidget, QVBoxLayout, QWidget,
+    QFrame, QHeaderView, QSizePolicy, QSplitter,
 )
-from core.constants import APP_NAME, APP_VERSION
-from core.runtime import check_startup, StartupStatus
-from .about_window import AboutWindow
-from .exclude_window import ExcludeWindow
-from .scan_result_window import ScanResultWindow
-from .startup_dialog import StartupDownloadDialog
+
+from backends import backend
+from config import load_config, save_config
+from core.constants import APP_NAME, APP_VERSION, CLAMAV_HOMEPAGE, CLAMAV_SOURCE
+from core.db_manager import database_summary, run_freshclam_update
+from core.quarantine import (
+    delete_file, delete_quarantined_file, list_quarantined_files,
+    open_file_location, quarantine_file, restore_file,
+)
+from core.runtime import check_startup, setup_components
+from core.scan_service import ScanService, scan_outcome
+from core.updater import check_for_updates, perform_update
+from excludes import get_active_exclude_patterns, get_common_excludes
+from .dialogs import ClamAVConsentDialog, UpdateProgressDialog, ScanReportDialog, AntivirusSetupDialog
+from .theme import stylesheet, navigation_icon
+from .widgets import ElidedPathLabel, BusyNavigationButton
 
 
-BG_COLOR = ("#F4F7F4", "#0F1411")
-SIDEBAR_COLOR = ("#E3EAE5", "#151B18")
-SURFACE_COLOR = ("#FFFFFF", "#1B221F")
-SURFACE_ALT_COLOR = ("#EDF3EF", "#202923")
-BORDER_COLOR = ("#CCD8D1", "#313D36")
-ENTRY_COLOR = ("#F8FBF9", "#101612")
-LOG_COLOR = ("#F8FBF9", "#0F1511")
-ACCENT_COLOR = ("#247A59", "#2F8F68")
-ACCENT_HOVER = ("#1E684C", "#267A58")
-SECONDARY_ACTION = ("#2F6FA3", "#4BA3D8")
-SECONDARY_ACTION_HOVER = ("#285F8C", "#388FC3")
-DANGER_COLOR = ("#B54444", "#A53A3A")
-DANGER_HOVER = ("#973737", "#C04747")
-TEXT_PRIMARY = ("#17211B", "#F3F7F4")
-TEXT_SECONDARY = ("#26362D", "#D8E1DC")
-TEXT_MUTED = ("#5F7067", "#93A39A")
-TEXT_SUBTLE = ("#7A8A82", "#6F7E76")
-SECONDARY_HOVER = ("#DCE8E1", "#2A352F")
-WHITE_TEXT = "#FFFFFF"
-
-
-class ClamAVGui(ctk.CTk):
+class QtMainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-
-        self.title(APP_NAME)
-        self.geometry("1080x760")
-        self.minsize(920, 640)
-        self.configure(fg_color=BG_COLOR)
-
-        ctk.set_appearance_mode("dark")
-        ctk.set_default_color_theme("green")
-
-        self.process = None
-        self.stop_requested = False
-        self.output_queue = queue.Queue()
-
-        self.scan_path = ctk.StringVar(value=os.path.expanduser("~"))
-
-        self.total_files = 0
-        self.scanned_files = 0
-        self.counted_files = set()
-        self.summary_started = False
-
-        self.enabled_common_excludes = set()
-        self.user_excludes = []
-        self.exclude_window = None
-        self.about_window = None
-        self.suppress_clamav_setup_prompt = False
-
-        # Startup status (set after health check)
-        self._startup_status: StartupStatus | None = None
-
-        self.load_config()
-        self.create_widgets()
-        self.update_exclude_summary()  # reflect loaded excludes in UI
-
-        # Run startup check after UI is visible.
-        self.after(200, self._startup_check)
-        self.after(100, self.process_output_queue)
-
-    # ── config ──────────────────────────────────────────────────────
-
-    def load_config(self):
-        try:
-            data = config_load()
-            if data is None:
-                return
-
-            self.scan_path.set(data.get("scan_path", os.path.expanduser("~")))
-
-            common = data.get("enabled_common_excludes", [])
-            common_keys = set(get_common_excludes().keys())
-            self.enabled_common_excludes = {
-                item for item in common if item in common_keys
-            }
-
-            user_excludes = data.get("user_excludes", [])
-            self.user_excludes = [
-                os.path.abspath(path)
-                for path in user_excludes
-                if isinstance(path, str)
-            ]
-            self.suppress_clamav_setup_prompt = bool(
-                data.get("suppress_clamav_setup_prompt", False)
-            )
-
-        except Exception:
-            self.enabled_common_excludes = set()
-            self.user_excludes = []
-            self.suppress_clamav_setup_prompt = False
-
-    def save_config(self):
-        try:
-            data = {
-                "scan_path": self.scan_path.get().strip(),
-                "enabled_common_excludes": sorted(self.enabled_common_excludes),
-                "user_excludes": self.user_excludes,
-                "suppress_clamav_setup_prompt": self.suppress_clamav_setup_prompt,
-            }
-            config_save(data)
-        except Exception as e:
-            self.log(f"WARNING: Could not save config: {e}\n")
-
-    # ── startup health check ────────────────────────────────────────
-
-    def _startup_check(self):
-        """Run ClamAV health check without blocking the Tk event loop."""
-
-        thread = threading.Thread(target=self._run_startup_check, daemon=True)
-        thread.start()
-
-    def _run_startup_check(self):
-        """Worker body for startup health check."""
-
-        def _log(msg):
-            self.output_queue.put(msg)
-
-        _log(f"=== {APP_NAME} v{APP_VERSION} ===\n")
-        _log(f"Platform: {backend.platform_arch()}\n\n")
-
-        status = check_startup(log=_log)
-        self._startup_status = status
-        self.output_queue.put(("__STARTUP_DONE__", None))
-
-        _log("\n")
-
-        if status.is_first_run:
-            # No ClamAV at all — offer download
-            if self.suppress_clamav_setup_prompt:
-                _log(
-                    "ClamAV runtime not found. Antivirus features are disabled "
-                    "until ClamAV is installed.\n\n"
-                )
-            else:
-                self.output_queue.put(("__NO_CLAMAV__", None))
-        elif not status.db_found:
-            _log(
-                "Virus database not found.\n"
-                "Please update the database before scanning.\n\n"
-            )
-            self.output_queue.put(("__NO_DATABASE__", None))
-
-        _log("Ready.\n\n")
-
-    def _show_startup_dialog(self):
-        """Show the first-run ClamAV download dialog."""
-        self.after(100, self._open_download_dialog)
-
-    def _open_download_dialog(self):
-        StartupDownloadDialog(self, on_done=self._on_download_done)
-
-    def _on_download_done(self, success: bool, suppress_prompt: bool = False):
-        if suppress_prompt:
-            self.suppress_clamav_setup_prompt = True
-            self.save_config()
-
-        if success:
-            self.log("\nRe-checking ClamAV runtime after install...\n")
-
-            def _log(msg):
-                self.output_queue.put(msg)
-
-            status = check_startup(log=_log)
-            self._startup_status = status
-
-            if status.runtime_ok:
-                self.log("ClamAV is now available.\n")
-                if not status.db_found:
-                    self.log(
-                        "Virus database not found.\n"
-                        "Starting database update before scanning is enabled.\n"
-                    )
-                    self.after(100, self._settings_update_database)
-            else:
-                self.log(
-                    "WARNING: ClamAV still not detected after install.\n"
-                )
-                self._startup_status = None
-
-    def _offer_database_update(self, message: str) -> None:
-        """Ask the user to run freshclam when scanning is not ready."""
-        if self._startup_status is None or not self._startup_status.can_update_db:
-            self._show_info_dialog(
-                "Virus Database Missing",
-                "Virus database not found.\n\n"
-                "freshclam is not available, so LibreWard cannot update it automatically.",
-            )
-            return
-
-        answer = messagebox.askyesno("Virus Database Missing", message)
-        if answer:
-            self.after(100, self._settings_update_database)
-
-    # ── action: update ClamAV runtime ───────────────────────────────
-
-    def _check_for_updates(self):
-        """Check for ClamAV runtime updates in a background thread."""
-        from core.updater import check_for_updates, perform_update
-
-        self.log("Checking for ClamAV updates...\n")
-
-        def _run():
+        self.setWindowTitle(APP_NAME)
+        self.resize(1180, 860)
+        self.setMinimumSize(980, 740)
+        self.events = queue.Queue()
+        self.worker = None
+        self.service = None
+        self.operation = None
+        self.startup_status = None
+        self.update_dialog = None
+        self.completion = None
+        self.on_done = None
+        self.pending_setup = False
+        config = load_config()
+        self.config = config if isinstance(config, dict) else {}
+        self.idle_buttons = []
+        self.scan_actions = []
+        self.last_result = None
+        self.build_shell()
+        self.apply_theme(self.config.get("qt_theme", "dark"))
+        geometry = self.config.get('window_geometry')
+        if isinstance(geometry, str) and len(geometry) <= 8192:
             try:
-                def _log(msg):
-                    self.output_queue.put(msg)
+                self.restoreGeometry(QByteArray(bytes.fromhex(geometry)))
+                self.setWindowState(self.windowState() & ~Qt.WindowState.WindowMinimized)
+            except ValueError:
+                pass
+        QApplication.instance().styleHints().colorSchemeChanged.connect(self.system_theme_changed)
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.poll_events)
+        self.timer.start(100)
+        self.start_task("check", self.check_runtime, on_done=self.offer_setup)
 
-                platform_entry = check_for_updates(log=_log)
-
-                if platform_entry is None:
-                    self.output_queue.put(
-                        "No update available or update not applicable.\n\n"
-                    )
-                    return
-
-                # Ask user before updating
-                latest = platform_entry.get("latest_version", "?")
-                self.output_queue.put(
-                    f"ClamAV {latest} is available. "
-                    "Click 'Update ClamAV' to install.\n"
-                )
-                self.output_queue.put(("__UPDATE_AVAILABLE__", platform_entry))
-
-            except Exception as e:
-                self.output_queue.put(f"Update check failed: {e}\n\n")
-
-        thread = threading.Thread(target=_run, daemon=True)
-        thread.start()
-
-    def _start_clamav_update(self, platform_entry):
-        """Actually perform the ClamAV runtime update."""
-        from core.updater import perform_update
-
-        self.log("Starting ClamAV update...\n")
-        self.start_activity("Activity: updating ClamAV...")
-
-        def _run():
-            def _log(msg):
-                self.output_queue.put(msg)
-
-            def _progress(phase, done, total):
-                if phase == "download" and total:
-                    pct = min(done / total, 1.0)
-                    self.output_queue.put(
-                        ("__UPDATE_PROGRESS__", pct)
-                    )
-
-            error = perform_update(
-                platform_entry, log=_log, progress=_progress
-            )
-
-            if error:
-                self.output_queue.put(f"\nERROR: {error}\n")
-                self.output_queue.put(("__UPDATE_DONE__", False))
-            else:
-                self.output_queue.put("\nClamAV runtime updated successfully!\n")
-                self.output_queue.put(
-                    "Use 'Update Database' to download the latest virus definitions.\n\n"
-                )
-                self.output_queue.put(("__UPDATE_DONE__", True))
-
-        thread = threading.Thread(target=_run, daemon=True)
-        thread.start()
-
-    # ── action: update database ─────────────────────────────────────
-
-    def _update_database(self):
-        """Run freshclam to update the virus database."""
-        if self._startup_status is None or not self._startup_status.can_update_db:
-            self.log("ERROR: freshclam not available. Update ClamAV first.\n")
-            return
-
-        from core.db_manager import run_freshclam_update
-
-        self.log("Updating virus database...\n")
-        self.start_activity("Activity: updating virus database...")
-
-        freshclam_path = self._startup_status.runtime.freshclam
-
-        def _run():
-            def _log(msg):
-                self.output_queue.put(msg)
-
-            # Let run_freshclam_update handle platform-specific behaviour
-            # (custom conf on Windows, pkexec/sudo on Linux, etc.)
-            success, output = run_freshclam_update(
-                freshclam_path, conf_path=None, log_callback=_log
-            )
-
-            if success:
-                self.output_queue.put("\nDatabase update completed.\n")
-
-                # Re-check database status
-                status = check_startup()
-                self._startup_status = status
-                if status.db_found:
-                    self.output_queue.put("Virus database is now ready.\n\n")
-                else:
-                    self.output_queue.put(
-                        "WARNING: Database still not detected. Check logs.\n\n"
-                    )
-            else:
-                self.output_queue.put(
-                    f"\nDatabase update failed. See output above.\n"
-                )
-
-            self.output_queue.put(("__DB_UPDATE_DONE__", success))
-
-        thread = threading.Thread(target=_run, daemon=True)
-        thread.start()
-
-    # ── UI construction ─────────────────────────────────────────────
-
-    def create_widgets(self):
-        # Sidebar (fixed left panel)
-        SIDEBAR_W = 240
-        sidebar = ctk.CTkFrame(
-            self,
-            width=SIDEBAR_W,
-            corner_radius=0,
-            fg_color=SIDEBAR_COLOR,
-        )
-        sidebar.pack(side="left", fill="y")
-        sidebar.pack_propagate(False)
-
-        # ── Sidebar header ─────────────────────────────────────────
-        header = ctk.CTkFrame(sidebar, fg_color="transparent")
-        header.pack(fill="x", padx=16, pady=(24, 6))
-
-        logo = ctk.CTkFrame(
-            header,
-            width=42,
-            height=42,
-            corner_radius=8,
-            fg_color=ACCENT_COLOR,
-        )
-        logo.pack(side="left", padx=(0, 12))
-        logo.pack_propagate(False)
-
-        ctk.CTkLabel(
-            logo,
-            text="LW",
-            font=ctk.CTkFont(size=14, weight="bold"),
-            text_color=WHITE_TEXT,
-        ).pack(expand=True)
-
-        ctk.CTkLabel(
-            header,
-            text=APP_NAME,
-            font=ctk.CTkFont(size=20, weight="bold"),
-            text_color=TEXT_PRIMARY,
-        ).pack(side="left", anchor="center")
-
-        # Subtle separator
-        sep = ctk.CTkFrame(sidebar, height=1, fg_color=BORDER_COLOR)
-        sep.pack(fill="x", padx=18, pady=(10, 14))
-
-        # ── Navigation ─────────────────────────────────────────────
-        self._nav_buttons: dict[str, ctk.CTkButton] = {}
-
-        nav_items = [
-            ("scan", "Scan"),
-            ("firewall", "Firewall"),
-            ("internet", "Internet Watcher"),
-            ("settings", "Settings"),
+    def build_shell(self):
+        shell = QWidget()
+        shell.setObjectName("appShell")
+        layout = QHBoxLayout(shell)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        sidebar = QFrame()
+        sidebar.setObjectName("sidebar")
+        sidebar.setFixedWidth(224)
+        side = QVBoxLayout(sidebar)
+        side.setContentsMargins(18, 26, 18, 22)
+        side.setSpacing(8)
+        brand = QHBoxLayout()
+        logo = self.label("LW", "logo")
+        logo.setFixedSize(40, 40)
+        logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        brand.addWidget(logo)
+        brand.addWidget(self.label(APP_NAME, "brand"))
+        brand.addStretch()
+        side.addLayout(brand)
+        side.addSpacing(28)
+        side.addWidget(self.label("WORKSPACE", "eyebrow"))
+        side.addSpacing(6)
+        self.pages = QStackedWidget()
+        self.nav_buttons = {}
+        self.page_indices = {}
+        definitions = [
+            ("scan", "Virus scan", self.build_scan_page),
+            ("quarantine", "Quarantine", self.build_quarantine_page),
+            ("firewall", "Firewall", lambda: self.build_planned_page("Firewall", "Manage network access", "Firewall controls are planned for a future release.")),
+            ("internet", "Internet Watcher", lambda: self.build_planned_page("Internet Watcher", "Understand your network activity", "Internet traffic monitoring is planned for a future release.")),
+            ("settings", "Settings", self.build_settings_page),
+            ("about", "About", self.build_about_page),
         ]
-
-        for key, label in nav_items:
-            btn = ctk.CTkButton(
-                sidebar,
-                text=label,
-                anchor="w",
-                height=42,
-                corner_radius=8,
-                fg_color="transparent",
-                text_color=TEXT_SECONDARY,
-                hover_color=SURFACE_ALT_COLOR,
-                font=ctk.CTkFont(size=13, weight="bold"),
-                command=lambda k=key: self._switch_page(k),
-            )
-            btn.pack(fill="x", padx=12, pady=4)
-            self._nav_buttons[key] = btn
-
-        self._quarantine_nav_index = len(nav_items)
-        self._nav_buttons["quarantine"] = None
-
-        # ── Bottom section ────────────────────────────────────────
-        # Push About + version to the bottom
-        ctk.CTkLabel(sidebar, text="").pack(pady=(6, 0), expand=True)
-
-        sep2 = ctk.CTkFrame(sidebar, height=1, fg_color=BORDER_COLOR)
-        sep2.pack(fill="x", padx=18, pady=(6, 10))
-
-        about_btn = ctk.CTkButton(
-            sidebar,
-            text="    ℹ   About",
-            anchor="w",
-            height=36,
-            corner_radius=8,
-            fg_color="transparent",
-            text_color=TEXT_SECONDARY,
-            hover_color=SURFACE_ALT_COLOR,
-            font=ctk.CTkFont(size=12),
-            command=self.open_about_window,
-        )
-        about_btn.pack(fill="x", padx=10, pady=2)
-
-        ctk.CTkLabel(
-            sidebar,
-            text=f"v{APP_VERSION}",
-            font=ctk.CTkFont(size=10),
-            text_color=TEXT_SUBTLE,
-        ).pack(pady=(4, 16))
-
-        # ── Content area ───────────────────────────────────────────
-        self._content = ctk.CTkFrame(self, fg_color=BG_COLOR, corner_radius=0)
-        self._content.pack(side="left", fill="both", expand=True)
-
-        # Build pages
-        self._pages: dict[str, ctk.CTkFrame] = {}
-        self._pages["scan"] = self._build_scan_page()
-        self._pages["firewall"] = self._build_placeholder_page(
-            "🔥  Firewall", "Firewall management is coming soon."
-        )
-        self._pages["internet"] = self._build_placeholder_page(
-            "🌐  Internet Watcher", "Internet traffic monitoring is coming soon."
-        )
-        self._pages["quarantine"] = self._build_quarantine_page()
-        self._pages["settings"] = self._build_settings_page()
-
-        # Default page
-        self._refresh_quarantine_nav()
-        self._switch_page("scan")
-
-    def _button_kwargs(self, variant: str = "primary") -> dict:
-        """Return consistent button styles with good light/dark contrast."""
-        base = {
-            "corner_radius": 8,
-            "font": ctk.CTkFont(size=13, weight="bold"),
-        }
-        if variant == "primary":
-            return {
-                **base,
-                "fg_color": ACCENT_COLOR,
-                "hover_color": ACCENT_HOVER,
-                "text_color": WHITE_TEXT,
-            }
-        if variant == "danger":
-            return {
-                **base,
-                "fg_color": DANGER_COLOR,
-                "hover_color": DANGER_HOVER,
-                "text_color": WHITE_TEXT,
-            }
-        if variant == "outline":
-            return {
-                **base,
-                "fg_color": SECONDARY_ACTION,
-                "hover_color": SECONDARY_ACTION_HOVER,
-                "text_color": WHITE_TEXT,
-            }
-        return {
-            **base,
-            "fg_color": SURFACE_ALT_COLOR,
-            "hover_color": SECONDARY_HOVER,
-            "text_color": TEXT_SECONDARY,
-        }
-
-    def _build_scan_page(self) -> ctk.CTkFrame:
-        """Build and return the virus scan page frame."""
-        page = ctk.CTkFrame(self._content, fg_color=BG_COLOR, corner_radius=0)
-
-        header = ctk.CTkFrame(page, fg_color="transparent")
-        header.pack(fill="x", padx=26, pady=(24, 10))
-
-        title_block = ctk.CTkFrame(header, fg_color="transparent")
-        title_block.pack(side="left", fill="x", expand=True)
-
-        ctk.CTkLabel(
-            title_block,
-            text="Virus Scan",
-            anchor="w",
-            font=ctk.CTkFont(size=26, weight="bold"),
-            text_color=TEXT_PRIMARY,
-        ).pack(fill="x")
-
-        ctk.CTkLabel(
-            title_block,
-            text="Run ClamAV scans, monitor progress, and review detected files.",
-            anchor="w",
-            font=ctk.CTkFont(size=13),
-            text_color=TEXT_MUTED,
-        ).pack(fill="x", pady=(4, 0))
-
-        # Path row
-        path_frame = ctk.CTkFrame(page, fg_color=SURFACE_COLOR, corner_radius=8)
-        path_frame.pack(fill="x", padx=26, pady=(10, 10))
-
-        ctk.CTkLabel(
-            path_frame,
-            text="Scan folder",
-            width=110,
-            anchor="w",
-            font=ctk.CTkFont(size=13, weight="bold"),
-            text_color=TEXT_PRIMARY,
-        ).pack(side="left", padx=(16, 8))
-
-        self.path_entry = ctk.CTkEntry(
-            path_frame,
-            textvariable=self.scan_path,
-            height=38,
-            corner_radius=8,
-            border_width=1,
-            border_color=BORDER_COLOR,
-            fg_color=ENTRY_COLOR,
-        )
-        self.path_entry.pack(side="left", fill="x", expand=True, padx=8, pady=14)
-
-        ctk.CTkButton(
-            path_frame,
-            text="Choose",
-            height=38,
-            width=92,
-            **self._button_kwargs("primary"),
-            command=self.choose_scan_folder,
-        ).pack(side="left", padx=(4, 8))
-
-        ctk.CTkButton(
-            path_frame,
-            text="Excludes",
-            height=38,
-            width=94,
-            **self._button_kwargs("outline"),
-            command=self.open_exclude_window,
-        ).pack(side="left", padx=(0, 16))
-
-        # Exclude summary
-        self.exclude_summary_label = ctk.CTkLabel(
-            page,
-            text="Excludes: none",
-            anchor="w",
-            text_color=TEXT_MUTED,
-            font=ctk.CTkFont(size=12),
-        )
-        self.exclude_summary_label.pack(fill="x", padx=30, pady=(0, 12))
-
-        # Scan buttons
-        button_frame = ctk.CTkFrame(page, fg_color="transparent")
-        button_frame.pack(fill="x", padx=26, pady=(0, 14))
-
-        self.start_button = ctk.CTkButton(
-            button_frame,
-            text="Start scan",
-            height=40,
-            width=126,
-            **self._button_kwargs("primary"),
-            command=self.start_scan,
-        )
-        self.start_button.pack(side="left", padx=(0, 8))
-
-        self.quick_scan_button = ctk.CTkButton(
-            button_frame,
-            text="Quick System Scan",
-            height=40,
-            width=156,
-            **self._button_kwargs("outline"),
-            command=self.start_quick_scan,
-        )
-        self.quick_scan_button.pack(side="left", padx=8)
-
-        self.stop_button = ctk.CTkButton(
-            button_frame,
-            text="Stop",
-            height=40,
-            width=94,
-            **self._button_kwargs("danger"),
-            command=self.stop_scan,
-            state="disabled",
-        )
-        self.stop_button.pack(side="left", padx=8)
-
-        self.clear_button = ctk.CTkButton(
-            button_frame,
-            text="Clear log",
-            height=40,
-            width=104,
-            **self._button_kwargs("secondary"),
-            command=self.clear_log,
-        )
-        self.clear_button.pack(side="left", padx=8)
-
-        status_grid = ctk.CTkFrame(page, fg_color="transparent")
-        status_grid.pack(fill="x", padx=26, pady=(0, 14))
-        status_grid.grid_columnconfigure(0, weight=1, uniform="status")
-        status_grid.grid_columnconfigure(1, weight=2, uniform="status")
-
-        status_card = ctk.CTkFrame(status_grid, fg_color=SURFACE_COLOR, corner_radius=8)
-        status_card.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
-        current_card = ctk.CTkFrame(status_grid, fg_color=SURFACE_COLOR, corner_radius=8)
-        current_card.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
-
-        ctk.CTkLabel(
-            status_card,
-            text="Status",
-            anchor="w",
-            font=ctk.CTkFont(size=11, weight="bold"),
-            text_color=TEXT_SUBTLE,
-        ).pack(fill="x", padx=14, pady=(12, 2))
-
-        self.status_label = ctk.CTkLabel(
-            status_card,
-            text="ready",
-            anchor="w",
-            font=ctk.CTkFont(size=15, weight="bold"),
-            text_color=TEXT_PRIMARY,
-        )
-        self.status_label.pack(fill="x", padx=14, pady=(0, 12))
-
-        ctk.CTkLabel(
-            current_card,
-            text="Current file",
-            anchor="w",
-            font=ctk.CTkFont(size=11, weight="bold"),
-            text_color=TEXT_SUBTLE,
-        ).pack(fill="x", padx=14, pady=(12, 2))
-
-        self.current_file_label = ctk.CTkLabel(
-            current_card,
-            text="-",
-            anchor="w",
-            font=ctk.CTkFont(size=13),
-            text_color=TEXT_SECONDARY,
-        )
-        self.current_file_label.pack(fill="x", padx=14, pady=(0, 12))
-
-        # Progress bar
-        progress_frame = ctk.CTkFrame(page, fg_color=SURFACE_COLOR, corner_radius=8)
-        progress_frame.pack(fill="x", padx=26, pady=(0, 12))
-
-        progress_header = ctk.CTkFrame(progress_frame, fg_color="transparent")
-        progress_header.pack(fill="x", padx=14, pady=(12, 6))
-
-        ctk.CTkLabel(
-            progress_header,
-            text="Progress",
-            anchor="w",
-            font=ctk.CTkFont(size=12, weight="bold"),
-            text_color=TEXT_MUTED,
-        ).pack(side="left")
-
-        self.percent_label = ctk.CTkLabel(
-            progress_header,
-            text="0%",
-            anchor="e",
-            font=ctk.CTkFont(size=12, weight="bold"),
-            text_color=TEXT_PRIMARY,
-        )
-        self.percent_label.pack(side="right")
-
-        self.progress = ctk.CTkProgressBar(
-            progress_frame,
-            mode="determinate",
-            progress_color=ACCENT_COLOR,
-        )
-        self.progress.pack(fill="x", padx=14, pady=(0, 14))
-        self.progress.set(0)
-
-        # Activity indicator (shared — positioned relative to last element)
-        self.activity_label = ctk.CTkLabel(
-            page,
-            text="Activity: idle",
-            anchor="w",
-            text_color=TEXT_MUTED,
-            font=ctk.CTkFont(size=12),
-        )
-        self.activity_bar = ctk.CTkProgressBar(
-            page,
-            mode="indeterminate",
-            progress_color=ACCENT_COLOR,
-        )
-        self.activity_bar.stop()
-
-        # Log area
-        self.log_frame = ctk.CTkFrame(page, fg_color=SURFACE_COLOR, corner_radius=8)
-        self.log_frame.pack(fill="both", expand=True, padx=26, pady=(0, 24))
-
-        ctk.CTkLabel(
-            self.log_frame,
-            text="Event log",
-            anchor="w",
-            font=ctk.CTkFont(size=12, weight="bold"),
-            text_color=TEXT_MUTED,
-        ).pack(fill="x", padx=14, pady=(12, 6))
-
-        self.log_box = ctk.CTkTextbox(
-            self.log_frame,
-            wrap="word",
-            corner_radius=8,
-            border_width=1,
-            border_color=BORDER_COLOR,
-            fg_color=LOG_COLOR,
-            text_color=TEXT_SECONDARY,
-        )
-        self.log_box.pack(fill="both", expand=True, padx=14, pady=(0, 14))
-
-        return page
-
-    def _build_placeholder_page(self, title: str, subtitle: str) -> ctk.CTkFrame:
-        """Build a placeholder 'coming soon' page."""
-        page = ctk.CTkFrame(self._content, fg_color=BG_COLOR, corner_radius=0)
-
-        inner = ctk.CTkFrame(page, fg_color=SURFACE_COLOR, corner_radius=8)
-        inner.place(relx=0.5, rely=0.5, anchor="center")
-
-        ctk.CTkLabel(
-            inner,
-            text=title,
-            font=ctk.CTkFont(size=24, weight="bold"),
-            text_color=TEXT_PRIMARY,
-        ).pack(padx=42, pady=(34, 8))
-
-        ctk.CTkLabel(
-            inner,
-            text=subtitle,
-            font=ctk.CTkFont(size=14),
-            text_color=TEXT_MUTED,
-        ).pack(padx=42, pady=(0, 34))
-
-        return page
-
-    def _build_quarantine_page(self) -> ctk.CTkFrame:
-        """Build and return the quarantine management page."""
-        page = ctk.CTkFrame(self._content, fg_color=BG_COLOR, corner_radius=0)
-
-        header = ctk.CTkFrame(page, fg_color="transparent")
-        header.pack(fill="x", padx=28, pady=(24, 16))
-
-        title_block = ctk.CTkFrame(header, fg_color="transparent")
-        title_block.pack(side="left", fill="x", expand=True)
-
-        ctk.CTkLabel(
-            title_block,
-            text="Quarantine",
-            anchor="w",
-            font=ctk.CTkFont(size=26, weight="bold"),
-            text_color=TEXT_PRIMARY,
-        ).pack(fill="x")
-
-        self._quarantine_subtitle = ctk.CTkLabel(
-            title_block,
-            text="Review isolated files and choose whether to restore or delete them.",
-            anchor="w",
-            font=ctk.CTkFont(size=13),
-            text_color=TEXT_MUTED,
-        )
-        self._quarantine_subtitle.pack(fill="x", pady=(4, 0))
-
-        ctk.CTkButton(
-            header,
-            text="Refresh",
-            height=38,
-            width=100,
-            **self._button_kwargs("outline"),
-            command=self._refresh_quarantine_page,
-        ).pack(side="right", padx=(12, 0))
-
-        self._quarantine_list = ctk.CTkScrollableFrame(
-            page,
-            fg_color=SURFACE_COLOR,
-            corner_radius=8,
-        )
-        self._quarantine_list.pack(fill="both", expand=True, padx=28, pady=(0, 24))
-
-        self._refresh_quarantine_page()
-        return page
-
-    def _quarantine_items(self) -> list[dict]:
-        from core.quarantine import list_quarantined_files
-
-        return list_quarantined_files()
-
-    def _refresh_quarantine_nav(self):
-        """Show the Quarantine nav item only when quarantined files exist."""
-        count = len(self._quarantine_items())
-        btn = self._nav_buttons.get("quarantine")
-
-        if count and btn is None:
-            btn = ctk.CTkButton(
-                self._nav_buttons["scan"].master,
-                text=f"Quarantine ({count})",
-                anchor="w",
-                height=42,
-                corner_radius=8,
-                fg_color="transparent",
-                text_color=TEXT_SECONDARY,
-                hover_color=SURFACE_ALT_COLOR,
-                font=ctk.CTkFont(size=13, weight="bold"),
-                command=lambda: self._switch_page("quarantine"),
-            )
-            btn.pack(fill="x", padx=12, pady=4, after=self._nav_buttons["internet"])
-            self._nav_buttons["quarantine"] = btn
-        elif count and btn is not None:
-            btn.configure(text=f"Quarantine ({count})")
-            if not btn.winfo_ismapped():
-                btn.pack(fill="x", padx=12, pady=4, after=self._nav_buttons["internet"])
-        elif not count and btn is not None:
-            btn.pack_forget()
-            if getattr(self, "_current_page", None) == "quarantine":
-                self._switch_page("scan")
-
-    def _refresh_quarantine_page(self):
-        """Refresh quarantine rows from on-disk metadata."""
-        if not hasattr(self, "_quarantine_list"):
-            return
-
-        for child in self._quarantine_list.winfo_children():
-            child.destroy()
-
-        items = self._quarantine_items()
-        self._refresh_quarantine_nav()
-
-        if hasattr(self, "_quarantine_subtitle"):
-            noun = "file" if len(items) == 1 else "files"
-            self._quarantine_subtitle.configure(
-                text=f"{len(items)} isolated {noun}. Restore false positives or permanently delete confirmed threats."
-            )
-
-        if not items:
-            empty = ctk.CTkFrame(
-                self._quarantine_list,
-                fg_color="transparent",
-            )
-            empty.pack(fill="both", expand=True, padx=16, pady=28)
-            ctk.CTkLabel(
-                empty,
-                text="No quarantined files",
-                font=ctk.CTkFont(size=18, weight="bold"),
-                text_color=TEXT_PRIMARY,
-            ).pack(anchor="w")
-            ctk.CTkLabel(
-                empty,
-                text="Files you quarantine after a scan will appear here.",
-                font=ctk.CTkFont(size=13),
-                text_color=TEXT_MUTED,
-            ).pack(anchor="w", pady=(6, 0))
-            return
-
-        for item in items:
-            self._add_quarantine_row(item)
-
-    def _add_quarantine_row(self, item: dict):
-        row = ctk.CTkFrame(
-            self._quarantine_list,
-            fg_color=SURFACE_ALT_COLOR,
-            corner_radius=8,
-        )
-        row.pack(fill="x", padx=12, pady=8)
-
-        info = ctk.CTkFrame(row, fg_color="transparent")
-        info.pack(side="left", fill="x", expand=True, padx=14, pady=12)
-
-        original_path = str(item.get("original_path") or "unknown original path")
-        threat_name = str(item.get("threat_name") or "unknown threat")
-        quarantined_at = str(item.get("quarantined_at") or "unknown time")
-        size = item.get("original_size")
-        size_label = self._format_size(size) if isinstance(size, int) else "unknown size"
-
-        ctk.CTkLabel(
-            info,
-            text=original_path,
-            anchor="w",
-            font=ctk.CTkFont(size=13, weight="bold"),
-            text_color=TEXT_PRIMARY,
-        ).pack(fill="x")
-
-        ctk.CTkLabel(
-            info,
-            text=f"{threat_name}  |  {size_label}  |  {quarantined_at}",
-            anchor="w",
-            font=ctk.CTkFont(size=12),
-            text_color=TEXT_MUTED,
-        ).pack(fill="x", pady=(4, 0))
-
-        actions = ctk.CTkFrame(row, fg_color="transparent")
-        actions.pack(side="right", padx=14, pady=12)
-
-        qname = str(item.get("quarantine_name"))
-
-        ctk.CTkButton(
-            actions,
-            text="Restore",
-            height=34,
-            width=92,
-            **self._button_kwargs("primary"),
-            command=lambda name=qname: self._restore_quarantined(name),
-        ).pack(side="left", padx=(0, 8))
-
-        ctk.CTkButton(
-            actions,
-            text="Delete",
-            height=34,
-            width=82,
-            **self._button_kwargs("danger"),
-            command=lambda name=qname: self._delete_quarantined(name),
-        ).pack(side="left")
-
-    def _restore_quarantined(self, quarantine_name: str):
-        from core.quarantine import restore_file
-
-        msg = restore_file(quarantine_name)
-        if msg.startswith("Original file already exists:"):
-            original = msg.partition(": ")[2]
-            answer = messagebox.askyesno(
-                "Restore Quarantined File",
-                f"A file already exists at the original location:\n\n"
-                f"{original}\n\n"
-                "Overwrite it with the quarantined file?",
-            )
-            if answer:
-                msg = restore_file(quarantine_name, overwrite=True)
-        self.log(msg + "\n")
-        self._refresh_quarantine_page()
-
-    def _delete_quarantined(self, quarantine_name: str):
-        from core.quarantine import delete_quarantined_file
-
-        answer = messagebox.askyesno(
-            "Delete Quarantined File",
-            "Permanently delete this quarantined file?\n\nThis cannot be undone.",
-        )
-        if not answer:
-            return
-
-        msg = delete_quarantined_file(quarantine_name)
-        self.log(msg + "\n")
-        self._refresh_quarantine_page()
+        for key, text, builder in definitions:
+            self.page_indices[key] = self.pages.addWidget(builder())
+            nav = BusyNavigationButton(text) if key == "scan" else QPushButton(text)
+            nav.setObjectName("navButton")
+            nav.setCheckable(True)
+            nav.setMinimumHeight(46)
+            nav.setIconSize(QSize(20, 20))
+            nav.clicked.connect(lambda checked=False, k=key: self.switch_page(k))
+            self.nav_buttons[key] = nav
+            if key == "about":
+                side.addStretch()
+                self.sidebar_status = self.label("Checking engine…", "sidebarStatus")
+                side.addWidget(self.sidebar_status)
+                side.addSpacing(12)
+            side.addWidget(nav)
+        side.addWidget(self.label(f"Version {APP_VERSION}", "muted"))
+        layout.addWidget(sidebar)
+        layout.addWidget(self.pages, 1)
+        self.setCentralWidget(shell)
+        self.switch_page("scan")
+        self.update_exclude_summary()
+
+    def switch_page(self, key):
+        self.pages.setCurrentIndex(self.page_indices[key])
+        for name, button in self.nav_buttons.items():
+            button.setChecked(name == key)
+        self.update_scan_indicator()
+
+    def update_scan_indicator(self):
+        away = self.pages.currentIndex() != self.page_indices["scan"]
+        self.nav_buttons["scan"].set_busy(self.operation == "scan" and away)
 
     @staticmethod
-    def _format_size(size: int) -> str:
-        if size >= 1_000_000:
-            return f"{size / 1_000_000:.1f} MB"
-        if size >= 1_000:
-            return f"{size / 1_000:.1f} KB"
-        return f"{size} B"
+    def label(text, role=""):
+        label = QLabel(text)
+        label.setTextFormat(Qt.TextFormat.PlainText)
+        if role:
+            label.setObjectName(role)
+        return label
 
-    def _build_settings_page(self) -> ctk.CTkFrame:
-        """Build and return the Settings page."""
-        page = ctk.CTkFrame(self._content, fg_color=BG_COLOR, corner_radius=0)
+    def page(self, title, subtitle):
+        page = QWidget()
+        page.setObjectName("contentPage")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(28, 26, 28, 24)
+        layout.setSpacing(16)
+        layout.addWidget(self.label(title, "pageTitle"))
+        description = self.label(subtitle, "muted")
+        description.setWordWrap(True)
+        layout.addWidget(description)
+        return page, layout
 
-        # Title
-        ctk.CTkLabel(
-            page,
-            text="Settings",
-            font=ctk.CTkFont(size=26, weight="bold"),
-            text_color=TEXT_PRIMARY,
-        ).pack(anchor="w", padx=28, pady=(24, 4))
+    @staticmethod
+    def card():
+        frame = QFrame()
+        frame.setObjectName("card")
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setSpacing(12)
+        return frame, layout
 
-        ctk.CTkLabel(
-            page,
-            text="Manage engine updates, database status, and appearance.",
-            font=ctk.CTkFont(size=13),
-            text_color=TEXT_MUTED,
-        ).pack(anchor="w", padx=28, pady=(0, 20))
+    def button(self, text, callback, *, scan_action=False, variant="secondary"):
+        button = QPushButton(text)
+        button.setObjectName(variant + "Button")
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setMinimumHeight(38)
+        button.clicked.connect(callback)
+        (self.scan_actions if scan_action else self.idle_buttons).append(button)
+        return button
 
-        # ── ClamAV section ──────────────────────────────────────
-        clamav_frame = ctk.CTkFrame(page, fg_color=SURFACE_COLOR, corner_radius=8)
-        clamav_frame.pack(fill="x", padx=28, pady=(0, 16))
+    @staticmethod
+    def table(headers):
+        table = QTableWidget(0, len(headers))
+        table.setHorizontalHeaderLabels(headers)
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        table.verticalHeader().setVisible(False)
+        table.verticalHeader().setDefaultSectionSize(42)
+        table.setShowGrid(False)
+        table.setAlternatingRowColors(True)
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        return table
 
-        ctk.CTkLabel(
-            clamav_frame,
-            text="ClamAV Engine",
-            font=ctk.CTkFont(size=15, weight="bold"),
-            text_color=TEXT_PRIMARY,
-        ).pack(anchor="w", padx=16, pady=(14, 8))
+    def build_scan_page(self):
+        page, layout = self.page("Virus scan", "Run ClamAV scans, monitor progress and review detected files.")
+        folder, box = self.card()
+        box.addWidget(self.label("SCAN FOLDER", "eyebrow"))
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        self.path = QLineEdit(str(self.config.get("scan_path", "")))
+        self.path.setPlaceholderText("Choose a folder to scan…")
+        self.path.setMinimumWidth(0)
+        row.addWidget(self.path, 1)
+        row.addWidget(self.button("Choose", self.choose_folder))
+        row.addWidget(self.button("Excludes", lambda: self.switch_page("settings")))
+        box.addLayout(row)
+        self.exclude_summary = self.label("Excludes: none", "muted")
+        box.addWidget(self.exclude_summary)
+        layout.addWidget(folder)
+        actions = QHBoxLayout()
+        actions.setSpacing(10)
+        self.scan_button = self.button("Start scan", lambda: self.start_scan([self.path.text().strip()]), scan_action=True, variant="primary")
+        self.quick_button = self.button("Quick system scan", lambda: self.start_scan(backend.quick_scan_paths()), scan_action=True)
+        self.stop_button = QPushButton("Stop")
+        self.stop_button.setObjectName("dangerButton")
+        self.stop_button.setMinimumHeight(38)
+        self.stop_button.clicked.connect(self.stop_scan)
+        actions.addWidget(self.scan_button)
+        actions.addWidget(self.quick_button)
+        actions.addWidget(self.stop_button)
+        actions.addStretch()
+        actions.addWidget(self.button("Clear log", self.log_clear))
+        layout.addLayout(actions)
+        cards = QHBoxLayout()
+        status_card, status_box = self.card()
+        status_box.addWidget(self.label("STATUS", "eyebrow"))
+        self.status = self.label("Checking ClamAV…", "statusValue")
+        self.status.setWordWrap(True)
+        status_box.addWidget(self.status)
+        current_card, current_box = self.card()
+        current_box.addWidget(self.label("CURRENT FILE", "eyebrow"))
+        self.current_file = ElidedPathLabel("No scan running")
+        self.current_file.setObjectName("currentFile")
+        current_box.addWidget(self.current_file)
+        cards.addWidget(status_card, 1)
+        cards.addWidget(current_card, 2)
+        layout.addLayout(cards)
+        progress_card, progress_box = self.card()
+        row = QHBoxLayout()
+        row.addWidget(self.label("Scan progress", "sectionTitle"))
+        row.addStretch()
+        self.percent = self.label("0%", "accent")
+        row.addWidget(self.percent)
+        progress_box.addLayout(row)
+        self.progress = QProgressBar()
+        self.progress.setTextVisible(False)
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        progress_box.addWidget(self.progress)
+        self.summary = self.label("Choose a folder or run a quick scan.", "muted")
+        self.summary.setWordWrap(True)
+        progress_box.addWidget(self.summary)
+        self.activity = QProgressBar()
+        self.activity.setObjectName("activityBar")
+        self.activity.setRange(0, 0)
+        self.activity.setTextVisible(False)
+        self.activity.setFixedHeight(3)
+        self.activity.hide()
+        progress_box.addWidget(self.activity)
+        layout.addWidget(progress_card)
+        self.scan_panels = QSplitter(Qt.Orientation.Vertical)
+        self.findings_card, findings = self.card()
+        findings.addWidget(self.label("Detected files", "sectionTitle"))
+        self.results = self.table(["File", "Threat"])
+        self.results.setMinimumHeight(130)
+        self.findings_card.setMinimumHeight(230)
+        findings.addWidget(self.results)
+        row = QHBoxLayout()
+        row.addWidget(self.button("Quarantine selected", lambda: self.handle_findings("quarantine"), variant="primary"))
+        row.addWidget(self.button("Delete selected", lambda: self.handle_findings("delete"), variant="danger"))
+        row.addWidget(self.button("Open location", self.open_finding_location))
+        findings.addLayout(row)
+        self.scan_panels.addWidget(self.findings_card)
+        self.findings_card.hide()
+        log_card, log_box = self.card()
+        log_card.setMinimumHeight(200)
+        row = QHBoxLayout()
+        row.addWidget(self.label("Event log", "sectionTitle"))
+        row.addStretch()
+        self.report_button = QPushButton("View scan report")
+        self.report_button.setObjectName("secondaryButton")
+        self.report_button.setEnabled(False)
+        self.report_button.clicked.connect(self.show_scan_report)
+        row.addWidget(self.report_button)
+        log_box.addLayout(row)
+        self.log = QPlainTextEdit()
+        self.log.setReadOnly(True)
+        self.log.setMaximumBlockCount(10000)
+        self.log.setPlaceholderText("Scan events and update messages will appear here.")
+        log_box.addWidget(self.log)
+        self.scan_panels.addWidget(log_card)
+        self.scan_panels.setChildrenCollapsible(False)
+        layout.addWidget(self.scan_panels, 1)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(page)
+        return scroll
 
-        btn_row = ctk.CTkFrame(clamav_frame, fg_color="transparent")
-        btn_row.pack(fill="x", padx=12, pady=(4, 14))
+    def log_clear(self):
+        self.log.clear()
 
-        ctk.CTkButton(
-            btn_row,
-            text="Update ClamAV",
-            command=self._settings_update_runtime,
-            height=36,
-            **self._button_kwargs("primary"),
-        ).pack(side="left", padx=6)
+    def show_scan_report(self):
+        if self.last_result is not None:
+            ScanReportDialog(self, self.last_result).exec()
 
-        ctk.CTkButton(
-            btn_row,
-            text="Update Database",
-            command=self._settings_update_database,
-            height=36,
-            **self._button_kwargs("outline"),
-        ).pack(side="left", padx=6)
-
-        status_info = ctk.CTkTextbox(
-            clamav_frame,
-            wrap="word",
-            height=124,
-            corner_radius=8,
-            border_width=1,
-            border_color=BORDER_COLOR,
-            fg_color=LOG_COLOR,
-            text_color=TEXT_SECONDARY,
-        )
-        status_info.pack(fill="x", padx=16, pady=(0, 14))
-        status_info.insert("1.0", self._runtime_status_summary())
-        status_info.configure(state="disabled")
-        self._settings_status_info = status_info
-
-        # ── Database info ───────────────────────────────────────
-        from core.db_manager import database_summary
-
-        db_text = database_summary()
-
-        db_frame = ctk.CTkFrame(page, fg_color=SURFACE_COLOR, corner_radius=8)
-        db_frame.pack(fill="x", padx=28, pady=(0, 16))
-
-        ctk.CTkLabel(
-            db_frame,
-            text="Virus Database",
-            font=ctk.CTkFont(size=15, weight="bold"),
-            text_color=TEXT_PRIMARY,
-        ).pack(anchor="w", padx=16, pady=(14, 8))
-
-        db_info = ctk.CTkTextbox(
-            db_frame,
-            wrap="word",
-            height=108,
-            corner_radius=8,
-            border_width=1,
-            border_color=BORDER_COLOR,
-            fg_color=LOG_COLOR,
-            text_color=TEXT_SECONDARY,
-        )
-        db_info.pack(fill="x", padx=16, pady=(0, 14))
-        db_info.insert("1.0", db_text)
-        db_info.configure(state="disabled")
-
-        # Store reference so we can refresh it after DB update
-        self._settings_db_info = db_info
-
-        # ── Appearance ──────────────────────────────────────────
-        appearance_frame = ctk.CTkFrame(page, fg_color=SURFACE_COLOR, corner_radius=8)
-        appearance_frame.pack(fill="x", padx=28, pady=(0, 16))
-
-        ctk.CTkLabel(
-            appearance_frame,
-            text="Appearance",
-            font=ctk.CTkFont(size=15, weight="bold"),
-            text_color=TEXT_PRIMARY,
-        ).pack(anchor="w", padx=16, pady=(14, 8))
-
-        mode_var = ctk.StringVar(value=ctk.get_appearance_mode().lower())
-        mode_row = ctk.CTkFrame(appearance_frame, fg_color="transparent")
-        mode_row.pack(fill="x", padx=12, pady=(4, 14))
-
-        ctk.CTkLabel(
-            mode_row,
-            text="Color mode:",
-            font=ctk.CTkFont(size=13),
-            text_color=TEXT_MUTED,
-        ).pack(side="left", padx=(4, 12))
-
-        ctk.CTkOptionMenu(
-            mode_row,
-            values=["dark", "light"],
-            variable=mode_var,
-            command=lambda v: ctk.set_appearance_mode(v),
-            width=120,
-            fg_color=SURFACE_ALT_COLOR,
-            button_color=ACCENT_COLOR,
-            button_hover_color=ACCENT_HOVER,
-            text_color=TEXT_SECONDARY,
-        ).pack(side="left")
-
+    def build_quarantine_page(self):
+        page, layout = self.page("Quarantine", "Review isolated files and restore trusted items to their original locations.")
+        card, box = self.card()
+        self.quarantine_count = self.label("No quarantined files", "sectionTitle")
+        box.addWidget(self.quarantine_count)
+        self.quarantine_table = self.table(["Original file", "Threat", "Quarantined at", "Size"])
+        box.addWidget(self.quarantine_table, 1)
+        row = QHBoxLayout()
+        row.addWidget(self.button("Restore selected", self.restore_selected, variant="primary"))
+        row.addWidget(self.button("Delete selected", self.delete_quarantine_selected, variant="danger"))
+        row.addStretch()
+        row.addWidget(self.button("Refresh", self.refresh_state))
+        box.addLayout(row)
+        layout.addWidget(card, 1)
+        layout.addWidget(self.label("Restoring never overwrites an existing file. Permanent deletion requires confirmation.", "muted"))
         return page
 
-    def _refresh_settings_db_info(self):
-        """Refresh the database summary on the Settings page (if visible)."""
-        if hasattr(self, "_settings_db_info") and self._settings_db_info.winfo_exists():
-            from core.db_manager import database_summary
-            self._settings_db_info.configure(state="normal")
-            self._settings_db_info.delete("1.0", "end")
-            self._settings_db_info.insert("1.0", database_summary())
-            self._settings_db_info.configure(state="disabled")
+    def build_settings_page(self):
+        page, layout = self.page("Settings", "Configure ClamAV, scan exclusions and the appearance of your workspace.")
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        content = QWidget()
+        content.setObjectName("settingsContent")
+        form = QVBoxLayout(content)
+        form.setContentsMargins(0, 0, 8, 0)
+        form.setSpacing(16)
+        card, box = self.card()
+        box.addWidget(self.label("ClamAV runtime & database", "sectionTitle"))
+        self.runtime_info = QPlainTextEdit()
+        self.runtime_info.setReadOnly(True)
+        self.runtime_info.setMinimumHeight(145)
+        self.runtime_info.setMaximumHeight(180)
+        box.addWidget(self.runtime_info)
+        box.addWidget(self.button('Enable antivirus protection / setup', self.open_antivirus_setup, variant='primary'))
+        row = QHBoxLayout()
+        self.runtime_button = self.button("Install / update ClamAV", self.update_runtime)
+        self.database_button = self.button("Update virus database", self.update_database, variant="primary")
+        row.addWidget(self.runtime_button)
+        row.addWidget(self.database_button)
+        row.addWidget(self.button("Check status", self.refresh_state))
+        box.addLayout(row)
+        self.parallel_scan = QCheckBox("Parallel scanning (use clamd when available)")
+        self.parallel_scan.setChecked(self.config.get("parallel_scanning", True))
+        box.addWidget(self.parallel_scan)
+        form.addWidget(card)
+        card, box = self.card()
+        box.addWidget(self.label("Common excludes", "sectionTitle"))
+        box.addWidget(self.label("Only selected exclusions are applied to scans.", "muted"))
+        self.exclude_checks = {}
+        enabled = self.config.get("enabled_common_excludes", [])
+        for label in get_common_excludes():
+            check = QCheckBox(label)
+            check.setChecked(label in enabled)
+            box.addWidget(check)
+            self.exclude_checks[label] = check
+        form.addWidget(card)
+        card, box = self.card()
+        box.addWidget(self.label("Custom excluded folders", "sectionTitle"))
+        self.excluded_paths = QListWidget()
+        self.excluded_paths.setMinimumHeight(100)
+        self.excluded_paths.setMaximumHeight(150)
+        self.excluded_paths.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        for path in self.config.get("user_excludes", []):
+            if isinstance(path, str):
+                self.excluded_paths.addItem(path)
+        box.addWidget(self.excluded_paths)
+        row = QHBoxLayout()
+        row.addWidget(self.button("Add folder", self.add_exclude))
+        row.addWidget(self.button("Remove selected", self.remove_excludes))
+        row.addStretch()
+        box.addLayout(row)
+        form.addWidget(card)
+        card, box = self.card()
+        box.addWidget(self.label("Preferences", "sectionTitle"))
+        self.suppress_setup = QCheckBox("Don't show ClamAV setup automatically")
+        self.suppress_setup.setChecked(bool(self.config.get("suppress_clamav_setup_prompt", False)))
+        box.addWidget(self.suppress_setup)
+        box.addWidget(self.label("Uncheck to show the setup prompt again on the next launch.", "muted"))
+        row = QHBoxLayout()
+        row.addWidget(self.label("Color theme", "sectionTitle"))
+        self.theme = QComboBox()
+        self.theme.addItems(["dark", "light", "system"])
+        self.theme.setCurrentText(self.config.get("qt_theme", "dark"))
+        self.theme.currentTextChanged.connect(self.apply_theme)
+        row.addWidget(self.theme)
+        row.addStretch()
+        box.addLayout(row)
+        form.addWidget(card)
+        form.addStretch()
+        scroll.setWidget(content)
+        layout.addWidget(scroll, 1)
+        row = QHBoxLayout()
+        self.settings_feedback = self.label("", "muted")
+        row.addWidget(self.settings_feedback, 1)
+        row.addWidget(self.button("Save settings", self.save_settings, variant="primary"))
+        layout.addLayout(row)
+        return page
 
-    def _refresh_settings_status_info(self):
-        """Refresh the ClamAV runtime summary on the Settings page."""
-        if (
-            hasattr(self, "_settings_status_info")
-            and self._settings_status_info.winfo_exists()
-        ):
-            self._settings_status_info.configure(state="normal")
-            self._settings_status_info.delete("1.0", "end")
-            self._settings_status_info.insert("1.0", self._runtime_status_summary())
-            self._settings_status_info.configure(state="disabled")
+    def build_planned_page(self, title, subtitle, message):
+        page, layout = self.page(title, subtitle)
+        card, box = self.card()
+        box.addWidget(self.label("PLANNED FEATURE", "eyebrow"))
+        box.addWidget(self.label(message, "sectionTitle"))
+        box.addWidget(self.label("This module is not active in this release.", "muted"))
+        layout.addWidget(card)
+        layout.addStretch()
+        return page
 
-    def _runtime_status_summary(self) -> str:
-        """Return a compact runtime/database summary for Settings."""
-        status = self._startup_status
-        if status is None:
-            runtime = backend.detect_clamav_runtime()
-            status_label = "pending startup check"
-            db_label = "pending startup check"
-            freshclam_label = "pending startup check"
-        else:
-            runtime = status.runtime
-            status_label = "ready" if status.runtime_ok else "not ready"
-            db_label = "ready" if status.db_found else "missing"
-            freshclam_label = "available" if status.freshclam_ok else "not available"
-
-        lines = [
-            f"Runtime: {status_label}",
-            f"Source: {runtime.source or 'not found'}",
-            f"Version: {runtime.version or 'unknown'}",
-            f"clamscan: {runtime.clamscan or 'not found'}",
-            f"freshclam: {runtime.freshclam or 'not found'} ({freshclam_label})",
-            f"Database: {db_label}",
-        ]
-        return "\n".join(lines)
-
-    # ── Settings page: dialog-based update actions ──────────────────
-
-    def _settings_update_runtime(self):
-        """Update ClamAV with a modal progress dialog."""
-        from core.updater import check_for_updates, perform_update
-        from ui.update_dialog import UpdateProgressDialog
-
-        if not backend.manages_own_runtime():
-            distro = backend.distro_info()
-            if distro.get("unknown") == "true":
-                msg = (
-                    "ClamAV updates are handled by your Linux package manager.\n\n"
-                    "Update ClamAV using your distribution's normal software update tools."
-                )
-                command_text = None
-            else:
-                command_text = distro.get("update_cmd", "")
-                msg = (
-                    f"ClamAV updates are handled by {distro.get('pkg_manager', 'your package manager')}.\n\n"
-                    "Run the command below in a terminal to update system packages, "
-                    "including ClamAV."
-                )
-            self._show_info_dialog(
-                "ClamAV Update",
-                msg,
-                command_text=command_text or None,
-            )
-            return
-
-        dialog = UpdateProgressDialog(self, title="Update ClamAV")
-
-        def _do_update(dialog_log):
-            dialog_log("Checking for updates...\n")
-            platform_entry = check_for_updates(log=dialog_log)
-
-            if platform_entry is None:
-                dialog_log("No update available.\n")
-                return
-
-            dialog_log(f"Downloading ClamAV {platform_entry.get('latest_version', '?')}...\n")
-            error = perform_update(
-                platform_entry,
-                log=dialog_log,
-                progress=lambda phase, done, total: dialog.set_progress(done, total),
-            )
-
-            if error:
-                dialog_log(f"\nERROR: {error}\n")
-            else:
-                dialog_log("\nClamAV updated successfully!\n")
-                dialog_log("Use 'Update Database' to get the latest virus definitions.\n")
-
-        dialog.run_in_thread(_do_update)
-
-    def _settings_update_database(self):
-        """Update virus database with a modal progress dialog."""
-        from core.db_manager import run_freshclam_update
-        from ui.update_dialog import UpdateProgressDialog
-
-        if self._startup_status is None or not self._startup_status.can_update_db:
-            self._show_info_dialog(
-                "Database Update",
-                "freshclam not available.\nPlease install ClamAV first."
-            )
-            return
-
-        freshclam_path = self._startup_status.runtime.freshclam
-        dialog = UpdateProgressDialog(self, title="Update Virus Database")
-
-        def _do_update(dialog_log):
-            dialog_log("Running freshclam...\n")
-            success, output = run_freshclam_update(
-                freshclam_path, conf_path=None, log_callback=dialog_log
-            )
-
-            if success:
-                dialog_log("\nDatabase update completed.\n")
-                # Re-check status
-                status = check_startup()
-                self._startup_status = status
-                if status.db_found:
-                    dialog_log("Virus database is now ready.\n")
-                self.after(100, self._refresh_settings_status_info)
-                self.after(100, self._refresh_settings_db_info)
-            else:
-                dialog_log("\nDatabase update failed. See output above.\n")
-
-        dialog.run_in_thread(_do_update)
-
-    def _show_info_dialog(
-        self,
-        title: str,
-        message: str,
-        *,
-        command_text: str | None = None,
-    ):
-        """Show a styled info dialog."""
-        from ui.info_dialog import InfoDialog
-
-        InfoDialog(self, title, message, command_text=command_text)
-
-    def _switch_page(self, key: str):
-        """Show the page identified by *key* and hide all others."""
-        self._current_page = key
-
-        if key == "quarantine":
-            self._refresh_quarantine_page()
-
-        # Update nav button highlighting
-        for k, btn in self._nav_buttons.items():
-            if btn is None:
-                continue
-            if k == key:
-                btn.configure(
-                    fg_color=ACCENT_COLOR,
-                    text_color=WHITE_TEXT,
-                )
-            else:
-                btn.configure(
-                    fg_color="transparent",
-                    text_color=TEXT_SECONDARY,
-                )
-
-        # Show only the selected page
-        for k, page in self._pages.items():
-            if k == key:
-                page.pack(fill="both", expand=True)
-            else:
-                page.pack_forget()
-
-    def on_quarantine_changed(self):
-        """Called by child windows after quarantine contents change."""
-        self._refresh_quarantine_nav()
-        if hasattr(self, "_quarantine_list"):
-            self._refresh_quarantine_page()
-
-    # ── update runtime button (check + confirm + install) ───────────
-
-    def update_runtime(self):
-        """Handle 'Update ClamAV' button.
-
-        Windows: check manifest, download, install.
-        Linux:   tell the user their package manager handles ClamAV updates.
-        """
-        if not backend.manages_own_runtime():
-            # Linux — system package manager handles it
-            distro = backend.distro_info()
-            if distro.get("unknown") == "true":
-                self.log(
-                    "ClamAV updates are handled by your system's package manager.\n"
-                    "Use your package manager to update all installed packages.\n\n"
-                )
-            else:
-                self.log(
-                    f"ClamAV updates are handled by {distro.get('pkg_manager', 'your package manager')}.\n"
-                    f"To update ClamAV, run this command in a terminal:\n\n"
-                    f"  {distro.get('update_cmd', '')}\n\n"
-                )
-            return
-
-        # Windows — check for updates, download, install
-        # If update is already staged (from background check), install directly
-        if hasattr(self, "_pending_update_entry") and self._pending_update_entry:
-            entry = self._pending_update_entry
-            self._pending_update_entry = None
-            self._start_clamav_update(entry)
-            return
-
-        # Otherwise, check first then install
-        self.log("Checking for ClamAV updates...\n")
-
-        from core.updater import check_for_updates, perform_update
-
-        def _run():
-            try:
-                def _log(msg):
-                    self.output_queue.put(msg)
-
-                platform_entry = check_for_updates(log=_log)
-
-                if platform_entry is None:
-                    self.output_queue.put(
-                        "ClamAV runtime is up to date.\n\n"
-                    )
-                    return
-
-                latest = platform_entry.get("latest_version", "?")
-                self.output_queue.put(
-                    f"\nClamAV {latest} is available.\n"
-                )
-                self.output_queue.put(("__UPDATE_AVAILABLE__", platform_entry))
-
-            except Exception as e:
-                self.output_queue.put(
-                    f"\nUpdate check failed: {e}\n"
-                )
-
-        thread = threading.Thread(target=_run, daemon=True)
-        thread.start()
-
-    # ── folder / exclude / about / log ──────────────────────────────
-
-    def choose_scan_folder(self):
-        folder = FilePickerDialog.ask_directory(
-            self,
-            title="Choose scan folder",
-            start_dir=self.scan_path.get().strip(),
+    def build_about_page(self):
+        page, layout = self.page("About LibreWard", "An open-source workspace for security and privacy.")
+        card, box = self.card()
+        box.addWidget(self.label(f"{APP_NAME}  /  {APP_VERSION}", "sectionTitle"))
+        text = self.label(
+            "LibreWard is licensed under GPL-2.0-or-later.\n\n"
+            "LibreWard executes external ClamAV tools (clamscan and freshclam) "
+            "for antivirus scans and virus database updates. ClamAV is developed "
+            "by the ClamAV project/Cisco Talos and licensed separately under "
+            "the GNU General Public License version 2.\n\n"
+            "PySide6 / Qt is used under the applicable open-source LGPLv3 license.\n\n"
+            f"ClamAV homepage: {CLAMAV_HOMEPAGE}\nClamAV source: {CLAMAV_SOURCE}\n\n"
+            "LibreWard and ClamAV are provided with no warranty, to the extent permitted by law."
         )
-        if folder:
-            self.scan_path.set(folder)
-            self.save_config()
+        text.setWordWrap(True)
+        text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        box.addWidget(text)
+        layout.addWidget(card)
+        layout.addStretch()
+        return page
 
-    def open_exclude_window(self):
-        if self.exclude_window is not None and self.exclude_window.winfo_exists():
-            self.exclude_window.lift()
-            self.exclude_window.focus_force()
-            return
+    def apply_theme(self, theme):
+        dark = theme == "dark" or (theme == "system" and QApplication.instance().styleHints().colorScheme() == Qt.ColorScheme.Dark)
+        self.setStyleSheet(stylesheet(dark))
+        for key, button in self.nav_buttons.items():
+            button.setIcon(navigation_icon(key, "#92b6a3" if dark else "#4e685a"))
+        self.update()
 
-        self.exclude_window = ExcludeWindow(self)
+    def set_status(self, text, severity="normal"):
+        self.status.setText(text)
+        self.status.setProperty("severity", severity)
+        self.status.style().unpolish(self.status)
+        self.status.style().polish(self.status)
+
+    def system_theme_changed(self, scheme):
+        if self.theme.currentText() == "system":
+            self.apply_theme("system")
 
     def update_exclude_summary(self):
-        common_count = len(self.enabled_common_excludes)
-        user_count = len(self.user_excludes)
+        common = sum(check.isChecked() for check in self.exclude_checks.values())
+        custom = self.excluded_paths.count()
+        self.exclude_summary.setText(f"Excludes: {common} common groups · {custom} custom folders")
 
-        parts = []
-        if common_count:
-            parts.append(f"{common_count} common")
-        if user_count:
-            parts.append(f"{user_count} user-defined")
+    def choose_folder(self):
+        folder = QFileDialog.getExistingDirectory(self, "Choose scan folder", self.path.text())
+        if folder:
+            self.path.setText(folder)
 
-        text = "Excludes: none" if not parts else "Excludes: " + ", ".join(parts)
-        self.exclude_summary_label.configure(text=text)
+    def add_exclude(self):
+        folder = QFileDialog.getExistingDirectory(self, "Exclude folder")
+        paths = [self.excluded_paths.item(i).text() for i in range(self.excluded_paths.count())]
+        if folder and folder not in paths:
+            self.excluded_paths.addItem(folder)
 
-    def open_about_window(self):
-        if self.about_window is not None and self.about_window.winfo_exists():
-            self.about_window.lift()
-            self.about_window.focus_force()
-            return
+    def remove_excludes(self):
+        for item in self.excluded_paths.selectedItems():
+            self.excluded_paths.takeItem(self.excluded_paths.row(item))
 
-        self.about_window = AboutWindow(self)
-
-    def log(self, text):
-        self.log_box.insert("end", text)
-        self.log_box.see("end")
-
-    def clear_log(self):
-        self.log_box.delete("1.0", "end")
-
-    # ── activity indicator ──────────────────────────────────────────
-
-    def start_activity(self, text="Activity: running"):
-        self.activity_label.configure(text=text)
-
-        if not self.activity_label.winfo_ismapped():
-            self.activity_label.pack(
-                fill="x", padx=26, pady=(0, 3), before=self.log_frame
-            )
-
-        if not self.activity_bar.winfo_ismapped():
-            self.activity_bar.pack(
-                fill="x", padx=26, pady=(0, 10), before=self.log_frame
-            )
-
-        self.activity_bar.start()
-
-    def stop_activity(self, text="Activity: idle"):
-        self.activity_bar.stop()
-        self.activity_bar.pack_forget()
-        self.activity_label.configure(text=text)
-        self.activity_label.pack_forget()
-
-    # ── scan flow ───────────────────────────────────────────────────
-
-    def start_scan(self):
-        """Start a scan of the user-selected folder."""
-        path = self.scan_path.get().strip()
-
-        if not path or not os.path.exists(path):
-            self.log("ERROR: Scan folder does not exist.\n")
-            return
-
-        self._start_scan_flow(path, "Starting scan")
-
-    def start_quick_scan(self):
-        """Start a Quick System Scan of common malware locations."""
-        paths = backend.quick_scan_paths()
-
-        if not paths:
-            self.log(
-                "ERROR: No quick scan paths available on this system.\n"
-            )
-            return
-
-        self._start_scan_flow(paths, "Quick System Scan")
-
-    def _start_scan_flow(self, scan_roots, scan_label: str):
-        """Common scan setup: validate, reset state, log, start thread.
-
-        *scan_roots* may be a single path string or a list of path strings.
-        """
-        # Validate ClamAV is available
-        runtime = backend.detect_clamav_runtime()
-        if not runtime.found:
-            self.log("ERROR: ClamAV not found. Please install ClamAV first.\n")
-            self._show_startup_dialog()
-            return
-
-        status = self._startup_status
-        if status is None or status.runtime.clamscan != runtime.clamscan:
-            status = check_startup()
-            self._startup_status = status
-
-        if not status.runtime_ok:
-            self._show_info_dialog(
-                "ClamAV Runtime Not Ready",
-                "LibreWard found clamscan, but it could not run "
-                "`clamscan --version` successfully.\n\n"
-                "On Windows this usually means the portable runtime is incomplete "
-                "or a required Microsoft Visual C++ runtime dependency is missing.\n\n"
-                "Use Update ClamAV to reinstall the runtime, then try again.",
-            )
-            self.log(
-                "Scan cancelled because the ClamAV runtime failed validation. "
-                "Use 'Update ClamAV' to reinstall it.\n"
-            )
-            return
-
-        if not status.db_found:
-            self._offer_database_update(
-                "Virus database not found.\n\n"
-                "LibreWard will not start a scan until the database is ready.\n\n"
-                "Update the database now?"
-            )
-            self.log(
-                "Scan cancelled because the virus database is missing. "
-                "Update the database first.\n"
-            )
-            return
-
-        self.save_config()
-
-        self.stop_requested = False
-        self.summary_started = False
-        self.total_files = 0
-        self.scanned_files = 0
-        self.counted_files = set()
-
-        self.progress.set(0)
-        self.percent_label.configure(text="0%")
-        self.status_label.configure(text="preparing")
-        self.current_file_label.configure(text="-")
-        self.start_activity("Activity: preparing scan...")
-
-        self.start_button.configure(state="disabled")
-        self.quick_scan_button.configure(state="disabled")
-        self.stop_button.configure(state="normal")
-
-        active_excludes = get_active_exclude_patterns(
-            self.enabled_common_excludes, self.user_excludes
+    def save_settings(self):
+        updated = dict(self.config)
+        updated.update(
+            scan_path=self.path.text().strip(),
+            enabled_common_excludes=[label for label, check in self.exclude_checks.items() if check.isChecked()],
+            user_excludes=[self.excluded_paths.item(i).text() for i in range(self.excluded_paths.count())],
+            suppress_clamav_setup_prompt=self.suppress_setup.isChecked(),
+            qt_theme=self.theme.currentText(),
+            parallel_scanning=self.parallel_scan.isChecked(),
         )
-
-        self.log("\n========================================\n")
-        self.log(f"{scan_label}\n")
-
-        if isinstance(scan_roots, str):
-            self.log(f"Scan folder: {scan_roots}\n")
-        else:
-            self.log(f"Scan folders ({len(scan_roots)}):\n")
-            for p in scan_roots:
-                self.log(f"  - {p}\n")
-
-        if active_excludes:
-            self.log("Active excludes:\n")
-            for item in active_excludes:
-                self.log(f"  - {item}\n")
-        else:
-            self.log("Active excludes: none\n")
-
-        self.log(f"ClamAV: {runtime.clamscan}\n")
-        self.log(f"Version: {runtime.version or 'unknown'}\n")
-        self.log("Mode: one clamscan process, progress parsed from --verbose output\n")
-        self.log("========================================\n\n")
-
-        thread = threading.Thread(
-            target=self.run_scan,
-            args=(scan_roots, active_excludes, runtime.clamscan),
-            daemon=True,
-        )
-        thread.start()
-
-    def run_scan(self, scan_root, exclude_patterns, clamscan_path):
-        infected_found = False
-        errors_found = False
-        warnings_found = False
-        infected = []
-        total = 0
-        scan_summary_lines: list[str] = []
-        clamav_scanned_files = None
-        admin_hint = self._scan_may_need_admin(scan_root)
-
         try:
-            self.output_queue.put("Counting files before scan...\n")
-            self.output_queue.put(("__STATUS__", "counting files"))
-            self.output_queue.put(("__ACTIVITY__", "Activity: counting files..."))
-
-            files = collect_files(
-                scan_root, exclude_patterns, lambda: self.stop_requested
-            )
-            known_files = set(files)
-            total = len(files)
-
-            self.output_queue.put(("__SET_TOTAL__", total))
-
-            if self.stop_requested:
-                self.output_queue.put("\nScan stopped while counting files.\n")
-                return
-
-            if total == 0:
-                self.output_queue.put("No files found.\n")
-                return
-
-            self.output_queue.put(f"Files to scan: {total}\n\n")
-
-            cmd = build_clamscan_command(
-                scan_root, exclude_patterns, clamscan_path=clamscan_path
-            )
-
-            self.output_queue.put(
-                "Command: clamscan with selected scan roots and active excludes\n\n"
-            )
-
-            self.output_queue.put(("__STATUS__", "scanning"))
-            self.output_queue.put(("__ACTIVITY__", "Activity: clamscan is running..."))
-
-            self.process = backend.start_process(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                bufsize=1,
-            )
-
-            if self.process.stdout:
-                for line in self.process.stdout:
-                    if self.stop_requested:
-                        break
-
-                    file_path, status = parse_clamscan_result_line(
-                        line, known_files
-                    )
-
-                    if file_path:
-                        if file_path not in self.counted_files:
-                            self.counted_files.add(file_path)
-                            self.scanned_files += 1
-
-                        self.output_queue.put(("__CURRENT_FILE__", file_path))
-                        self.output_queue.put(
-                            ("__PROGRESS__", self.scanned_files, total, False)
-                        )
-
-                        if "FOUND" in status:
-                            infected_found = True
-                            infected.append((file_path, status))
-                            self.output_queue.put(line)
-
-                        elif "ERROR" in status:
-                            warnings_found = True
-                            self.output_queue.put(line)
-
-                        continue
-
-                    should_log, self.summary_started = should_log_line(
-                        line, self.summary_started
-                    )
-                    if should_log:
-                        if "WARNING" in line or "ERROR" in line:
-                            warnings_found = True
-                        self.output_queue.put(line)
-                        if self.summary_started:
-                            scan_summary_lines.append(line)
-                            summary_scanned = parse_clamscan_summary_value(
-                                line, "Scanned files"
-                            )
-                            if summary_scanned is not None:
-                                clamav_scanned_files = summary_scanned
-
-            if self.process is not None:
-                return_code = self.process.wait()
-            else:
-                return_code = 2
-
-            if not self.stop_requested and return_code in (0, 1):
-                self.output_queue.put(("__PROGRESS__", total, total, True))
-
-            if return_code == 1:
-                infected_found = True
-            elif return_code and return_code > 1:
-                warnings_found = True
-
-            self.output_queue.put("\n========================================\n")
-            self.output_queue.put("GUI RESULT\n")
-            self.output_queue.put("========================================\n")
-
-            if self.stop_requested:
-                self.output_queue.put("Result: scan stopped by user.\n")
-            elif infected_found:
-                self.output_queue.put("Result: infected files found!\n")
-            elif errors_found:
-                self.output_queue.put("Result: scan failed.\n")
-            elif warnings_found:
-                self.output_queue.put("Result: scan completed with warnings.\n")
-                self.output_queue.put(
-                    "Some files could not be opened because they were locked, "
-                    "changed during scanning, or access was denied.\n"
-                )
-            else:
-                self.output_queue.put("Result: no infected files found.\n")
-
-        except FileNotFoundError:
-            errors_found = True
-            self.output_queue.put(
-                "ERROR: clamscan not found. Please install ClamAV first.\n"
-            )
-        except Exception as e:
-            errors_found = True
-            self.output_queue.put(f"ERROR: {e}\n")
-        finally:
-            self.process = None
-            result = {
-                "infected": infected,
-                "total": total,
-                "scanned": (
-                    clamav_scanned_files
-                    if clamav_scanned_files is not None
-                    else self.scanned_files
-                ),
-                "stopped": self.stop_requested,
-                "errors": errors_found,
-                "warnings": warnings_found,
-                "admin_hint": admin_hint,
-                "summary_lines": scan_summary_lines,
-            }
-            self.output_queue.put(("__SCAN_DONE__", result))
-
-    @staticmethod
-    def _scan_may_need_admin(scan_roots) -> bool:
-        """True when a Windows scan target is commonly protected."""
-        if os.name != "nt":
+            save_config(updated)
+        except OSError as exc:
+            QMessageBox.warning(self, "Settings", f"Cannot save settings: {exc}")
             return False
+        self.config = updated
+        self.update_exclude_summary()
+        self.settings_feedback.setText("Settings saved")
+        return True
 
-        roots = [scan_roots] if isinstance(scan_roots, str) else list(scan_roots)
-        windir = os.path.abspath(os.environ.get("WINDIR", r"C:\Windows")).lower()
-        program_files = [
-            os.path.abspath(path).lower()
-            for path in (
-                os.environ.get("ProgramFiles"),
-                os.environ.get("ProgramFiles(x86)"),
-                os.environ.get("ProgramW6432"),
-            )
-            if path
-        ]
+    def set_busy(self, operation):
+        self.operation = operation
+        self.update_scan_indicator()
+        for button in self.idle_buttons:
+            button.setEnabled(operation is None)
+        for button in self.scan_actions:
+            button.setEnabled(operation is None and self.startup_status is not None and self.startup_status.can_scan)
+        self.stop_button.setEnabled(operation == "scan")
+        self.activity.setVisible(operation is not None)
+        if operation:
+            self.percent.setText("Working…")
+        else:
+            self.percent.setText(f"{max(0, self.progress.value())}%")
+        self.database_button.setEnabled(operation is None and self.startup_status is not None and self.startup_status.can_update_db)
+        if operation:
+            self.progress.setRange(0, 0)
+        else:
+            self.progress.setRange(0, 100)
 
-        for root in roots:
-            root_abs = os.path.abspath(root).lower()
-            drive, tail = os.path.splitdrive(root_abs)
-            if drive and tail in ("\\", "/"):
-                return True
-            if root_abs == windir or root_abs.startswith(windir + os.sep):
-                return True
-            if any(
-                root_abs == pf or root_abs.startswith(pf + os.sep)
-                for pf in program_files
-            ):
-                return True
+    def start_task(self, operation, target, *, on_done=None, title=None):
+        if self.operation is not None or (self.worker and self.worker.is_alive()):
+            return False
+        self.on_done = on_done
+        self.completion = None
+        self.set_busy(operation)
+        if title:
+            self.update_dialog = UpdateProgressDialog(self, title)
+            self.update_dialog.show()
 
-        return False
+        def run_worker():
+            try:
+                payload = target()
+                self.events.put(("__TASK_DONE__", True, payload))
+            except Exception as exc:
+                self.events.put(("__TASK_DONE__", False, str(exc)))
+
+        self.worker = threading.Thread(target=run_worker, daemon=False)
+        self.worker.start()
+        return True
+
+    def check_runtime(self):
+        status = check_startup(log=self.events.put)
+        state = {"status": status, "database": database_summary(), "quarantine": list_quarantined_files()}
+        self.events.put(("__STATE__", state))
+        return status
+
+    def refresh_state(self):
+        self.start_task("check", self.check_runtime)
+
+    def offer_setup(self, status):
+        if (not status.can_scan or not status.freshclam_ok) and not self.config.get("suppress_clamav_setup_prompt", False):
+            self.open_antivirus_setup(status)
+
+    def open_antivirus_setup(self, status=None):
+        if self.operation is not None:
+            return
+        # clicked(bool) may supply False instead of a StartupStatus.
+        status = status if hasattr(status, 'runtime_ok') else self.startup_status
+        if status is None:
+            self.start_task('check', self.check_runtime, on_done=self.open_antivirus_setup)
+            return
+        instructions = '' if backend.manages_own_runtime() else backend.runtime_install_instructions()
+        dialog = AntivirusSetupDialog(self, status, instructions=instructions,
+                                      suppressed=self.config.get('suppress_clamav_setup_prompt', False))
+        accepted = dialog.exec() == QDialog.DialogCode.Accepted
+        self.suppress_setup.setChecked(dialog.suppress.isChecked())
+        if not self.save_settings() or not accepted:
+            return
+        if dialog.action == 'runtime':
+            self.update_runtime()
+        elif dialog.action == 'database':
+            self.update_database()
+        elif dialog.action == 'check':
+            self.start_task('check', self.check_runtime, on_done=self.open_antivirus_setup)
+
+    def offer_database_update(self):
+        if self.startup_status and self.startup_status.can_update_db:
+            self.update_database()
+        else:
+            QMessageBox.warning(self, "Virus database missing", "Scanning is blocked until the virus database is available. Install a working ClamAV runtime first.")
+
+    def start_scan(self, roots):
+        if self.operation is not None:
+            return
+        if not roots or any(not root or not os.path.isdir(root) for root in roots):
+            QMessageBox.information(self, "Scan folder", "Choose an existing folder to scan.")
+            return
+        if not self.save_settings():
+            return
+        self.results.setRowCount(0)
+        self.findings_card.hide()
+        self.progress.setValue(0)
+        self.percent.setText("0%")
+        self.last_result = None
+        self.report_button.setEnabled(False)
+        self.pending_setup = False
+        self.service = ScanService(self.events)
+        patterns = get_active_exclude_patterns(set(self.config.get("enabled_common_excludes", [])), self.config.get("user_excludes", []))
+
+        def run_scan():
+            status = self.check_runtime()
+            if not status.can_scan:
+                self.events.put(("__NEEDS_SETUP__",))
+                return
+            self.service.run(roots, patterns, status.runtime.clamscan,
+                             parallel=self.config.get("parallel_scanning", True))
+
+        def after_scan(_):
+            if self.pending_setup:
+                self.offer_setup(self.startup_status)
+            elif self.last_result is not None:
+                self.show_scan_report()
+
+        self.start_task("scan", run_scan, on_done=after_scan)
 
     def stop_scan(self):
-        self.stop_requested = True
-        self.log("\nStopping scan...\n")
-        self.status_label.configure(text="stopping")
-
-        if self.activity_label.winfo_ismapped():
-            self.activity_label.configure(text="Activity: stopping...")
-
-        if self.process and self.process.poll() is None:
+        if self.service and self.operation == "scan":
             try:
-                backend.stop_process(self.process)
-            except Exception as e:
-                self.log(f"ERROR while stopping scan: {e}\n")
+                self.service.stop()
+                self.set_status("Stopping scan…")
+            except OSError as exc:
+                self.log.appendPlainText(f"Cannot stop scan: {exc}")
 
-    # ── queue processing ────────────────────────────────────────────
+    def update_database(self, *, confirm=True):
+        if self.operation is not None:
+            return
+        if confirm and not self.confirm("Update virus database", "Download the latest ClamAV virus database? On Linux this may request system authorization."):
+            return
 
-    def process_output_queue(self):
-        try:
-            while True:
-                msg = self.output_queue.get_nowait()
+        def run_update():
+            status = check_startup()
+            if not status.can_update_db:
+                raise RuntimeError("freshclam is unavailable. Install ClamAV before updating the database.")
+            success, _ = run_freshclam_update(status.runtime.freshclam, log_callback=self.events.put)
+            if not success:
+                raise RuntimeError("Database update failed. See the log.")
+            return self.check_runtime()
 
-                # --- Scan lifecycle ---
-                if isinstance(msg, tuple) and msg[0] == "__SCAN_DONE__":
-                    self.start_button.configure(state="normal")
-                    self.quick_scan_button.configure(state="normal")
-                    self.stop_button.configure(state="disabled")
+        self.start_task("database", run_update, title="Update virus database")
 
-                    if self.stop_requested:
-                        self.status_label.configure(text="stopped")
-                        self.stop_activity("Activity: stopped")
-                    else:
-                        self.status_label.configure(text="finished")
-                        self.stop_activity("Activity: finished")
+    def update_runtime(self):
+        if self.operation is not None:
+            return
+        if not backend.manages_own_runtime():
+            QMessageBox.information(self, "ClamAV installation and updates", backend.runtime_install_instructions())
+            return
+        setup = self.startup_status is None or not self.startup_status.runtime_ok
+        if setup:
+            consent = ClamAVConsentDialog(self)
+            accepted = consent.exec() == QDialog.DialogCode.Accepted
+            self.suppress_setup.setChecked(consent.suppress.isChecked())
+            if not self.save_settings() or not accepted:
+                return
+        status = self.startup_status
+        repair = bool(status and (not status.freshclam_ok or not (status.clamd_path or status.clamd_running)))
+        self.start_task(
+            "runtime-check", lambda: check_for_updates(log=self.events.put, repair=repair),
+            on_done=self.confirm_runtime_update, title="Check ClamAV runtime",
+        )
 
-                    self.current_file_label.configure(text="-")
-                    ScanResultWindow(self, msg[1])
+    def confirm_runtime_update(self, entry):
+        if entry is None:
+            QMessageBox.information(self, "ClamAV", "No compatible runtime update is available. See the log for details.")
+            return
+        if not self.confirm("Install ClamAV", f"Download and install ClamAV {entry.get('latest_version', '?')} from its official upstream release?"):
+            return
 
-                elif isinstance(msg, tuple) and msg[0] == "__STATUS__":
-                    self.status_label.configure(text=msg[1])
+        def run_install():
+            error = perform_update(
+                entry, log=self.events.put,
+                progress=lambda phase, done, total: self.events.put(("__DOWNLOAD_PROGRESS__", done, total)),
+            )
+            if error:
+                raise error
+            return self.check_runtime()
 
-                elif isinstance(msg, tuple) and msg[0] == "__ACTIVITY__":
-                    self.start_activity(msg[1])
+        def after_install(status):
+            if not status.runtime_ok:
+                QMessageBox.warning(self, "ClamAV", "The installed runtime could not be started. See the log.")
+                return
+            # Setup acceptance covers downloading the runtime and its databases.
+            self.update_database(confirm=False)
 
-                elif isinstance(msg, tuple) and msg[0] == "__SET_TOTAL__":
-                    self.total_files = msg[1]
-                    self.scanned_files = 0
-                    self.progress.set(0)
-                    self.percent_label.configure(text="0%")
-                    self.status_label.configure(
-                        text=f"found {self.total_files} files"
-                    )
+        self.start_task("runtime-install", run_install, on_done=after_install, title="Install ClamAV runtime")
 
-                elif isinstance(msg, tuple) and msg[0] == "__PROGRESS__":
-                    current, total, finished = msg[1], msg[2], msg[3]
+    def confirm(self, title, message):
+        return QMessageBox.question(
+            self, title, message,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        ) == QMessageBox.StandardButton.Yes
 
-                    if total > 0:
-                        raw_percent = current / total
-                        if not finished:
-                            raw_percent = min(raw_percent, 0.99)
+    @staticmethod
+    def selected_rows(table):
+        return sorted({index.row() for index in table.selectionModel().selectedRows()})
 
-                        self.progress.set(raw_percent)
+    def handle_findings(self, action):
+        if self.operation is not None:
+            return
+        rows = self.selected_rows(self.results)
+        if not rows:
+            return
+        files = [(self.results.item(row, 0).text(), self.results.item(row, 1).text()) for row in rows]
+        message = f"Move {len(files)} selected file(s) into quarantine?" if action == "quarantine" else f"Permanently delete {len(files)} selected file(s)? This cannot be undone."
+        if not self.confirm("Confirm file action", message):
+            return
 
-                        shown_percent = 100 if finished else int(raw_percent * 100)
+        def apply():
+            results = []
+            for path, threat in files:
+                try:
+                    msg = quarantine_file(path, threat) if action == "quarantine" else delete_file(path)
+                except OSError as exc:
+                    msg = str(exc)
+                success = msg.startswith("Quarantined:") if action == "quarantine" else msg.startswith("Deleted:")
+                self.events.put(msg)
+                results.append((path, success))
+            self.events.put(("__QUARANTINE__", list_quarantined_files()))
+            return results
 
-                        self.percent_label.configure(text=f"{shown_percent}%")
-                        self.status_label.configure(
-                            text=f"scanning {current} / {total}"
-                        )
+        def finished(results):
+            successful = {path for path, success in results if success}
+            for row in reversed(range(self.results.rowCount())):
+                if self.results.item(row, 0).text() in successful:
+                    self.results.removeRow(row)
+            self.findings_card.setVisible(self.results.rowCount() > 0)
+            self.report_batch(results)
 
-                elif isinstance(msg, tuple) and msg[0] == "__CURRENT_FILE__":
-                    path = msg[1]
-                    display = path
-                    if len(display) > 125:
-                        display = "..." + display[-122:]
-                    self.current_file_label.configure(
-                        text=display
-                    )
+        self.start_task("file-action", apply, on_done=finished)
 
-                # --- Startup / lifecycle ---
-                elif isinstance(msg, tuple) and msg[0] == "__NO_CLAMAV__":
-                    self._refresh_settings_status_info()
-                    self._show_startup_dialog()
+    def open_finding_location(self):
+        rows = self.selected_rows(self.results)
+        if rows:
+            path = self.results.item(rows[0], 0).text()
+            def open_location():
+                message = open_file_location(path)
+                if message:
+                    raise RuntimeError(message)
+            self.start_task("open-location", open_location)
 
-                elif isinstance(msg, tuple) and msg[0] == "__NO_DATABASE__":
-                    self._refresh_settings_status_info()
+    def selected_quarantine_items(self):
+        return [self.quarantine_table.item(row, 0).data(Qt.ItemDataRole.UserRole) for row in self.selected_rows(self.quarantine_table)]
 
-                elif isinstance(msg, tuple) and msg[0] == "__STARTUP_DONE__":
-                    self._refresh_settings_status_info()
-                    self._refresh_settings_db_info()
+    def restore_selected(self):
+        if self.operation is not None:
+            return
+        items = self.selected_quarantine_items()
+        if not items or not self.confirm("Restore files", f"Restore {len(items)} selected file(s) to their original locations? Restore only files you trust. Existing files will not be overwritten."):
+            return
+        self.quarantine_action(items, restore_file, "Restored:")
 
-                # --- Update flow ---
-                elif isinstance(msg, tuple) and msg[0] == "__UPDATE_AVAILABLE__":
-                    platform_entry = msg[1]
-                    latest = platform_entry.get("latest_version", "?")
-                    answer = messagebox.askyesno(
-                        "ClamAV Update Available",
-                        f"ClamAV {latest} is available.\n\n"
-                        "Do you want to download and install it now?",
-                    )
-                    if answer:
-                        self._pending_update_entry = None
-                        self._start_clamav_update(platform_entry)
-                    else:
-                        # Save for later if user clicks "Update ClamAV"
-                        self._pending_update_entry = platform_entry
+    def delete_quarantine_selected(self):
+        if self.operation is not None:
+            return
+        items = self.selected_quarantine_items()
+        if not items or not self.confirm("Delete quarantined files", f"Permanently delete {len(items)} selected quarantined file(s)? This cannot be undone."):
+            return
+        self.quarantine_action(items, delete_quarantined_file, "Permanently deleted:")
 
-                elif isinstance(msg, tuple) and msg[0] == "__UPDATE_PROGRESS__":
-                    # Progress bar during update download (re-use scan progress bar)
-                    self.progress.set(msg[1])
-                    pct = int(msg[1] * 100)
-                    self.status_label.configure(
-                        text=f"downloading update... {pct}%"
-                    )
+    def quarantine_action(self, items, action, success_prefix):
+        def apply():
+            results = []
+            for item in items:
+                try:
+                    msg = action(item["quarantine_name"])
+                except OSError as exc:
+                    msg = str(exc)
+                self.events.put(msg)
+                results.append((item["quarantine_name"], msg.startswith(success_prefix)))
+            self.events.put(("__QUARANTINE__", list_quarantined_files()))
+            return results
+        self.start_task("quarantine-action", apply, on_done=self.report_batch)
 
-                elif isinstance(msg, tuple) and msg[0] == "__UPDATE_DONE__":
-                    success = msg[1]
-                    self.progress.set(0)
-                    self.stop_activity("Activity: idle")
-                    if success:
-                        # Re-check status
-                        status = check_startup()
-                        self._startup_status = status
-                        self._refresh_settings_status_info()
-                        self._refresh_settings_db_info()
-                        self.status_label.configure(
-                            text="ClamAV updated"
-                        )
-                        if not status.db_found:
-                            self._offer_database_update(
-                                "ClamAV is updated, but the virus database is missing.\n\n"
-                                "Update the database now?"
-                            )
-                    else:
-                        self.status_label.configure(
-                            text="update failed"
-                        )
+    def report_batch(self, results):
+        failures = sum(not success for _, success in results)
+        self.set_status(f"Completed {len(results) - failures} of {len(results)} file action(s).")
+        if failures:
+            QMessageBox.warning(self, "File actions", f"{failures} action(s) failed. See the log; failed files remain available for retry.")
 
-                elif isinstance(msg, tuple) and msg[0] == "__DB_UPDATE_DONE__":
-                    success = msg[1]
-                    self.stop_activity("Activity: idle")
-                    if success:
-                        self.status_label.configure(
-                            text="database updated"
-                        )
-                        # Refresh settings DB info if the widget exists
-                        self._refresh_settings_status_info()
-                        self._refresh_settings_db_info()
-                    else:
-                        self.status_label.configure(
-                            text="database update failed"
-                        )
+    def show_quarantine(self, items):
+        self.quarantine_table.setRowCount(0)
+        self.quarantine_count.setText(f"{len(items)} quarantined file(s)" if items else "No quarantined files")
+        self.nav_buttons["quarantine"].setText(f"Quarantine  ({len(items)})" if items else "Quarantine")
+        for item in items:
+            row = self.quarantine_table.rowCount()
+            self.quarantine_table.insertRow(row)
+            for col, value in enumerate((item.get("original_path", ""), item.get("threat_name", ""), item.get("quarantined_at", ""), item.get("original_size", 0))):
+                cell = QTableWidgetItem(str(value))
+                cell.setData(Qt.ItemDataRole.UserRole, item)
+                self.quarantine_table.setItem(row, col, cell)
 
+    def poll_events(self):
+        for _ in range(200):
+            try:
+                event = self.events.get_nowait()
+            except queue.Empty:
+                break
+            if isinstance(event, str):
+                self.log.appendPlainText(event.rstrip())
+                if self.update_dialog:
+                    self.update_dialog.append(event)
+                continue
+            kind, *values = event
+            if kind == "__STATE__":
+                state = values[0]
+                self.startup_status = state["status"]
+                runtime = self.startup_status.runtime
+                self.runtime_info.setPlainText(
+                    '\n'.join(f'{name}: {value}' for name, value in setup_components(self.startup_status)) + '\n\n' +
+                    f"ClamAV: {runtime.version or 'unavailable'}\nSource: {runtime.source}\n"
+                    f"clamscan: {runtime.clamscan or 'not found'}\nfreshclam: {runtime.freshclam or 'not found'}\n\n{state['database']}"
+                )
+                self.show_quarantine(state["quarantine"])
+                self.sidebar_status.setText("●  Engine ready" if self.startup_status.can_scan else "●  Setup needed")
+                self.sidebar_status.setProperty("ready", self.startup_status.can_scan)
+                self.sidebar_status.style().unpolish(self.sidebar_status)
+                self.sidebar_status.style().polish(self.sidebar_status)
+                self.set_status("Ready" if self.startup_status.can_scan else "ClamAV runtime or database needs setup")
+            elif kind == "__QUARANTINE__":
+                self.show_quarantine(values[0])
+            elif kind == "__NEEDS_SETUP__":
+                self.pending_setup = True
+            elif kind == "__STATUS__":
+                self.set_status(values[0])
+            elif kind == "__CURRENT_FILE__":
+                self.current_file.setText(values[0])
+            elif kind == "__PROGRESS__":
+                current, total, finished = values
+                self.progress.setRange(0, 100)
+                self.progress.setValue(100 if finished else min(99, int(100 * current / total) if total else 0))
+                self.percent.setText(f"{self.progress.value()}%")
+            elif kind == "__DOWNLOAD_PROGRESS__":
+                if self.update_dialog:
+                    self.update_dialog.set_progress(*values)
+            elif kind == "__SCAN_DONE__":
+                result = values[0]
+                self.last_result = result
+                self.report_button.setEnabled(True)
+                self.findings_card.setVisible(bool(result["infected"]))
+                severity = "danger" if result.get("infected") or result.get("infected_found") or result.get("errors") else "warning" if result.get("warnings") else "normal"
+                self.set_status(scan_outcome(result), severity)
+                self.current_file.setText("—")
+                count_label = "Processed" if result.get("parallel") else "Scanned"
+                self.summary.setText(f"{count_label}: {result['scanned']} / estimated {result['total']}. "
+                                     "Counts may differ when files change or cannot be accessed.")
+                if result.get("warnings") and result.get("admin_hint"):
+                    self.summary.setText(self.summary.text() + " For a deeper scan of protected locations, you can run LibreWard as Administrator.")
+                for path, threat in result["infected"]:
+                    row = self.results.rowCount()
+                    self.results.insertRow(row)
+                    self.results.setItem(row, 0, QTableWidgetItem(path))
+                    self.results.setItem(row, 1, QTableWidgetItem(threat))
+            elif kind == "__TASK_DONE__":
+                self.completion = values
+        # The completion event can arrive just before the worker returns. Wait
+        # for its actual exit before enabling a subsequent operation.
+        if self.completion is not None and not self.worker.is_alive():
+            success, payload = self.completion
+            callback = self.on_done
+            self.completion = None
+            self.on_done = None
+            dialog = self.update_dialog
+            self.update_dialog = None
+            self.set_busy(None)
+            if dialog:
+                dialog.finish(success)
+                if success:
+                    dialog.accept()
                 else:
-                    self.log(str(msg))
+                    dialog.append(payload)
+            if success:
+                if callback:
+                    callback(payload)
+            else:
+                self.set_status("Operation failed", "danger")
+                self.log.appendPlainText(payload)
+                if not dialog:
+                    QMessageBox.warning(self, "LibreWard", payload)
 
-        except queue.Empty:
-            pass
+    def closeEvent(self, event):
+        if self.operation is not None or (self.worker and self.worker.is_alive()):
+            if self.operation == "scan":
+                self.stop_scan()
+                self.set_status("Stopping scan. Close again when it finishes.")
+            else:
+                self.set_status("Wait for the current operation before closing.")
+            event.ignore()
+            return
+        self.timer.stop()
+        updated = dict(self.config)
+        updated['window_geometry'] = bytes(self.saveGeometry()).hex()
+        try:
+            save_config(updated)
+            self.config = updated
+        except OSError as exc:
+            self.log.appendPlainText(f'Cannot save window size and position: {exc}')
+        event.accept()
 
-        self.after(100, self.process_output_queue)
+
+def run():
+    app = QApplication([])
+    app.setApplicationName(APP_NAME)
+    app.setOrganizationName(APP_NAME)
+    app.setStyle("Fusion")
+    window = QtMainWindow()
+    window.show()
+    return app.exec()

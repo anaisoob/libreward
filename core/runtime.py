@@ -22,11 +22,13 @@ class StartupStatus:
     db_found: bool          # at least one .cvd/.cld file exists in db_dir
     db_needs_update: bool   # db_found but possibly stale (always True for now)
     freshclam_ok: bool      # freshclam found and --version works
+    clamd_path: str | None = None
+    clamd_running: bool = False
 
     @property
     def can_scan(self) -> bool:
         """Can we start a scan right now?"""
-        return self.runtime_ok
+        return self.runtime_ok and self.db_found
 
     @property
     def can_update_db(self) -> bool:
@@ -94,13 +96,43 @@ def check_startup(log: Callable[[str], None] | None = None) -> StartupStatus:
             else:
                 log(f"  freshclam:  {runtime.freshclam} (version check failed)\n")
 
+    # Probe only: checking status must never start a daemon or download files.
+    from core.clamd import ping
+    clamd_path = backend.find_clamd(runtime.clamscan) if runtime.clamscan else None
+    clamd_running = any(ping(endpoint) for endpoint in backend.clamd_endpoints())
+    if log:
+        log(f"  Parallel scanner: {'running' if clamd_running else 'installed (starts when needed)' if clamd_path else 'not installed'}\n")
+
     return StartupStatus(
         runtime=runtime,
         runtime_ok=runtime_ok,
         db_found=db_found,
         db_needs_update=not db_found,
         freshclam_ok=freshclam_ok,
+        clamd_path=clamd_path,
+        clamd_running=clamd_running,
     )
+
+
+def setup_components(status):
+    """User-facing readiness, independent of the GUI and operating system."""
+    return [
+        ('Antivirus engine', 'Ready' if status.runtime_ok else 'Installation required'),
+        ('Database updater', 'Ready' if status.freshclam_ok else 'Installation required'),
+        ('Virus database', 'Available' if status.db_found else 'Download required'),
+        ('Parallel scanner', 'Running' if status.clamd_running else
+         'Installed — starts when needed' if status.clamd_path else 'Optional installation available'),
+    ]
+
+
+def setup_next_action(status):
+    if not status.runtime_ok or not status.freshclam_ok:
+        return 'runtime', 'Install ClamAV'
+    if not status.db_found:
+        return 'database', 'Download virus database'
+    if not (status.clamd_path or status.clamd_running):
+        return 'runtime', 'Set up parallel scanning'
+    return 'ready', 'Done'
 
 
 # ── version comparison ──────────────────────────────────────────────

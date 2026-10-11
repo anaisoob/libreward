@@ -170,3 +170,26 @@ class PlatformBackend(ABC):
     def platform_arch(self) -> str:
         """Return a string like 'windows-x64', 'linux-x64', etc."""
         ...
+
+    def scan_may_need_admin(self, scan_roots) -> bool:
+        """Whether selected targets warrant an optional deeper-scan hint."""
+        return False
+
+    def clamd_endpoints(self):
+        """Local daemon endpoints: ('unix', path) or ('tcp', (host, port))."""
+        return [("tcp", ("127.0.0.1", 3310))]
+
+    def find_clamd(self, clamscan_path):
+        """Find a daemon in the detected runtime, without downloading anything."""
+        import shutil
+        executable = "clamd.exe" if str(clamscan_path).lower().endswith(".exe") else "clamd"
+        sibling = Path(clamscan_path).parent / executable
+        return str(sibling) if sibling.is_file() else shutil.which(executable)
+
+    def clamd_listen_config(self, work_dir):
+        """Generate a private local listener for an application-owned daemon."""
+        import socket
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            port = listener.getsockname()[1]
+        return ("tcp", ("127.0.0.1", port)), ["TCPAddr 127.0.0.1", f"TCPSocket {port}"]

@@ -40,6 +40,20 @@ def _parse_version(raw: str | None) -> str | None:
 class WindowsBackend(PlatformBackend):
     """Platform backend for Windows."""
 
+    def clamd_endpoints(self):
+        endpoints = super().clamd_endpoints()
+        for folder in self._candidate_runtime_dirs():
+            try:
+                for line in (folder / 'clamd.conf').read_text().splitlines():
+                    parts = line.strip().split()
+                    if len(parts) == 2 and parts[0] == 'TCPSocket':
+                        port = int(parts[1])
+                        if 0 < port < 65536:
+                            endpoints.insert(0, ('tcp', ('127.0.0.1', port)))
+            except (OSError, ValueError, UnicodeError):
+                pass
+        return endpoints
+
     # ── process management ──────────────────────────────────────────
 
     def start_process(self, cmd, **kwargs):
@@ -398,3 +412,32 @@ class WindowsBackend(PlatformBackend):
         else:
             arch = machine
         return f"windows-{arch}"
+
+    def scan_may_need_admin(self, scan_roots) -> bool:
+        """True when a Windows scan target is commonly protected."""
+        roots = [scan_roots] if isinstance(scan_roots, str) else list(scan_roots)
+        windir = os.path.abspath(os.environ.get("WINDIR", r"C:\Windows")).lower()
+        program_files = [
+            os.path.abspath(path).lower()
+            for path in (
+                os.environ.get("ProgramFiles"),
+                os.environ.get("ProgramFiles(x86)"),
+                os.environ.get("ProgramW6432"),
+            )
+            if path
+        ]
+
+        for root in roots:
+            root_abs = os.path.abspath(root).lower()
+            drive, tail = os.path.splitdrive(root_abs)
+            if drive and tail in ("\\", "/"):
+                return True
+            if root_abs == windir or root_abs.startswith(windir + os.sep):
+                return True
+            if any(
+                root_abs == pf or root_abs.startswith(pf + os.sep)
+                for pf in program_files
+            ):
+                return True
+
+        return False

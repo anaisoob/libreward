@@ -44,7 +44,7 @@ def collect_files(scan_roots, exclude_patterns, check_stop):
                 full_path = os.path.join(root_abs, filename)
 
                 try:
-                    if os.path.isfile(full_path):
+                    if os.path.isfile(full_path) and not path_is_excluded(full_path, exclude_patterns):
                         files.append(os.path.abspath(full_path))
                 except OSError:
                     continue
@@ -105,8 +105,8 @@ def _first_database_dir():
 def parse_clamscan_result_line(line, known_files):
     """Parse one line of clamscan --verbose output.
 
-    Returns (path, status) if the line names a file in *known_files*,
-    otherwise returns (None, None).
+    Returns (path, status) for absolute per-file result lines.
+    *known_files* is retained for callers; it must not filter security findings.
     """
     stripped = line.strip()
 
@@ -116,7 +116,9 @@ def parse_clamscan_result_line(line, known_files):
     candidate, status = stripped.rsplit(": ", 1)
     candidate_abs = os.path.abspath(candidate)
 
-    if candidate_abs in known_files:
+    # Counting is only a progress estimate: files may appear during the scan.
+    is_result = status == "OK" or status.endswith(" FOUND") or status.endswith(" ERROR")
+    if os.path.isabs(candidate) and is_result:
         return candidate_abs, status
 
     return None, None

@@ -1,5 +1,7 @@
 """Scan result popup — outcome, stats, infected list with actions, and summary."""
 
+from core.scan_service import scan_outcome
+
 import tkinter as tk
 from tkinter import messagebox
 
@@ -49,19 +51,14 @@ class ScanResultWindow(ctk.CTkToplevel):
 
         # ── Outcome ─────────────────────────────────────────────────
         if stopped:
-            outcome = "Scan stopped by user"
             outcome_color = WARNING_COLOR
-        elif infected:
-            outcome = "Infected files found!"
+        elif infected or result.get("infected_found", False):
             outcome_color = DANGER_COLOR
         elif errors:
-            outcome = "Scan failed"
             outcome_color = DANGER_COLOR
         elif warnings:
-            outcome = "Scan completed with warnings"
             outcome_color = WARNING_COLOR
         else:
-            outcome = "No threats found"
             outcome_color = SUCCESS_COLOR
 
         # ── Build UI ────────────────────────────────────────────────
@@ -71,7 +68,7 @@ class ScanResultWindow(ctk.CTkToplevel):
         # Outcome header
         ctk.CTkLabel(
             container,
-            text=outcome,
+            text=scan_outcome(result),
             font=ctk.CTkFont(size=22, weight="bold"),
             text_color=outcome_color,
         ).pack(pady=(0, 14))
@@ -92,7 +89,7 @@ class ScanResultWindow(ctk.CTkToplevel):
                     "because ClamAV may skip files that changed, were locked, "
                     "could not be accessed, or were handled internally during scanning."
                 ),
-                wraplength=660,
+                wraplength=500,
                 justify="left",
                 font=ctk.CTkFont(size=12),
                 text_color=TEXT_SECONDARY,

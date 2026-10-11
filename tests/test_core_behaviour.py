@@ -103,7 +103,7 @@ class CoreBehaviourTests(unittest.TestCase):
 
             self.assertTrue(path_is_excluded(str(child), [str(excluded)]))
             args = build_clamscan_exclude_args([str(excluded)])
-            self.assertEqual(args, [f"--exclude-dir=^{re.escape(str(excluded))}"])
+            self.assertEqual(args, [f"--exclude-dir=^{re.escape(str(excluded))}(/|$)"])
 
     def test_parse_clamscan_result_line_uses_last_separator(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -1,27 +1,32 @@
 # LibreWard
 
-LibreWard is a cross-platform security and privacy desktop app. The first
-working module is antivirus scanning through ClamAV, and the project structure
-is prepared for firewall controls, internet protection, DNS/privacy features,
-and other system security integrations behind shared core logic and
-platform-specific backends.
+LibreWard is a security and privacy desktop application for Linux and Windows,
+built with Python and PySide6 / Qt. Antivirus scanning through ClamAV is
+available today. Firewall, internet monitoring and DNS/privacy features are
+planned; their placeholder pages do not provide protection yet.
 
-![LibreWard screenshot](assets/libreward.png)
+![LibreWard Virus scan page in the dark theme](assets/libreward.png)
 
-## Current Features
+## Features
 
-- CustomTkinter desktop UI with scan, quarantine, settings, firewall, and
-  internet-protection sections.
-- Antivirus scanning through ClamAV command-line tools: `clamscan` and
-  `freshclam`.
-- Platform-aware runtime detection, database locations, common excludes, and process handling.
-- Windows portable ClamAV runtime update flow using an update manifest and official upstream ZIP URLs.
-- Virus database update support.
-- Quarantine list with restore and permanent delete actions.
+- Folder and Quick system scans with common and custom exclusions.
+- Parallel checks of up to four files with `clamd`, with fallback to `clamscan`
+  when daemon setup is unavailable.
+- Progress percentage, single-line current-file paths with full-path tooltips,
+  a sidebar activity indicator and an automatic scan report dialog.
+- Separate warnings, scan failures and detections; confirmed quarantine,
+  restore and permanent deletion. Files are never automatically deleted.
+- Guided engine/database/daemon setup, database updates and Windows portable
+  runtime installation and repair.
+- Dark, light and system themes; remembered window size, position and maximized state.
 
-## Running From Source
+## Run from source
 
-### Linux / macOS
+Clone or download the project and run these commands from its directory.
+Python with virtual-environment support is required. Python dependencies are
+listed in [requirements.txt](requirements.txt).
+
+### Linux
 
 ```bash
 python3 -m venv venv
@@ -31,49 +36,38 @@ python -m pip install -r requirements.txt
 python main.py
 ```
 
-### Windows
+### Windows (PowerShell)
 
 ```powershell
 py -m venv venv
-.\venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-python main.py
+.\venv\Scripts\python.exe -m pip install --upgrade pip
+.\venv\Scripts\python.exe -m pip install -r requirements.txt
+.\venv\Scripts\python.exe main.py
 ```
 
-If PowerShell blocks activation, run this once in the same PowerShell window:
+ClamAV is a separate runtime; installing Python dependencies does not install
+the engine or virus database. Open **Settings → Enable antivirus protection /
+setup** to check components and follow the next setup step. Linux uses
+distribution packages. Windows offers an official portable runtime download
+with user consent. Scanning requires a working engine and database; `clamd`
+is optional.
 
-```powershell
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-.\venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-python main.py
-```
+## Documentation
 
-For antivirus scanning on Linux, LibreWard expects ClamAV to be installed by the
-system package manager. On Windows, LibreWard can use a portable ClamAV runtime
-in the user data directory.
-
-## Windows Runtime Data
-
-LibreWard keeps mutable Windows runtime data under `%APPDATA%\LibreWard\`:
-
-- `clamav-runtime\current\` for the user-updated portable ClamAV runtime.
-- `clamav-db\` for virus database files.
-- `logs\` for update logs.
-- `freshclam.conf` generated for managed database updates.
-
-Do not store downloaded databases inside the ClamAV runtime directory.
+- [Documentation index](docs/README.md)
+- [Setup, updates and data locations](docs/setup.md)
+- [Scanning, exclusions and results](docs/scanning.md)
+- [Development, tests and release checks](docs/development.md)
 
 ## Licensing
 
-LibreWard is licensed under the GNU General Public License version 2 or later:
-`GPL-2.0-or-later`. See [LICENSE](LICENSE).
+LibreWard is licensed under **GPL-2.0-or-later**. See [LICENSE](LICENSE).
+It executes external ClamAV tools including `clamscan`, `clamd` and `freshclam`.
+ClamAV is developed by the ClamAV project/Cisco Talos and licensed separately
+under GNU GPL version 2. Archives bundling ClamAV must retain its license and
+copyright notices alongside LibreWard's license.
 
-LibreWard executes ClamAV tools such as `clamscan` and `freshclam`. ClamAV is
-developed by the ClamAV project/Cisco Talos and is licensed separately under the
-GNU General Public License version 2.
-
-Release archives that bundle ClamAV must include this LibreWard license file and
-the ClamAV license/copyright files from the official ClamAV distribution.
+PySide6 / Qt uses the open-source **LGPLv3** option; it is not MIT-licensed.
+Distributions must satisfy the applicable Qt requirements, including library
+replacement where required. See [Qt licensing](https://doc.qt.io/qt-6/licensing.html)
+and [Qt for Python licensing](https://doc.qt.io/qtforpython-6/licenses.html).

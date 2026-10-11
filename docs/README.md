@@ -1,0 +1,13 @@
+# LibreWard documentation
+
+Start with the [project README](../README.md) for a screenshot, features and
+commands to run the app.
+
+| Guide | Contents |
+| --- | --- |
+| [Setup](setup.md) | Component checks, installation, updates and data locations |
+| [Scanning](scanning.md) | Quick scans, parallelism, exclusions, progress and results |
+| [Development](development.md) | Architecture, tests and release checks |
+
+Antivirus scanning is the current working security module. Firewall, internet
+monitoring and DNS/privacy features are planned.
