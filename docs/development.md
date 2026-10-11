@@ -67,3 +67,6 @@ exclude private paths, findings and personal data.
 
 Retain LibreWard and bundled ClamAV licenses in releases and review the Qt
 requirements linked from the [project README](../README.md).
+Archives bundling ClamAV must retain its copyright notices. Qt/PySide6
+distribution must meet the applicable license terms, including library
+replacement where required.
