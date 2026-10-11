@@ -456,16 +456,13 @@ class LinuxBackend(PlatformBackend):
         )
         if privileged and tool_name not in {item[1] for item in specifications}:
             raise ValueError('Select a detected firewall tool first.')
-        authorizer = self._trusted_firewall_executable('pkexec') if privileged else None
-        if privileged and not authorizer:
-            raise RuntimeError('System authorization (pkexec) is unavailable. Use the displayed sudo commands in a terminal.')
+        authorizer = self._require_authorizer() if privileged else None
 
         def query(command):
             if not privileged:
                 return self._firewall_query(command)
             code, output = self._firewall_query([authorizer, '--disable-internal-agent', *command], timeout=120)
-            if code in (126, 127):
-                raise RuntimeError('Firewall authorization was cancelled or could not be obtained. Existing rules were not changed.')
+            self._check_authorization_exit(code)
             return code, output
 
         for executable, name, arguments in specifications:
@@ -612,7 +609,7 @@ class LinuxBackend(PlatformBackend):
         import uuid
         from core.firewall import FirewallChangeResult, FirewallSnapshot, FirewallTool
         commands = self._firewall_change_commands(tool_name, rule=rule, enabled=enabled)
-        authorizer = self._trusted_firewall_executable('pkexec')
+        authorizer = self._require_authorizer()
         shell = self._trusted_firewall_executable('sh')
         resolved = []
         for executable, args in commands:
@@ -641,8 +638,7 @@ class LinuxBackend(PlatformBackend):
                   + shlex.join(read_command)
                   + '; read_status=$?; printf "\n' + marker + ':READ:%s\n" "$read_status"')
         code, output = self._firewall_query([authorizer, '--disable-internal-agent', shell, '-c', script], timeout=120)
-        if code in (126, 127):
-            raise RuntimeError('Firewall authorization was cancelled or could not be obtained. No success was confirmed.')
+        self._check_authorization_exit(code)
         change_match = re.search(r'(?:^|\n)' + marker + r':CHANGE:([0-9]+)\n', output)
         read_match = re.search(r'(?:^|\n)' + marker + r':READ:([0-9]+)(?:\n|$)', output)
         if code != 0 or not change_match or not read_match:
@@ -693,3 +689,91 @@ class LinuxBackend(PlatformBackend):
             return networks
         except (ValueError, KeyError, TypeError):
             return []
+
+    def authorization_status(self):
+        from core.authorization import AuthorizationStatus
+        if self._trusted_firewall_executable('pkexec'):
+            return AuthorizationStatus(True, 'System authorization uses the desktop polkit dialog. If no dialog appears, check that your desktop authentication agent and polkit service are running.')
+        manager = self.distro_info().get('pkg_manager')
+        command = {'apt': 'sudo apt install pkexec', 'pacman': 'sudo pacman -S polkit',
+                   'dnf': 'sudo dnf install polkit', 'apk': 'sudo apk add polkit',
+                   'zypper': 'sudo zypper install polkit'}.get(manager, '')
+        return AuthorizationStatus(False,
+            'pkexec is not installed or is unavailable in a trusted system location. '
+            'Install your distribution’s pkexec/polkit package, then ensure the polkit service '
+            'and your desktop authentication agent are running. You can use the displayed sudo '
+            'commands in a terminal instead. LibreWard does not receive or store your password.', command)
+
+    def _require_authorizer(self):
+        from core.authorization import AuthorizationError
+        path = self._trusted_firewall_executable('pkexec')
+        if not path:
+            raise AuthorizationError('missing', self.authorization_status().message)
+        return path
+
+    @staticmethod
+    def _check_authorization_exit(code):
+        from core.authorization import AuthorizationError
+        if code == 126:
+            raise AuthorizationError('cancelled', 'System authorization was cancelled. No successful change was confirmed.')
+        if code == 127:
+            raise AuthorizationError('unavailable',
+                'System authorization could not be obtained. If no password dialog appeared, '
+                'check that your desktop polkit authentication agent and the polkit service are running. '
+                'Authorization may also have been refused by system policy. '
+                'You can run the displayed sudo commands in a terminal instead.')
+
+    def _clamav_install_spec(self):
+        manager = self.distro_info().get('pkg_manager')
+        # Fixed package names and options; never parse editable instructions as commands.
+        specs = {
+            'apt': ('apt-get', ['install', '--assume-yes', '--no-remove'], ['clamav', 'clamav-freshclam', 'clamav-daemon']),
+            'pacman': ('pacman', ['-S', '--needed', '--noconfirm'], ['clamav']),
+            'dnf': ('dnf', ['install', '--assumeyes'], ['clamav', 'clamav-update', 'clamd']),
+            'apk': ('apk', ['add'], ['clamav', 'clamav-daemon', 'freshclam']),
+            'zypper': ('zypper', ['--non-interactive', 'install', '--no-recommends'], ['clamav']),
+        }
+        return manager, specs.get(manager)
+
+    def clamav_install_plan(self):
+        import shlex
+        from core.authorization import PackageInstallPlan
+        manager, spec = self._clamav_install_spec()
+        if not spec:
+            return None
+        executable, options, packages = spec
+        if not self._trusted_firewall_executable(executable):
+            return None
+        return PackageInstallPlan(manager, 'sudo ' + shlex.join([executable, *options, *packages]), tuple(packages),
+            'Install ClamAV, its updater and optional scan daemon through your distribution’s configured repositories. '
+            'The package manager will install required dependencies and may configure/start distribution services. '
+            'This requires network access, disk space and administrator authorization. '
+            'No full system upgrade or repository refresh is requested. '
+            'If repository metadata is outdated or an interactive decision is required, use the terminal instructions. '
+            'The virus database will be checked after installation; a separate database update may still be needed.')
+
+    def install_clamav(self, log=None):
+        plan = self.clamav_install_plan()
+        if plan is None:
+            raise RuntimeError('Automatic package installation is unavailable for this distribution. Use the installation instructions.')
+        authorizer = self._require_authorizer()
+        _, (executable, options, packages) = self._clamav_install_spec()
+        path = self._trusted_firewall_executable(executable)
+        if not path:
+            raise RuntimeError('The package manager is no longer available.')
+        command = [authorizer, '--disable-internal-agent', path, *options, *packages]
+        # Noninteractive stdin prevents package prompts from hanging without a terminal.
+        # Wait for the transaction rather than killing a package manager mid-install.
+        process = self.start_process(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                     stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace')
+        if process.stdout:
+            for line in process.stdout:
+                if log:
+                    log(line)
+        code = process.wait()
+        self._check_authorization_exit(code)
+        if code != 0:
+            raise RuntimeError('ClamAV package installation did not complete. Review the log. '
+                               'The package manager may require a repository update or a manual decision; use the terminal instructions before retrying.')
+        if log:
+            log('Package installation completed. Checking antivirus components…\n')

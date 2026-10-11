@@ -45,8 +45,9 @@ py -m venv venv
 ```
 
 After launching, open **Settings → Enable antivirus protection / setup** to
-set up ClamAV and its virus database. On Linux, the app provides instructions
-for your distribution's package manager. On Windows, it can download the official
+set up ClamAV and its virus database. On supported Linux distributions, the app
+can run the package installation after confirmation and system authorization,
+or provide commands for manual installation. On Windows, it can download the official
 portable runtime after confirmation. The optional `clamd` component enables
 parallel scanning. See the [setup guide](docs/setup.md) for details.
 

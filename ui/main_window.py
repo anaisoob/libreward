@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 
 from backends import backend
 from config import load_config, save_config
+from core.authorization import AuthorizationError
 from core.constants import APP_NAME, APP_VERSION, CLAMAV_HOMEPAGE, CLAMAV_SOURCE
 from core.db_manager import database_summary, run_freshclam_update
 from core.quarantine import (
@@ -24,7 +25,7 @@ from core.runtime import check_startup, setup_components
 from core.scan_service import ScanService, scan_outcome
 from core.updater import check_for_updates, perform_update
 from excludes import get_active_exclude_patterns, get_common_excludes
-from .dialogs import ClamAVConsentDialog, UpdateProgressDialog, ScanReportDialog, AntivirusSetupDialog
+from .dialogs import ClamAVConsentDialog, UpdateProgressDialog, ScanReportDialog, AntivirusSetupDialog, AuthorizationHelpDialog
 from .firewall_dialog import FirewallRuleDialog
 from .theme import stylesheet, navigation_icon
 from .widgets import ElidedPathLabel, BusyNavigationButton
@@ -45,6 +46,7 @@ class QtMainWindow(QMainWindow):
         self.completion = None
         self.on_done = None
         self.pending_setup = False
+        self.privileged_terminal_commands = ''
         config = load_config()
         self.config = config if isinstance(config, dict) else {}
         self.idle_buttons = []
@@ -205,6 +207,7 @@ class QtMainWindow(QMainWindow):
         self.firewall_tools.currentIndexChanged.connect(self.show_firewall_tool)
         row.addWidget(self.firewall_tools, 1)
         row.addWidget(self.button("Read as administrator", self.authorize_firewall, variant="primary"))
+        row.addWidget(self.button("Copy sudo commands", self.copy_firewall_commands))
         box.addLayout(row)
         actions = QHBoxLayout()
         self.firewall_enable_button = self.button("Enable firewall", self.enable_firewall, variant="primary")
@@ -248,9 +251,30 @@ class QtMainWindow(QMainWindow):
             self.firewall_refresh_pending = True
             self.maybe_refresh_firewall()
             return
+        self.privileged_terminal_commands = self.selected_firewall_tool().command
+        if not self.ensure_system_authorization():
+            return
         if self.start_task("firewall", lambda: backend.inspect_firewall(privileged=True, tool_name=name),
                            on_done=self.apply_privileged_firewall_snapshot):
             self.firewall_status.setText("Waiting for system authorization and reading rules…")
+
+    def show_authorization_help(self, message=None):
+        status = backend.authorization_status()
+        dialog = AuthorizationHelpDialog(self, status, self.privileged_terminal_commands, issue=message)
+        dialog.exec()
+        dialog.deleteLater()
+
+    def ensure_system_authorization(self):
+        if backend.authorization_status().available:
+            return True
+        self.show_authorization_help()
+        return False
+
+    def copy_firewall_commands(self):
+        tool = self.selected_firewall_tool()
+        if tool:
+            QApplication.clipboard().setText(tool.command)
+            self.firewall_change_result.setText('Sudo read commands copied. Run them in a terminal to inspect the firewall.')
 
     def apply_privileged_firewall_snapshot(self, snapshot):
         if self.firewall_snapshot:
@@ -369,6 +393,13 @@ class QtMainWindow(QMainWindow):
         dialog.deleteLater()
 
     def run_firewall_change(self, name, *, rule=None, enabled=True):
+        preview = backend.firewall_change_preview(name, rule=rule, enabled=enabled)
+        tool = self.selected_firewall_tool()
+        self.privileged_terminal_commands = '\n'.join('sudo ' + line for line in preview.splitlines())
+        if tool:
+            self.privileged_terminal_commands += '\n' + tool.command
+        if not self.ensure_system_authorization():
+            return
         if self.start_task('firewall-change', lambda: backend.change_firewall(name, rule=rule, enabled=enabled),
                            on_done=self.firewall_change_finished):
             self.firewall_change_result.setText('Waiting for system authorization…')
@@ -654,12 +685,14 @@ class QtMainWindow(QMainWindow):
         self.exclude_summary.setText(f"Excludes: {common} common groups · {custom} custom folders")
 
     def choose_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "Choose scan folder", self.path.text())
+        folder = QFileDialog.getExistingDirectory(self, "Choose scan folder", self.path.text(),
+            options=QFileDialog.Option.ShowDirsOnly | QFileDialog.Option.DontUseNativeDialog)
         if folder:
             self.path.setText(folder)
 
     def add_exclude(self):
-        folder = QFileDialog.getExistingDirectory(self, "Exclude folder")
+        folder = QFileDialog.getExistingDirectory(self, "Exclude folder",
+            options=QFileDialog.Option.ShowDirsOnly | QFileDialog.Option.DontUseNativeDialog)
         paths = [self.excluded_paths.item(i).text() for i in range(self.excluded_paths.count())]
         if folder and folder not in paths:
             self.excluded_paths.addItem(folder)
@@ -726,7 +759,7 @@ class QtMainWindow(QMainWindow):
                 payload = target()
                 self.events.put(("__TASK_DONE__", True, payload))
             except Exception as exc:
-                self.events.put(("__TASK_DONE__", False, str(exc)))
+                self.events.put(("__TASK_DONE__", False, exc if isinstance(exc, AuthorizationError) else str(exc)))
 
         self.worker = threading.Thread(target=run_worker, daemon=False)
         self.worker.start()
@@ -755,6 +788,7 @@ class QtMainWindow(QMainWindow):
             return
         instructions = '' if backend.manages_own_runtime() else backend.runtime_install_instructions()
         dialog = AntivirusSetupDialog(self, status, instructions=instructions,
+                                      install_plan=backend.clamav_install_plan(),
                                       suppressed=self.config.get('suppress_clamav_setup_prompt', False))
         accepted = dialog.exec() == QDialog.DialogCode.Accepted
         self.suppress_setup.setChecked(dialog.suppress.isChecked())
@@ -762,6 +796,8 @@ class QtMainWindow(QMainWindow):
             return
         if dialog.action == 'runtime':
             self.update_runtime()
+        elif dialog.action == 'package-install':
+            self.install_clamav_packages()
         elif dialog.action == 'database':
             self.update_database()
         elif dialog.action == 'check':
@@ -837,7 +873,7 @@ class QtMainWindow(QMainWindow):
         if self.operation is not None:
             return
         if not backend.manages_own_runtime():
-            QMessageBox.information(self, "ClamAV installation and updates", backend.runtime_install_instructions())
+            self.install_clamav_packages()
             return
         setup = self.startup_status is None or not self.startup_status.runtime_ok
         if setup:
@@ -852,6 +888,34 @@ class QtMainWindow(QMainWindow):
             "runtime-check", lambda: check_for_updates(log=self.events.put, repair=repair),
             on_done=self.confirm_runtime_update, title="Check ClamAV runtime",
         )
+
+    def install_clamav_packages(self):
+        if self.operation is not None:
+            return
+        plan = backend.clamav_install_plan()
+        if plan is None:
+            QMessageBox.information(self, 'Install ClamAV', backend.runtime_install_instructions())
+            return
+        self.privileged_terminal_commands = plan.command
+        if not self.confirm('Install ClamAV packages', plan.explanation + '\n\n' + plan.command + '\n\nInstall these packages?'):
+            return
+        if not self.ensure_system_authorization():
+            return
+
+        def install():
+            backend.install_clamav(log=self.events.put)
+            status = self.check_runtime()
+            if not status.runtime_ok or not status.freshclam_ok:
+                raise RuntimeError('The package manager finished, but ClamAV or freshclam is still unavailable. Review the installation log and check components again.')
+            return status
+
+        self.start_task('package-install', install, title='Install ClamAV', on_done=self.after_clamav_package_install)
+
+    def after_clamav_package_install(self, status):
+        if not status.db_found:
+            self.offer_database_update()
+        else:
+            self.open_antivirus_setup(status)
 
     def confirm_runtime_update(self, entry):
         if entry is None:
@@ -1086,6 +1150,8 @@ class QtMainWindow(QMainWindow):
                 # database update) start after the user dismisses this report.
                 if success and callback:
                     dialog.finished.connect(lambda _result, cb=callback, value=payload: cb(value))
+                if not success and isinstance(payload, AuthorizationError) and payload.kind != 'cancelled':
+                    dialog.finished.connect(lambda _result, issue=str(payload): self.show_authorization_help(issue))
                 dialog.finish(success, '' if success else str(payload))
             if success:
                 if callback and not dialog:
@@ -1102,9 +1168,12 @@ class QtMainWindow(QMainWindow):
                 if completed_operation == 'scan':
                     self.summary.setText('Scan could not finish. See the event log for details.')
                 if completed_operation not in ('firewall', 'firewall-change', 'firewall-networks'):
-                    self.log.appendPlainText(payload)
+                    self.log.appendPlainText(str(payload))
                 if not dialog:
-                    QMessageBox.warning(self, "LibreWard", payload)
+                    if isinstance(payload, AuthorizationError) and payload.kind != 'cancelled':
+                        self.show_authorization_help(str(payload))
+                    else:
+                        QMessageBox.warning(self, "LibreWard", str(payload))
 
         self.maybe_refresh_firewall()
 

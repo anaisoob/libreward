@@ -51,7 +51,7 @@ def stylesheet(dark):
     QLineEdit, QComboBox {{ background: {c['field']}; border: 1px solid {c['border']}; border-radius: 7px; padding: 9px 11px; selection-background-color: #278359; }}
     QComboBox::drop-down {{ border: none; width: 24px; }}
     QComboBox QAbstractItemView {{ background: {c['surface']}; color: {c['text']}; selection-background-color: {c['selected']}; }}
-    QPlainTextEdit, QListWidget, QTableWidget {{ background: {c['field']}; alternate-background-color: {c['alternate']}; border: 1px solid {c['border']}; border-radius: 7px; padding: 6px; selection-background-color: {c['selected']}; selection-color: {c['text']}; }}
+    QPlainTextEdit, QListWidget, QTableWidget, QListView, QTreeView {{ background: {c['field']}; alternate-background-color: {c['alternate']}; border: 1px solid {c['border']}; border-radius: 7px; padding: 6px; selection-background-color: {c['selected']}; selection-color: {c['text']}; }}
     QPlainTextEdit {{ font-family: "Cascadia Mono", "DejaVu Sans Mono", monospace; font-size: 11px; }}
     QTableWidget::item {{ padding: 5px 9px; border-bottom: 1px solid {c['border']}; }}
     QHeaderView::section {{ background: {c['surface']}; color: {c['muted']}; padding: 10px; border: none; border-bottom: 1px solid {c['border']}; font-size: 11px; font-weight: 600; }}

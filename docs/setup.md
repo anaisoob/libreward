@@ -18,10 +18,26 @@ prompts are suppressed; the overview and Settings let you change that preference
 
 ## Linux
 
-Install through your distribution's package manager. The overview provides
-distribution-specific instructions, including the daemon package where it is
-separate. Run the displayed command in a terminal, then select **I have installed
-it — check again** or **Check status** in LibreWard.
+The setup overview offers **Install ClamAV with system package manager** on
+supported apt, pacman, dnf, apk and zypper systems. Review the packages and
+command, then confirm and authorize through the system polkit dialog. LibreWard
+streams installation output into a progress report, retains the result until
+you close it, then checks components again. If signatures are missing, it
+offers a separate virus database update.
+
+Installation uses fixed package names from your distribution's configured
+repositories. Dependencies and distribution service setup may be included.
+LibreWard does not refresh repositories or perform a full system upgrade.
+If metadata is outdated or the transaction requires a manual decision, use
+the provided terminal instructions. Active package transactions must finish
+before closing the app.
+
+If automatic installation is unsupported or pkexec is unavailable, use
+**Copy install command** or the displayed manual instructions, then select
+**Check again** or **Check status**. Missing pkexec and failed desktop
+authorization have separate explanations; LibreWard supplies distribution
+installation guidance for polkit/pkexec and copies sudo commands for a terminal.
+It does not ask for or store your password in its own widgets.
 
 The distribution manages engine updates and normally stores signatures in
 `/var/lib/clamav`. Database updates may request system authorization. LibreWard

@@ -1,7 +1,7 @@
 """Qt dialogs shared by setup and background update flows."""
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QCheckBox, QDialog, QDialogButtonBox, QLabel, QPlainTextEdit,
+    QApplication, QCheckBox, QDialog, QDialogButtonBox, QLabel, QPlainTextEdit,
     QProgressBar, QPushButton, QVBoxLayout,
 )
 
@@ -34,7 +34,7 @@ class ClamAVConsentDialog(QDialog):
 
 class AntivirusSetupDialog(QDialog):
     """Show installed components and one concrete next setup action."""
-    def __init__(self, parent, status, *, instructions='', suppressed=False):
+    def __init__(self, parent, status, *, instructions='', install_plan=None, suppressed=False):
         from core.runtime import setup_components, setup_next_action
         super().__init__(parent)
         self.setWindowTitle('Enable antivirus protection')
@@ -57,7 +57,10 @@ class AntivirusSetupDialog(QDialog):
             text.setReadOnly(True)
             text.setPlainText(instructions)
             layout.addWidget(text)
-            if self.action == 'runtime':
+            if install_plan is not None:
+                action_label = 'Install ClamAV with system package manager'
+                self.action = 'package-install'
+            else:
                 action_label = 'I have installed it — check again'
                 self.action = 'check'
         self.suppress = QCheckBox("Don't show setup automatically")
@@ -65,8 +68,52 @@ class AntivirusSetupDialog(QDialog):
         layout.addWidget(self.suppress)
         buttons = QDialogButtonBox()
         self.action_button = buttons.addButton(action_label, QDialogButtonBox.ButtonRole.AcceptRole)
+        if self.action == 'package-install':
+            copy = buttons.addButton('Copy install command', QDialogButtonBox.ButtonRole.ActionRole)
+            copy.clicked.connect(lambda: QApplication.clipboard().setText(install_plan.command))
+            check = buttons.addButton('Check again', QDialogButtonBox.ButtonRole.ActionRole)
+            check.clicked.connect(self.recheck)
         buttons.addButton('Later', QDialogButtonBox.ButtonRole.RejectRole)
         buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def recheck(self):
+        self.action = 'check'
+        self.accept()
+
+
+class AuthorizationHelpDialog(QDialog):
+    def __init__(self, parent, status, commands='', *, issue=None):
+        super().__init__(parent)
+        self.setWindowTitle('Administrator authorization')
+        self.resize(650, 450)
+        layout = QVBoxLayout(self)
+        explanation = QLabel(issue or status.message)
+        explanation.setTextFormat(Qt.TextFormat.PlainText)
+        explanation.setWordWrap(True)
+        layout.addWidget(explanation)
+        if status.install_command:
+            install = QLabel('Install pkexec/polkit in a terminal:\n' + status.install_command)
+            install.setTextFormat(Qt.TextFormat.PlainText)
+            install.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            layout.addWidget(install)
+            copy_install = QPushButton('Copy authorization install command')
+            copy_install.clicked.connect(lambda: QApplication.clipboard().setText(status.install_command))
+            layout.addWidget(copy_install)
+        hint = QLabel('Alternatively, run the commands below using sudo in a terminal. '
+                      'Your password stays with the system tools. Afterward, check component status or use Read as administrator in the Firewall page to reload the relevant information.')
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        self.commands = QPlainTextEdit()
+        self.commands.setReadOnly(True)
+        self.commands.setPlainText(commands)
+        layout.addWidget(self.commands, 1)
+        copy = QPushButton('Copy sudo commands')
+        copy.setEnabled(bool(commands))
+        copy.clicked.connect(lambda: QApplication.clipboard().setText(commands))
+        layout.addWidget(copy)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 

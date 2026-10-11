@@ -21,8 +21,12 @@ The system polkit dialog authorizes one fixed read query using pkexec.
 UFW shows status and active rules; firewalld shows runtime zones. Reading
 permanent firewalld configuration is part of initial detection and may require
 permissions. The GUI remains unprivileged and never receives or stores passwords.
-Cancelling authorization stops the request. A desktop authentication agent and
-pkexec are required; otherwise use the displayed sudo commands in a terminal.
+Cancelling authorization stops the request. If pkexec is missing, an explanation
+dialog provides a distribution-specific installation command and copy buttons
+for terminal sudo commands. If authorization fails, it explains that the
+desktop polkit agent/service or system policy may need attention. The Firewall
+page also has **Copy sudo commands** for the selected tool’s read queries.
+Passwords are entered only into system tools, never into LibreWard widgets.
 
 ## Enabling protection
 

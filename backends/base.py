@@ -208,3 +208,14 @@ class PlatformBackend(ABC):
     def firewall_networks(self):
         """Connected LAN candidates as (interface, CIDR) pairs."""
         return []
+
+    def authorization_status(self):
+        from core.authorization import AuthorizationStatus
+        return AuthorizationStatus(False, 'System authorization is unavailable on this platform.')
+
+    def clamav_install_plan(self):
+        """Optional distro package installation plan, separate from Windows runtime updates."""
+        return None
+
+    def install_clamav(self, log=None):
+        raise NotImplementedError('Use the platform installation instructions.')

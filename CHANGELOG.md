@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Offer confirmed Linux ClamAV package installation with progress, component
+  recheck and follow-up database setup.
+- Explain unavailable pkexec/desktop authorization and provide copyable
+  terminal commands and installation guidance.
+- Use themed Qt folder dialogs and explicit folder-view colors for readable
+  dark/light mode across desktop environments.
+
 ## 0.2.0 — 2026-10-11
 
 ### Added

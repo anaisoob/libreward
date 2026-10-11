@@ -37,6 +37,8 @@ class QtFrontendTests(unittest.TestCase):
         self.patch('ui.main_window.check_startup', return_value=self.ready)
         self.patch('ui.main_window.load_config', return_value={'unrelated_setting': 'preserved'})
         self.patch('ui.main_window.save_config')
+        from core.authorization import AuthorizationStatus
+        self.patch('ui.main_window.backend.authorization_status', return_value=AuthorizationStatus(True, 'System dialog available'))
         self.patch('ui.main_window.database_summary', return_value='Database ready')
         self.patch('ui.main_window.list_quarantined_files', return_value=[])
         self.warning = self.patch('ui.main_window.QMessageBox.warning')
@@ -239,6 +241,83 @@ class QtFrontendTests(unittest.TestCase):
         self.assertEqual(dialog.rule().subnet, '')
         self.assertIn('including both LAN and Internet', dialog.hint.text())
         dialog.deleteLater()
+
+    def test_missing_pkexec_shows_help_and_does_not_change_firewall(self):
+        from core.authorization import AuthorizationStatus
+        from core.firewall import FirewallSnapshot, FirewallTool
+        self.window.apply_firewall_snapshot(FirewallSnapshot(True, [FirewallTool('UFW', 'Inactive', '', 'sudo ufw status verbose')]))
+        self.patch('ui.main_window.backend.authorization_status', return_value=AuthorizationStatus(False, 'pkexec missing', 'sudo apt install pkexec'))
+        change = self.patch('ui.main_window.backend.change_firewall')
+        with patch.object(self.window, 'show_authorization_help') as help_dialog:
+            self.window.run_firewall_change('UFW')
+        help_dialog.assert_called_once()
+        change.assert_not_called()
+        self.assertIn('sudo ufw --force enable', self.window.privileged_terminal_commands)
+
+    def test_authorization_agent_failure_keeps_commands_for_terminal(self):
+        from core.authorization import AuthorizationError
+        from core.firewall import FirewallSnapshot, FirewallTool
+        self.window.apply_firewall_snapshot(FirewallSnapshot(True, [FirewallTool('UFW', 'Inactive', '', 'sudo ufw status verbose')]))
+        self.patch('ui.main_window.backend.change_firewall', side_effect=AuthorizationError('unavailable', 'Check desktop authentication agent'))
+        with patch.object(self.window, 'show_authorization_help') as help_dialog:
+            self.window.run_firewall_change('UFW')
+            self.wait_idle()
+        help_dialog.assert_called_once_with('Check desktop authentication agent')
+        self.assertIn('sudo ufw status verbose', self.window.privileged_terminal_commands)
+
+    def test_clamav_install_refusal_never_runs_package_manager(self):
+        from core.authorization import PackageInstallPlan
+        plan = PackageInstallPlan('apt', 'sudo apt-get install clamav', ('clamav',), 'Install from distro repositories')
+        self.patch('ui.main_window.backend.clamav_install_plan', return_value=plan)
+        install = self.patch('ui.main_window.backend.install_clamav')
+        with patch.object(self.window, 'confirm', return_value=False):
+            self.window.install_clamav_packages()
+        install.assert_not_called()
+
+    def test_confirmed_clamav_install_rechecks_and_waits_for_report_close(self):
+        from core.authorization import PackageInstallPlan
+        plan = PackageInstallPlan('apt', 'sudo apt-get install clamav', ('clamav',), 'Install from distro repositories')
+        self.patch('ui.main_window.backend.clamav_install_plan', return_value=plan)
+        install = self.patch('ui.main_window.backend.install_clamav')
+        with patch.object(self.window, 'confirm', return_value=True), patch.object(self.window, 'after_clamav_package_install') as after:
+            self.window.install_clamav_packages()
+            dialog = self.window.update_dialog
+            self.wait_idle()
+            install.assert_called_once()
+            after.assert_not_called()
+            self.assertTrue(dialog.isVisible())
+            dialog.close()
+            self.app.processEvents()
+            after.assert_called_once_with(self.ready)
+
+    def test_folder_choosers_use_themed_qt_dialog(self):
+        from PySide6.QtWidgets import QFileDialog
+        with patch('ui.main_window.QFileDialog.getExistingDirectory', return_value='') as choose:
+            self.window.choose_folder()
+            self.window.add_exclude()
+        self.assertEqual(choose.call_count, 2)
+        for call in choose.call_args_list:
+            self.assertTrue(call.kwargs['options'] & QFileDialog.Option.DontUseNativeDialog)
+            self.assertTrue(call.kwargs['options'] & QFileDialog.Option.ShowDirsOnly)
+
+    def test_folder_views_have_dark_and_light_text_background_contrast(self):
+        from PySide6.QtGui import QPalette
+        from PySide6.QtWidgets import QFileDialog, QTreeView
+        for mode in ('dark', 'light'):
+            self.window.apply_theme(mode)
+            dialog = QFileDialog(self.window)
+            dialog.setOption(QFileDialog.Option.DontUseNativeDialog)
+            dialog.ensurePolished()
+            view = dialog.findChild(QTreeView)
+            view.ensurePolished()
+            text = view.palette().color(QPalette.ColorRole.Text)
+            background = view.palette().color(QPalette.ColorRole.Base)
+            self.assertNotEqual(text, background)
+            if mode == 'dark':
+                self.assertGreater(text.lightness(), background.lightness())
+            else:
+                self.assertLess(text.lightness(), background.lightness())
+            dialog.deleteLater()
 
     def test_navigation_keeps_operation_locked(self):
         release = threading.Event()
@@ -465,6 +544,33 @@ class QtFrontendTests(unittest.TestCase):
         self.assertEqual(dialog.action, 'check')
         self.assertIn('check again', dialog.action_button.text())
         dialog.deleteLater()
+
+    def test_linux_setup_offers_install_and_manual_recheck(self):
+        from dataclasses import replace
+        from core.authorization import PackageInstallPlan
+        from ui.dialogs import AntivirusSetupDialog
+        status = replace(self.ready, runtime_ok=False)
+        plan = PackageInstallPlan('apt', 'sudo apt-get install clamav', ('clamav',), 'Install packages')
+        dialog = AntivirusSetupDialog(self.window, status, instructions='Install using apt.', install_plan=plan)
+        self.assertEqual(dialog.action, 'package-install')
+        dialog.recheck()
+        self.assertEqual(dialog.action, 'check')
+        dialog.deleteLater()
+
+    def test_package_authorization_failure_shows_help_after_report_close(self):
+        from core.authorization import AuthorizationError, PackageInstallPlan
+        plan = PackageInstallPlan('apt', 'sudo apt-get install clamav', ('clamav',), 'Install packages')
+        self.patch('ui.main_window.backend.clamav_install_plan', return_value=plan)
+        self.patch('ui.main_window.backend.install_clamav', side_effect=AuthorizationError('unavailable', 'No desktop agent'))
+        with patch.object(self.window, 'confirm', return_value=True), patch.object(self.window, 'show_authorization_help') as help_dialog:
+            self.window.install_clamav_packages()
+            dialog = self.window.update_dialog
+            self.wait_idle()
+            help_dialog.assert_not_called()
+            self.assertIn('No desktop agent', dialog.log.toPlainText())
+            dialog.close()
+            self.app.processEvents()
+            help_dialog.assert_called_once_with('No desktop agent')
 
     def test_worker_failure_releases_busy_state(self):
         def fail():
