@@ -49,6 +49,18 @@ updates/*.tmp
 .env
 .env.*
 config.local.json
+/config.json
+.ssh/
+.aws/
+.codex/
+.agents/
+*.pem
+*.key
+*.p12
+*.pfx
+*.cvd
+*.cld
+quarantine/
 AGENTS.md
 # Runtime updater staging directories
 updates/clamav-staging/

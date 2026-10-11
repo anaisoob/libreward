@@ -23,7 +23,7 @@ planned; their placeholder pages do not provide protection yet.
 ## Run from source
 
 Clone or download the project and run these commands from its directory.
-Python with virtual-environment support is required. Python dependencies are
+Python 3.10 or newer with virtual-environment support is required. Dependencies are
 listed in [requirements.txt](requirements.txt).
 
 ### Linux

@@ -2,7 +2,7 @@
 
 Full update flow for Windows (and potentially Linux in the future):
 
-    1. Fetch update manifest (from Codeberg, with local fallback)
+    1. Fetch update manifest (from GitHub, with local fallback)
     2. Check minimal_libreward_version
     3. Compare local ClamAV version with latest in manifest
     4. If update available → ask user
@@ -58,7 +58,7 @@ def _load_local_manifest() -> dict | None:
 def fetch_manifest(timeout: int = 15) -> dict:
     """Fetch the update manifest.
 
-    Tries the Codeberg URL first, falls back to the local bundled manifest.
+    Tries the GitHub URL first, falls back to the local bundled manifest.
     Raises RuntimeError if both fail.
     """
     errors: list[str] = []

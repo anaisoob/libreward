@@ -4,7 +4,7 @@ APP_VERSION = "0.1.0"
 # URL of the update manifest hosted in the LibreWard repository.
 # The manifest points to official ClamAV releases on GitHub.
 CLAMAV_RUNTIME_MANIFEST_URL = (
-    "https://codeberg.org/user/libreward/raw/branch/main/updates/clamav-runtime-windows.json"
+    "https://raw.githubusercontent.com/anaisoob/libreward/main/updates/clamav-runtime-windows.json"
 )
 
 # Official ClamAV homepage / source for About window attribution
