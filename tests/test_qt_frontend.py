@@ -98,6 +98,7 @@ class QtFrontendTests(unittest.TestCase):
         self.assertEqual('Protection is off', self.window.firewall_status.text())
         self.assertEqual(self.window.firewall_status.property('severity'), 'danger')
         self.assertIn('saved UFW rules', self.window.firewall_rules.toPlainText())
+        self.assertIn('before turning protection on', self.window.firewall_management_hint.text())
 
     def test_firewall_auto_check_is_cached_and_refresh_button_is_removed(self):
         from core.firewall import FirewallSnapshot
@@ -179,6 +180,7 @@ class QtFrontendTests(unittest.TestCase):
         change.assert_called_once_with('UFW', rule=None, enabled=True)
         self.assertIn('Change completed', self.window.firewall_change_result.text())
         self.assertEqual('Protection is on', self.window.firewall_status.text())
+        self.assertIn('take effect immediately', self.window.firewall_management_hint.text())
         self.assertIn('new rules', self.window.firewall_rules.toPlainText())
         self.assertEqual(self.window.firewall_enable_button.text(), 'Disable firewall')
         self.assertTrue(self.window.firewall_enable_button.isEnabled())

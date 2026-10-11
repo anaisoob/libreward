@@ -3,7 +3,8 @@
 ## Unreleased
 
 - Simplify the firewall page with plain-language protection status and optional
-  technical rule details; remove its Copy sudo commands button.
+  technical rule details; remove its Copy sudo commands button. Firewall hints
+  match whether protection is on, off or unconfirmed.
 
 - Present scan reports in plain language, with optional technical details and
   scan durations formatted as hours, minutes and seconds.

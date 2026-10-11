@@ -350,9 +350,16 @@ class QtMainWindow(QMainWindow):
         elif not managed:
             hint = 'This tool supports inspection here. Use UFW or firewalld to enable protection and add rules.'
         elif tool.name == 'firewalld':
-            hint = 'Turn on this firewall before adding rules. Rules apply to the selected connection group (zone). Turning it on here does not enable automatic startup.'
-        else:
+            hint = ('New rules apply to the selected connection group (zone). Choose whether each rule applies now or after a restart.' if tool.state == 'Running' else
+                    'Turn on this firewall before adding rules. Rules apply to the selected connection group (zone). '
+                    'Turning it on here does not enable automatic startup.' if tool.state == 'Not running' else
+                    'Check protection status before turning this firewall on or adding rules.')
+        elif tool.state == 'Active':
+            hint = 'New rules take effect immediately after you confirm them.'
+        elif tool.state == 'Inactive':
             hint = 'You can add rules before turning protection on. Saved rules take effect when the firewall is on.'
+        else:
+            hint = 'Check protection status before turning this firewall on or adding rules.'
         self.firewall_management_hint.setText(hint)
 
     def enable_firewall(self):
