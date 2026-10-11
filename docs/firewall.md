@@ -4,7 +4,8 @@ Open **Firewall**. On the first visit, LibreWard automatically checks installed 
 firewalld, nftables and IPv4/IPv6 iptables tools in a background worker.
 If another operation is running, detection waits until it finishes while this
 page is open. Results are retained when switching pages; revisiting does not
-repeat a completed check. Choose a detected tool to see its status and rules. Several tools may expose
+repeat a completed check. Choose a detected tool to see whether its protection is on. Select **Show technical
+rule details** to see its rules. Several tools may expose
 the same underlying Linux netfilter configuration.
 
 ## Reading status and rules
@@ -16,7 +17,7 @@ shows runtime and permanent zones separately when running. nftables and
 iptables show rulesets; rules being present does not establish complete
 network protection.
 
-Select a tool and click **Read as administrator** if permission is required.
+Select a tool and click **Check protection status** if permission is required.
 The system polkit dialog authorizes one fixed read query using pkexec.
 UFW shows status and active rules; firewalld shows runtime zones. Reading
 permanent firewalld configuration is part of initial detection and may require
@@ -24,8 +25,7 @@ permissions. The GUI remains unprivileged and never receives or stores passwords
 Cancelling authorization stops the request. If pkexec is missing, an explanation
 dialog provides a distribution-specific installation command and copy buttons
 for terminal sudo commands. If authorization fails, it explains that the
-desktop polkit agent/service or system policy may need attention. The Firewall
-page also has **Copy sudo commands** for the selected tool’s read queries.
+desktop polkit agent/service or system policy may need attention.
 Passwords are entered only into system tools, never into LibreWard widgets.
 
 ## Enabling protection
@@ -55,7 +55,7 @@ candidate is filled in. Choose another detected adapter/subnet or edit the CIDR
 if needed. The list may include VPNs and virtual adapters. If detection is
 unavailable (for example, the `ip` tool is missing), enter the CIDR manually. Choose Allow/Block, TCP/UDP
 and a destination port or range between 1 and 65535 (for example `22` or
-`8000-8010`). Each change shows a description and command for confirmation
+`8000-8010`). Each change shows a plain-language description for confirmation
 before system authorization. Existing rules and their ordering can affect
 whether a new rule matches traffic.
 
@@ -102,7 +102,7 @@ If no supported command is detected, LibreWard recommends UFW and provides a
 package installation command for apt, pacman or apk. For other distributions,
 consult their package documentation. Missing commands do not prove that the
 kernel has no firewall rules. LibreWard does not install packages automatically.
-After installation, use **Read as administrator** to recheck detection if no
+After installation, use **Check protection status** to recheck detection if no
 tool was previously found. Installing UFW does not enable it.
 
 References: [UFW](https://help.ubuntu.com/community/UFW),

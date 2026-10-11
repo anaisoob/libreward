@@ -102,7 +102,7 @@ class AuthorizationHelpDialog(QDialog):
             copy_install.clicked.connect(lambda: QApplication.clipboard().setText(status.install_command))
             layout.addWidget(copy_install)
         hint = QLabel('Alternatively, run the commands below using sudo in a terminal. '
-                      'Your password stays with the system tools. Afterward, check component status or use Read as administrator in the Firewall page to reload the relevant information.')
+                      'Your password stays with the system tools. Afterward, check component status or use Check protection status in the Firewall page to reload the relevant information.')
         hint.setWordWrap(True)
         layout.addWidget(hint)
         self.commands = QPlainTextEdit()
@@ -184,6 +184,7 @@ class ScanReportDialog(QDialog):
     def __init__(self, parent, result):
         from core.scan_service import scan_outcome
         from core.scan_warnings import warning_report
+        from core.scan_report import friendly_report
         super().__init__(parent)
         self.setWindowTitle("Scan report")
         self.resize(680, 460)
@@ -191,21 +192,20 @@ class ScanReportDialog(QDialog):
         title = QLabel(scan_outcome(result))
         title.setObjectName("pageTitle")
         layout.addWidget(title)
-        count_label = 'Processed' if result.get('parallel') else 'Scanned'
-        incomplete = result.get('warning_count', 'yes' if result.get('warnings') else 0)
-        summary = QLabel(
-            f"{count_label}: {result.get('scanned', 0)} / estimated {result.get('total', 0)}\n"
-            f"Detected files: {len(result.get('infected', []))}\n"
-            f"Incomplete checks: {incomplete}\n"
-            f"Errors: {'yes' if result.get('errors') else 'none'}"
-        )
-        layout.addWidget(summary)
         report = QPlainTextEdit()
         report.setReadOnly(True)
         lines = result.get('summary_lines', [])
         engine_report = ''.join(lines) if lines else 'No ClamAV summary is available for this scan.'
-        report.setPlainText(warning_report(result) + '\n' + engine_report)
+        report.setPlainText(friendly_report(result))
         layout.addWidget(report)
+        details = QCheckBox('Show technical details')
+        layout.addWidget(details)
+        technical = QPlainTextEdit()
+        technical.setReadOnly(True)
+        technical.setPlainText(warning_report(result) + '\n' + engine_report)
+        technical.hide()
+        details.toggled.connect(technical.setVisible)
+        layout.addWidget(technical)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)

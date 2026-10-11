@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from core.clamd import ClamdSession, ScanCancelled, FileScanWarning, scan_file
 from core.file_discovery import FileDiscovery
 from core.scan_policy import scan_limits
+from core.scan_report import format_duration
 from core.scan_warnings import WarningSummary, alert_warning, clean_reason
 from excludes import mandatory_exclude_patterns
 
@@ -21,7 +22,7 @@ from scanner import (build_clamscan_command,
 
 
 class ScanService:
-    def __init__(self, output_queue=None, *, scan_profile='standard'):
+    def __init__(self, output_queue=None, *, scan_profile='standard', workers='auto'):
         self.output_queue = output_queue if output_queue is not None else queue.Queue()
         self._stop = threading.Event()
         self.process = None
@@ -29,6 +30,8 @@ class ScanService:
         self.summary_started = False
         self.result = None
         self.scan_profile = scan_profile
+        self.workers = workers
+        self.limits = scan_limits(scan_profile, workers)
         self.warning_summary = WarningSummary()
 
     @property
@@ -45,6 +48,7 @@ class ScanService:
                 pass  # process exited between poll and termination
 
     def run(self, scan_root, exclude_patterns, clamscan_path, *, parallel=False):
+        started = None
         infected_found = False
         errors_found = False
         warnings_found = False
@@ -64,7 +68,7 @@ class ScanService:
         try:
             exclude_patterns = list(dict.fromkeys([*exclude_patterns, *mandatory_exclude_patterns()]))
             if parallel:
-                daemon = ClamdSession(backend, self.scan_profile)
+                daemon = ClamdSession(backend, self.scan_profile, self.workers)
                 self.output_queue.put(("__STATUS__", "Preparing parallel scanner…"))
                 try:
                     endpoint = daemon.acquire(clamscan_path, _first_database_dir(),
@@ -78,7 +82,9 @@ class ScanService:
                 else:
                     used_parallel = True
                     source = 'existing' if daemon.reused else 'LibreWard-managed'
-                    self.output_queue.put(f"Parallel scan: {source} clamd, up to {scan_limits(self.scan_profile).workers} files at once.\n")
+                    self.output_queue.put(f"Parallel scan: {source} clamd, up to {self.limits.workers} files at once.\n")
+                    if daemon.reused:
+                        self.output_queue.put('Existing clamd may limit actual concurrency below this setting.\n')
                     if daemon.reused and self.scan_profile == 'extended':
                         self.output_queue.put('Existing clamd retains its configured scan limits. Use standard scanning to apply LibreWard large-file limits.\n')
                     self.output_queue.put(("__STATUS__", "scanning in parallel"))
@@ -112,7 +118,7 @@ class ScanService:
                         f'Infected files: {len(infected)}\n',
                         f'Warnings: {self.parallel_warnings}\n',
                         f'Errors: {self.parallel_errors}\n',
-                        f'Time: {time.monotonic() - started:.3f} sec (excluding preparation)\n',
+                        f'Duration: {format_duration(time.monotonic() - started)} (excluding preparation)\n',
                     ]
                     for line in scan_summary_lines:
                         self.output_queue.put(line)
@@ -132,6 +138,7 @@ class ScanService:
                 scan_root, exclude_patterns, clamscan_path=clamscan_path,
                 scan_profile=self.scan_profile,
             )
+            started = time.monotonic()
 
             self.output_queue.put(
                 "Command: clamscan with selected scan roots and active excludes\n\n"
@@ -309,6 +316,8 @@ class ScanService:
                 'warning_details': self.warning_summary.details,
                 'warning_count': sum(self.warning_summary.counts.values()),
                 'scan_profile': self.scan_profile,
+                'duration_seconds': time.monotonic() - started if started is not None else None,
+                'workers': self.limits.workers if used_parallel else 1,
                 'uses_system_daemon': bool(daemon and daemon.reused),
             }
             self.result = result
@@ -319,7 +328,7 @@ class ScanService:
         infected, warnings, errors = [], False, False
         self.parallel_warnings = self.parallel_errors = 0
         paths = iter(files)
-        workers = scan_limits(self.scan_profile).workers
+        workers = self.limits.workers
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix='clamd-scan') as pool:
             pending = {}
 

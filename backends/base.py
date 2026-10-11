@@ -219,3 +219,7 @@ class PlatformBackend(ABC):
 
     def install_clamav(self, log=None):
         raise NotImplementedError('Use the platform installation instructions.')
+
+    def freshclam_activity(self):
+        """Existing system updater description, or None when not detected."""
+        return None

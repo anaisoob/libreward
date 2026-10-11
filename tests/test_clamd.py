@@ -124,7 +124,7 @@ class ClamdTests(unittest.TestCase):
             backend = Mock()
             backend.clamd_endpoints.return_value = [self.endpoint]
             backend.scan_may_need_admin.return_value = False
-            service = ScanService()
+            service = ScanService(workers=4)
             with patch('core.scan_service.backend', backend), \
                  patch('core.scan_service._first_database_dir', return_value=None):
                 service.run([tmp, tmp], [str(excluded)], 'clamscan', parallel=True)

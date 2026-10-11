@@ -95,7 +95,7 @@ class QtFrontendTests(unittest.TestCase):
         self.assertEqual(self.window.firewall_tools.currentText(), 'firewalld')
         self.assertIn('runtime zones', self.window.firewall_rules.toPlainText())
         self.window.firewall_tools.setCurrentIndex(0)
-        self.assertIn('Inactive', self.window.firewall_status.text())
+        self.assertEqual('Protection is off', self.window.firewall_status.text())
         self.assertEqual(self.window.firewall_status.property('severity'), 'danger')
         self.assertIn('saved UFW rules', self.window.firewall_rules.toPlainText())
 
@@ -178,7 +178,7 @@ class QtFrontendTests(unittest.TestCase):
         self.wait_idle()
         change.assert_called_once_with('UFW', rule=None, enabled=True)
         self.assertIn('Change completed', self.window.firewall_change_result.text())
-        self.assertIn('Active', self.window.firewall_status.text())
+        self.assertEqual('Protection is on', self.window.firewall_status.text())
         self.assertIn('new rules', self.window.firewall_rules.toPlainText())
         self.assertEqual(self.window.firewall_enable_button.text(), 'Disable firewall')
         self.assertTrue(self.window.firewall_enable_button.isEnabled())
@@ -201,7 +201,7 @@ class QtFrontendTests(unittest.TestCase):
         self.patch('ui.main_window.backend.change_firewall', side_effect=RuntimeError('Timed out'))
         self.window.run_firewall_change('UFW')
         self.wait_idle()
-        self.assertIn('Unknown', self.window.firewall_status.text())
+        self.assertEqual('Protection status needs checking', self.window.firewall_status.text())
         self.assertFalse(self.window.firewall_enable_button.isEnabled())
         self.assertIn('Previous snapshot', self.window.firewall_rules.toPlainText())
 
@@ -239,7 +239,7 @@ class QtFrontendTests(unittest.TestCase):
         dialog.scope.setCurrentIndex(1)
         self.assertFalse(dialog.subnet.isEnabled())
         self.assertEqual(dialog.rule().subnet, '')
-        self.assertIn('including both LAN and Internet', dialog.hint.text())
+        self.assertIn('your local network and the Internet', dialog.hint.text())
         dialog.deleteLater()
 
     def test_missing_pkexec_shows_help_and_does_not_change_firewall(self):
@@ -354,6 +354,31 @@ class QtFrontendTests(unittest.TestCase):
         self.assertIn(label, config['enabled_common_excludes'])
         self.assertEqual(config['user_excludes'], ['/skip'])
         self.assertTrue(config['suppress_clamav_setup_prompt'])
+
+    def test_background_database_update_monitors_until_available(self):
+        from core.database_update import DatabaseUpdateResult
+        missing = StartupStatus(self.ready.runtime, True, False, True, True)
+        self.patch('ui.main_window.check_startup', return_value=missing)
+        self.patch('ui.main_window.run_freshclam_update',
+                   return_value=DatabaseUpdateResult(False, 'System updater active', pending=True))
+        self.window.update_database(confirm=False)
+        dialog = self.window.update_dialog
+        self.wait_idle()
+        self.assertEqual(dialog.progress.maximum(), 0)
+        self.assertIn('not confirmed', dialog.status.text())
+        dialog.accept()
+        self.app.processEvents()
+        self.assertTrue(self.window.database_watch_timer.isActive())
+        self.window.system_database_checked(self.ready)
+        self.assertFalse(self.window.database_watch_timer.isActive())
+        self.warning.assert_not_called()
+
+    def test_parallel_workers_setting_is_saved(self):
+        self.window.scan_workers.setCurrentIndex(self.window.scan_workers.findData(8))
+        self.assertTrue(self.window.save_settings())
+        self.assertEqual(self.window.config['scan_workers'], 8)
+        self.window.parallel_scan.setChecked(False)
+        self.assertFalse(self.window.scan_workers.isEnabled())
 
     def test_missing_database_disables_scanning(self):
         self.window.startup_status.db_found = False

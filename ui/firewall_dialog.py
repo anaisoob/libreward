@@ -23,7 +23,7 @@ class FirewallRuleDialog(QDialog):
         if tool_name == 'UFW':
             self.direction.addItem('Outgoing — connections from this computer', 'out')
             self.direction.addItem('Incoming and outgoing', 'both')
-        self.scope = self.combo(('LAN — specific network', 'lan'), ('Internet / all addresses — includes LAN', 'internet'))
+        self.scope = self.combo(('Home / local network (LAN)', 'lan'), ('All networks (Internet and local network)', 'internet'))
         self.subnet = QLineEdit()
         self.subnet.setPlaceholderText('Your LAN CIDR, e.g. 192.168.1.0/24 or fd12:3456::/64')
         self.detected_networks = QComboBox()
@@ -36,7 +36,7 @@ class FirewallRuleDialog(QDialog):
         self.detected_networks.currentIndexChanged.connect(self.select_detected_network)
         self.protocol = self.combo(('TCP', 'tcp'), ('UDP', 'udp'))
         self.port = QLineEdit()
-        self.port.setPlaceholderText('Destination port, e.g. 22 or 8000-8010')
+        self.port.setPlaceholderText('Port number used by the app, e.g. 22 or 8000-8010')
         self.zone = QComboBox()
         self.zone.setEditable(True)
         self.zone.addItems(list(zones))
@@ -45,7 +45,7 @@ class FirewallRuleDialog(QDialog):
         self.lifetime = self.combo(('Apply now — until reload/restart', 'runtime'), ('Save only — applies after reload/restart', 'permanent'))
         for label, widget in (('Action', self.action), ('Direction', self.direction),
                               ('Network', self.scope), ('Detected networks', self.detected_networks), ('LAN network', self.subnet),
-                              ('Protocol', self.protocol), ('Destination port', self.port)):
+                              ('Connection type (protocol)', self.protocol), ('App / service port', self.port)):
             form.addRow(label, widget)
         if tool_name == 'firewalld':
             form.addRow('Zone', self.zone)
@@ -83,7 +83,7 @@ class FirewallRuleDialog(QDialog):
         self.subnet.setEnabled(lan)
         self.detected_networks.setEnabled(lan)
         self.hint.setText('Detected networks include connected adapters and may include VPNs or virtual networks. Check the selected network; you can edit its CIDR. A single CIDR covers one IP family; add a separate rule for IPv4 and IPv6 when needed.' if lan else
-                          'This rule matches all peer addresses, including both LAN and Internet. It does not isolate Internet traffic from LAN traffic.')
+                          'This rule applies to connections with any address, including devices on your local network and the Internet.')
 
     def rule(self):
         return FirewallRule(

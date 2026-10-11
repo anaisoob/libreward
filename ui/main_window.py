@@ -65,6 +65,10 @@ class QtMainWindow(QMainWindow):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.poll_events)
         self.timer.start(100)
+        self.database_watch_checks = 0
+        self.database_watch_timer = QTimer(self)
+        self.database_watch_timer.setInterval(10000)
+        self.database_watch_timer.timeout.connect(self.poll_system_database)
         self.start_task("check", self.check_runtime, on_done=self.offer_setup)
 
     def build_shell(self):
@@ -191,14 +195,14 @@ class QtMainWindow(QMainWindow):
         return table
 
     def build_firewall_page(self):
-        page, layout = self.page("Firewall", "Review Linux firewall status, enable protection and manage connection rules.")
+        page, layout = self.page("Firewall", "Control which network connections this computer allows.")
         self.firewall_snapshot = None
         self.firewall_refresh_pending = False
         overview, box = self.card()
         box.addWidget(self.label("NETWORK PROTECTION", "eyebrow"))
         self.firewall_status = self.label("Not checked", "statusValue")
         box.addWidget(self.firewall_status)
-        self.firewall_info = self.label("Firewall tools are detected automatically when you open this page. Select a tool to review its rules.", "muted")
+        self.firewall_info = self.label("Checking which firewall is available on your computer…", "muted")
         self.firewall_info.setWordWrap(True)
         box.addWidget(self.firewall_info)
         row = QHBoxLayout()
@@ -206,8 +210,7 @@ class QtMainWindow(QMainWindow):
         self.firewall_tools.setMinimumHeight(38)
         self.firewall_tools.currentIndexChanged.connect(self.show_firewall_tool)
         row.addWidget(self.firewall_tools, 1)
-        row.addWidget(self.button("Read as administrator", self.authorize_firewall, variant="primary"))
-        row.addWidget(self.button("Copy sudo commands", self.copy_firewall_commands))
+        row.addWidget(self.button("Check protection status", self.authorize_firewall, variant="primary"))
         box.addLayout(row)
         actions = QHBoxLayout()
         self.firewall_enable_button = self.button("Enable firewall", self.enable_firewall, variant="primary")
@@ -225,12 +228,19 @@ class QtMainWindow(QMainWindow):
         self.update_firewall_controls()
         layout.addWidget(overview)
         rules, box = self.card()
-        box.addWidget(self.label("FIREWALL RULES", "eyebrow"))
-        box.addWidget(self.label("Reading rules is read-only · Changes require review and system authorization", "muted"))
+        box.addWidget(self.label("CONNECTION RULES", "eyebrow"))
+        self.firewall_rules_help = self.label('Rules decide which connections are allowed or blocked. Checking status does not change your settings.', 'muted')
+        self.firewall_rules_help.setWordWrap(True)
+        box.addWidget(self.firewall_rules_help)
+        self.firewall_details_toggle = QCheckBox('Show technical rule details')
+        box.addWidget(self.firewall_details_toggle)
         self.firewall_rules = QPlainTextEdit()
         self.firewall_rules.setReadOnly(True)
         self.firewall_rules.setPlaceholderText("Existing rules and installation instructions will appear here.")
+        self.firewall_rules.hide()
+        self.firewall_details_toggle.toggled.connect(self.firewall_rules.setVisible)
         box.addWidget(self.firewall_rules, 1)
+        box.addStretch()  # keep text at the top while rule details are hidden
         layout.addWidget(rules, 1)
         return page
 
@@ -270,12 +280,6 @@ class QtMainWindow(QMainWindow):
         self.show_authorization_help()
         return False
 
-    def copy_firewall_commands(self):
-        tool = self.selected_firewall_tool()
-        if tool:
-            QApplication.clipboard().setText(tool.command)
-            self.firewall_change_result.setText('Sudo read commands copied. Run them in a terminal to inspect the firewall.')
-
     def apply_privileged_firewall_snapshot(self, snapshot):
         if self.firewall_snapshot:
             updated = {tool.name: tool for tool in snapshot.tools}
@@ -289,7 +293,9 @@ class QtMainWindow(QMainWindow):
     def apply_firewall_snapshot(self, snapshot):
         self.firewall_refresh_pending = False
         self.firewall_snapshot = snapshot
-        self.firewall_info.setText(snapshot.instructions)
+        self.firewall_info.setText(snapshot.instructions if not snapshot.tools else
+                                  'A firewall controls network access to and from your computer. '
+                                  'Checking or changing protected settings may ask for your system password.')
         self.firewall_tools.blockSignals(True)
         self.firewall_tools.clear()
         self.firewall_tools.addItems([tool.name for tool in snapshot.tools])
@@ -304,8 +310,9 @@ class QtMainWindow(QMainWindow):
         if snapshot is None:
             return
         if index < 0 or index >= len(snapshot.tools):
-            self.firewall_status.setText("No supported tool detected" if snapshot.supported else "Not available on this platform")
+            self.firewall_status.setText("No supported firewall found" if snapshot.supported else "Firewall management is not available on this system")
             self.firewall_rules.setPlainText(snapshot.instructions)
+            self.firewall_rules_help.setText(snapshot.instructions)
             return
         tool = snapshot.tools[index]
         self.firewall_status.setProperty('severity',
@@ -313,8 +320,17 @@ class QtMainWindow(QMainWindow):
             'success' if tool.state in ('Active', 'Running') else 'unknown')
         self.firewall_status.style().unpolish(self.firewall_status)
         self.firewall_status.style().polish(self.firewall_status)
-        self.firewall_status.setText(f"{tool.name}: {tool.state}")
-        self.firewall_rules.setPlainText(tool.rules + "\n\nRead commands for terminal:\n" + tool.command)
+        active = tool.state in ('Active', 'Running')
+        inactive = tool.state in ('Inactive', 'Not running')
+        self.firewall_status.setText('Protection is on' if active else
+                                     'Protection is off' if inactive else 'Protection status needs checking')
+        self.firewall_rules_help.setText(
+            ('This firewall is applying its connection rules. Use “Add rule” to allow or block a specific connection.' if active else
+             'This firewall is not applying its rules. Turn it on to use its network protection.' if inactive else
+             'We could not confirm whether this firewall is protecting your computer. Select “Check protection status”; your system may ask for authorization.')
+            + '\nIncoming means connections to this computer. Outgoing means connections from this computer. '
+            'Home / local network means devices on the selected network. All networks also includes the Internet.')
+        self.firewall_rules.setPlainText(tool.rules)
 
     def selected_firewall_tool(self):
         snapshot = self.firewall_snapshot
@@ -334,9 +350,9 @@ class QtMainWindow(QMainWindow):
         elif not managed:
             hint = 'This tool supports inspection here. Use UFW or firewalld to enable protection and add rules.'
         elif tool.name == 'firewalld':
-            hint = 'Incoming rules target a selected firewalld zone. Start firewalld before adding rules. Starting it here does not change its boot setting.'
+            hint = 'Turn on this firewall before adding rules. Rules apply to the selected connection group (zone). Turning it on here does not enable automatic startup.'
         else:
-            hint = 'UFW supports incoming and outgoing rules. You can prepare saved rules before enabling protection. Read as administrator to verify its current state.'
+            hint = 'You can add rules before turning protection on. Saved rules take effect when the firewall is on.'
         self.firewall_management_hint.setText(hint)
 
     def enable_firewall(self):
@@ -358,7 +374,7 @@ class QtMainWindow(QMainWindow):
                            'firewalld will stop now. Saved rules and its boot setting are kept.')
             explanation += '\n\nThis removes protection provided by this firewall. Existing network services may become reachable.'
         action = 'Enable' if enabled else 'Disable'
-        text = explanation + '\n\n' + preview + f'\n\n{action} this firewall?'
+        text = explanation + f'\n\n{action} this firewall?'
         if QMessageBox.question(self, f'{action} firewall', text, QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                                 QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
             return
@@ -384,7 +400,7 @@ class QtMainWindow(QMainWindow):
             except (ValueError, NotImplementedError) as exc:
                 QMessageBox.warning(self, 'Invalid firewall rule', str(exc))
                 continue
-            text = rule.description(name) + '\n\n' + preview + '\n\nApply this change?'
+            text = rule.description(name) + '\n\nApply this change?'
             if QMessageBox.question(self, 'Review firewall rule', text,
                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                                     QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
@@ -569,10 +585,24 @@ class QtMainWindow(QMainWindow):
         self.parallel_scan = QCheckBox("Parallel scanning (use clamd when available)")
         self.parallel_scan.setChecked(self.config.get("parallel_scanning", True))
         box.addWidget(self.parallel_scan)
+        box.addWidget(self.label('Parallel file checks', 'muted'))
+        self.scan_workers = QComboBox()
+        self.scan_workers.addItem('Automatic (CPU count, up to 16)', 'auto')
+        for count in (4, 8, 16):
+            self.scan_workers.addItem(str(count), count)
+        index = self.scan_workers.findData(self.config.get('scan_workers', 'auto'))
+        self.scan_workers.setCurrentIndex(max(0, index))
+        self.scan_workers.setEnabled(self.parallel_scan.isChecked())
+        self.parallel_scan.toggled.connect(self.scan_workers.setEnabled)
+        self.scan_workers.setToolTip('Automatic uses up to two checks for larger files. '
+                                    'Manual settings may use substantially more memory. '
+                                    'Existing system clamd may enforce a lower limit.')
+        box.addWidget(self.scan_workers)
         self.large_file_scan = QCheckBox('Check larger files (slower, uses more memory)')
         self.large_file_scan.setChecked(self.config.get('scan_profile') == 'extended')
         self.large_file_scan.setToolTip('Raises the file limit to 1 GiB and the total contents limit to 2 GiB. '
-                                        'Uses at most two parallel checks. Existing system clamd settings are unchanged.')
+                                        'Automatic uses at most two parallel checks. Manual parallel settings use more memory. '
+                                        'Existing system clamd settings are unchanged.')
         box.addWidget(self.large_file_scan)
         quarantine_note = self.label('LibreWard quarantine is always excluded from scans.', 'muted')
         quarantine_note.setWordWrap(True)
@@ -710,6 +740,7 @@ class QtMainWindow(QMainWindow):
             suppress_clamav_setup_prompt=self.suppress_setup.isChecked(),
             qt_theme=self.theme.currentText(),
             parallel_scanning=self.parallel_scan.isChecked(),
+            scan_workers=self.scan_workers.currentData(),
             scan_profile='extended' if self.large_file_scan.isChecked() else 'standard',
         )
         try:
@@ -765,8 +796,8 @@ class QtMainWindow(QMainWindow):
         self.worker.start()
         return True
 
-    def check_runtime(self):
-        status = check_startup(log=self.events.put)
+    def check_runtime(self, *, quiet=False):
+        status = check_startup(log=None if quiet else self.events.put)
         state = {"status": status, "database": database_summary(), "quarantine": list_quarantined_files()}
         self.events.put(("__STATE__", state))
         return status
@@ -824,7 +855,8 @@ class QtMainWindow(QMainWindow):
         self.last_result = None
         self.report_button.setEnabled(False)
         self.pending_setup = False
-        self.service = ScanService(self.events, scan_profile=self.config.get('scan_profile', 'standard'))
+        self.service = ScanService(self.events, scan_profile=self.config.get('scan_profile', 'standard'),
+                                   workers=self.config.get('scan_workers', 'auto'))
         patterns = get_active_exclude_patterns(set(self.config.get("enabled_common_excludes", [])), self.config.get("user_excludes", []))
 
         def run_scan():
@@ -862,12 +894,37 @@ class QtMainWindow(QMainWindow):
             status = check_startup()
             if not status.can_update_db:
                 raise RuntimeError("freshclam is unavailable. Install ClamAV before updating the database.")
-            success, _ = run_freshclam_update(status.runtime.freshclam, log_callback=self.events.put)
-            if not success:
+            result = run_freshclam_update(status.runtime.freshclam, log_callback=self.events.put)
+            success, _ = result
+            pending = getattr(result, 'pending', False)
+            if not success and not pending:
                 raise RuntimeError("Database update failed. See the log.")
-            return self.check_runtime()
+            return {'status': self.check_runtime(), 'pending': pending}
 
-        self.start_task("database", run_update, title="Update virus database")
+        self.start_task("database", run_update, title="Update virus database", on_done=self.database_update_finished)
+
+    def database_update_finished(self, result):
+        if result['pending'] and not result['status'].db_found:
+            self.database_watch_checks = 0
+            self.database_watch_timer.start()
+            self.set_status('System updater is working — waiting for the virus database')
+        else:
+            self.database_watch_timer.stop()
+
+    def poll_system_database(self):
+        if self.operation is not None or QApplication.activeModalWidget() is not None:
+            return
+        self.start_task('database-check', lambda: self.check_runtime(quiet=True),
+                        on_done=self.system_database_checked)
+
+    def system_database_checked(self, status):
+        self.database_watch_checks += 1
+        if status.db_found:
+            self.database_watch_timer.stop()
+            self.set_status('Virus database is available. The system updater continues managing updates.')
+        elif self.database_watch_checks >= 60:
+            self.database_watch_timer.stop()
+            self.set_status('Virus database is still unavailable. Check the system FreshClam service log.', 'warning')
 
     def update_runtime(self):
         if self.operation is not None:
@@ -1153,6 +1210,10 @@ class QtMainWindow(QMainWindow):
                 if not success and isinstance(payload, AuthorizationError) and payload.kind != 'cancelled':
                     dialog.finished.connect(lambda _result, issue=str(payload): self.show_authorization_help(issue))
                 dialog.finish(success, '' if success else str(payload))
+                if (success and completed_operation == 'database'
+                        and isinstance(payload, dict) and payload.get('pending')):
+                    dialog.status.setText('System updater is running — latest update completion is not confirmed. Close this report to continue.')
+                    dialog.progress.setRange(0, 0)
             if success:
                 if callback and not dialog:
                     callback(payload)
@@ -1187,6 +1248,7 @@ class QtMainWindow(QMainWindow):
             event.ignore()
             return
         self.timer.stop()
+        self.database_watch_timer.stop()
         updated = dict(self.config)
         updated['window_geometry'] = bytes(self.saveGeometry()).hex()
         try:

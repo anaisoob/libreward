@@ -17,6 +17,7 @@ import sys
 
 from backends import backend
 from core.constants import CLAMAV_DB_MIRROR
+from core.database_update import DatabaseUpdateResult
 
 
 # ── freshclam.conf generation (Windows only) ────────────────────────
@@ -141,6 +142,8 @@ def _run_freshclam_cmd(cmd: list[str], log_callback=None) -> tuple[bool, str]:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             bufsize=1,
         )
 
@@ -172,14 +175,14 @@ def run_freshclam_update(
     freshclam_path: str,
     conf_path: str | None = None,
     log_callback=None,
-) -> tuple[bool, str]:
+) -> tuple[bool, str] | DatabaseUpdateResult:
     """Run freshclam to update the virus database.
 
-    Returns (success: bool, output_message: str).
+    Returns (success, output), or a pending result when another updater owns the work.
 
     Platform behaviour:
       Windows: generates freshclam.conf → runs `freshclam --config-file <conf>`
-      Linux:   runs `pkexec freshclam` (or sudo fallback) → writes to /var/lib/clamav
+      Linux:   defers to an existing updater, otherwise runs privileged freshclam.
     """
     if backend.manages_own_database():
         # Windows — use custom config pointing to writable app-data dir
@@ -191,10 +194,30 @@ def run_freshclam_update(
             [freshclam_path, "--config-file", conf_path], log_callback
         )
     else:
+        activity = backend.freshclam_activity()
+        if activity:
+            message = (
+                f'The system updater is already running ({activity}).\n'
+                'LibreWard will not start a competing FreshClam process or stop the existing updater.\n'
+                'Database downloads and scheduled update checks are handled in the background.\n'
+                'This does not confirm that the latest update has finished. '
+                'If the database is missing, LibreWard will check when it becomes available.\n'
+            )
+            if log_callback:
+                log_callback(message)
+            return DatabaseUpdateResult(False, message, pending=True)
         # Linux — needs root to write to /var/lib/clamav
         ok, out, auth_failed = _try_privileged_freshclam(
             freshclam_path, log_callback
         )
+        if not ok and ('failed to lock the log file' in out.lower() or
+                       'database is locked by another process' in out.lower()):
+            message = ('FreshClam could not obtain its log/database lock. Another updater may have started.\n'
+                       'LibreWard will not remove locks or launch another competing process. '
+                       'Check the system updater and its log if the database remains unavailable.\n')
+            if log_callback:
+                log_callback(message)
+            return DatabaseUpdateResult(False, message, pending=True)
         return ok, out
 
 

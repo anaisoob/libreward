@@ -515,7 +515,7 @@ class LinuxBackend(PlatformBackend):
         instructions = (
             'Installed tools can share the same Linux firewall. Installation alone does not mean protection is active. '
             'Reading rules does not change network access. Enable firewall and Add rule require explicit confirmation and system authorization. '
-            'Use Read as administrator for the selected tool, or run the displayed read commands in a terminal.'
+            'Use Check protection status for the selected tool.'
         )
         if not tools:
             manager = self.distro_info().get('pkg_manager')
@@ -526,7 +526,7 @@ class LinuxBackend(PlatformBackend):
                 'Recommended for a simple desktop setup: UFW.\n\n'
                 + (f'Install using your distribution package manager:\n{install}\n\n' if install else
                    'Check your distribution documentation for the UFW package and installation instructions.\n\n')
-                + 'After installation, use Read as administrator to detect the newly installed tool. Installing UFW does not enable it. '
+                + 'After installation, use Check protection status to detect the newly installed tool. Installing UFW does not enable it. '
                 'Review required incoming connections before enabling it, especially on a remote computer.\n'
                 'UFW documentation: https://help.ubuntu.com/community/UFW'
             )
@@ -777,3 +777,18 @@ class LinuxBackend(PlatformBackend):
                                'The package manager may require a repository update or a manual decision; use the terminal instructions before retrying.')
         if log:
             log('Package installation completed. Checking antivirus components…\n')
+
+    def freshclam_activity(self):
+        systemctl = self._firewall_executable('systemctl')
+        if systemctl:
+            for unit in ('clamav-freshclam.service', 'freshclam.service', 'clamav-freshclam-daemon.service'):
+                code, output = self._firewall_query([systemctl, 'is-active', unit], timeout=3)
+                if code == 0 and output.strip() == 'active':
+                    return unit
+        # Also avoid competing with a non-systemd daemon or another manual update.
+        pgrep = self._firewall_executable('pgrep')
+        if pgrep:
+            code, output = self._firewall_query([pgrep, '-x', 'freshclam'], timeout=3)
+            if code == 0 and any(line.isdigit() for line in output.splitlines()):
+                return 'an existing FreshClam process'
+        return None

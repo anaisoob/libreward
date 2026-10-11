@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Simplify the firewall page with plain-language protection status and optional
+  technical rule details; remove its Copy sudo commands button.
+
+- Present scan reports in plain language, with optional technical details and
+  scan durations formatted as hours, minutes and seconds.
+
+- Choose parallel scan workers automatically from CPU count (up to 16), or
+  select 4, 8 or 16 in Settings. Larger-file automatic scans remain capped at 2.
+
+- Avoid competing with an existing Linux FreshClam updater; explain log-lock
+  conflicts and monitor database availability after first installation.
+
 - Offer confirmed Linux ClamAV package installation with progress, component
   recheck and follow-up database setup.
 - Explain unavailable pkexec/desktop authorization and provide copyable

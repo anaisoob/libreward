@@ -103,9 +103,9 @@ def scan_file(endpoint, path, stopped, *, direct=False):
 
 class ClamdSession:
     """Reuse a responding daemon; only stop a process started by this object."""
-    def __init__(self, backend, scan_profile='standard'):
+    def __init__(self, backend, scan_profile='standard', workers='auto'):
         self.backend = backend
-        self.limits = scan_limits(scan_profile)
+        self.limits = scan_limits(scan_profile, workers)
         self.process = None
         self.directory = None
         self.log = None
@@ -129,7 +129,7 @@ class ClamdSession:
         self.endpoint, listener = self.backend.clamd_listen_config(work)
         config = work / 'clamd.conf'
         lines = ['Foreground yes', f'DatabaseDirectory "{database}"',
-                 f'MaxThreads {self.limits.workers}', 'MaxQueue 16', 'StreamMaxLength 2048M',
+                 f'MaxThreads {self.limits.workers}', f'MaxQueue {max(16, self.limits.workers * 2)}', 'StreamMaxLength 2048M',
                  f'MaxFileSize {self.limits.file_size}', f'MaxScanSize {self.limits.scan_size}',
                  'ScanArchive yes', 'AlertEncrypted yes', 'AlertExceedsMax yes', *listener]
         config.write_text('\n'.join(lines) + '\n', encoding='utf-8')

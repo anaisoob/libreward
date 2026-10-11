@@ -18,6 +18,14 @@ prompts are suppressed; the overview and Settings let you change that preference
 
 ## Linux
 
+In Settings, **Parallel file checks** defaults to the logical CPU count, capped
+at 16. You can also select 4, 8 or 16 explicitly. With **Check larger files**,
+Automatic uses at most two checks; manual choices can use substantially more
+memory. These settings apply to parallel scans. Existing system clamd services
+retain their own concurrency and scan limits. Compare scan times using the same
+folder, exclusions and archive settings; more workers do not guarantee a
+proportional speed increase.
+
 The setup overview offers **Install ClamAV with system package manager** on
 supported apt, pacman, dnf, apk and zypper systems. Review the packages and
 command, then confirm and authorize through the system polkit dialog. LibreWard
@@ -42,6 +50,13 @@ It does not ask for or store your password in its own widgets.
 The distribution manages engine updates and normally stores signatures in
 `/var/lib/clamav`. Database updates may request system authorization. LibreWard
 does not automatically download a separate Linux runtime.
+
+Package installation may start the system FreshClam updater. When it is already
+running, LibreWard leaves it in charge instead of starting a second process
+that could fail to lock `freshclam.log`. The report explains that the latest
+update has not been confirmed. If the database is missing, close the report;
+LibreWard checks availability every ten seconds for up to ten minutes of checks.
+If it remains unavailable, inspect the system FreshClam service log.
 
 ## Windows
 
