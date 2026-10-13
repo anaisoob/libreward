@@ -13,10 +13,12 @@
   selects a public filtering DNS service instead: AdGuard DNS, AdGuard DNS Family, Quad9,
   Cloudflare (malware) or Cloudflare for Families, with opportunistic DNS-over-TLS,
   consent, verification and rollback.
-- Internet protection works only while LibreWard is open. Closing asks once and turns it
-  off; a restart with protection on keeps it and opens LibreWard minimized at login; if
-  the app stops unexpectedly, the local filter restores normal DNS after about two minutes
-  and the next start offers to turn protection on again.
+- Internet protection works while LibreWard is running, including from the system tray.
+  Closing the window keeps LibreWard in the tray without asking (configurable in Settings);
+  Quit from the tray asks once and turns protection off. A restart with protection on keeps
+  it and starts LibreWard in the tray at login; if the app stops unexpectedly, the local
+  filter restores normal DNS after about two minutes and the next start offers to turn
+  protection on again.
 - Keep the DNS filter serving when one socket operation fails, restart it after a crash,
   and wait for the previous resolver to release the local DNS port before starting it.
 - Widen the left navigation so Internet protection is fully visible.

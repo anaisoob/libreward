@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
     QFileDialog, QHBoxLayout, QLabel, QLineEdit, QListWidget, QMainWindow,
     QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
     QTableWidget, QTableWidgetItem, QStackedWidget, QVBoxLayout, QWidget,
-    QFrame, QHeaderView, QSizePolicy, QSplitter,
+    QFrame, QHeaderView, QSizePolicy, QSplitter, QSystemTrayIcon, QMenu,
 )
 
 from backends import backend
@@ -29,7 +29,7 @@ from core.updater import check_for_updates, perform_update
 from excludes import get_active_exclude_patterns, get_common_excludes
 from .dialogs import ClamAVConsentDialog, UpdateProgressDialog, ScanReportDialog, AntivirusSetupDialog, AuthorizationHelpDialog
 from .firewall_dialog import FirewallRuleDialog
-from .theme import stylesheet, navigation_icon
+from .theme import stylesheet, navigation_icon, tray_icon
 from .widgets import ElidedPathLabel, BusyNavigationButton
 
 
@@ -55,7 +55,7 @@ class QtMainWindow(QMainWindow):
         self.scan_actions = []
         self.last_result = None
         self.build_shell()
-        self.setup_window_icon()
+        self.setup_tray()
         self.apply_theme(self.config.get("qt_theme", "dark"))
         geometry = self.config.get('window_geometry')
         if isinstance(geometry, str) and len(geometry) <= 8192:
@@ -74,28 +74,130 @@ class QtMainWindow(QMainWindow):
         self.database_watch_timer.timeout.connect(self.poll_system_database)
         self.start_task("check", self.check_runtime, on_done=self.offer_setup)
 
-    def setup_window_icon(self):
+    def setup_tray(self):
+        self.tray = None
+        self.quit_requested = False
+        self.tray_hint_shown = False
         self.setWindowIcon(QIcon(str(Path(__file__).resolve().parent.parent / 'assets' / 'libreward.png')))
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return
+        self.tray = QSystemTrayIcon(tray_icon(), self)
+        menu = QMenu(self)
+        menu.addAction('Open LibreWard', self.show_from_tray)
+        menu.addAction('Internet protection', lambda: self.show_from_tray('internet'))
+        menu.addAction('Why might a website be blocked?', self.explain_domain_blocking)
+        menu.addSeparator()
+        menu.addAction('Quit LibreWard', self.quit_from_tray)
+        self.tray.setContextMenu(menu)
+        self.tray.activated.connect(self.tray_activated)
+        self.tray.setToolTip('LibreWard — open Internet protection to check domain blocking')
+        self.tray.show()
+        # The hidden window must not end the app when a dialog closes.
+        QApplication.instance().setQuitOnLastWindowClosed(False)
 
-    def choose_close_action(self, state):
-        """Protection runs only while LibreWard is open; closing turns it off."""
+    def tray_available(self):
+        return self.tray is not None and QSystemTrayIcon.isSystemTrayAvailable()
+
+    def show_from_tray(self, page=None):
+        self.showNormal() if self.isMinimized() else self.show()
+        self.raise_()
+        self.activateWindow()
+        if page == 'internet':
+            self.switch_page('internet')
+
+    def hide_to_tray(self):
+        self.hide()
+        if not self.tray_hint_shown:
+            self.tray_hint_shown = True
+            self.tray.showMessage('LibreWard is still running',
+                                  'Internet protection stays on. Use the tray icon to open or quit LibreWard.',
+                                  QSystemTrayIcon.MessageIcon.Information, 5000)
+
+    def tray_activated(self, reason):
+        if reason in (QSystemTrayIcon.ActivationReason.Trigger, QSystemTrayIcon.ActivationReason.DoubleClick):
+            self.show_from_tray()
+
+    def explain_domain_blocking(self):
+        self.show_from_tray('internet')
+        QMessageBox.information(self, 'Website blocked?',
+            'LibreWard can block websites listed as dangerous, advertising, tracking or adult content, '
+            'depending on your choices. A blocked website may appear unavailable in your browser.\n\n'
+            'In Internet protection, check whether blocking is on. You can allow a trusted website '
+            'or pause protection and try again. An unavailable website is not always blocked by LibreWard.\n\n'
+            'Protection works while LibreWard is running, also in the tray. Quitting LibreWard turns it off.')
+
+    def quit_from_tray(self):
+        self.quit_requested = True
+        self.show_from_tray()
+        self.close()
+
+    def close_preference(self):
+        # Friendly default: closing the window keeps LibreWard out of the way in the tray.
+        value = self.config.get('protected_close_action', 'tray')
+        return value if value in ('tray', 'ask', 'quit') else 'tray'
+
+    def choose_close_action(self, state, from_tray=False):
+        """Protection works while LibreWard runs, also in the tray; quitting turns it off."""
         self.internet_page.show_state(state)
         if not state.get('active'):
             self._exit_verified = True
             self.close()
             return
-        box = QMessageBox(self)
-        box.setWindowTitle('Internet protection is on')
-        box.setIcon(QMessageBox.Icon.Question)
-        box.setText('Closing LibreWard turns off Internet protection.')
-        box.setInformativeText('Websites will no longer be blocked until you open LibreWard and turn protection on again. '
-                               'System authorization may be required.')
-        quit_button = box.addButton('Turn off and close', QMessageBox.ButtonRole.AcceptRole)
-        box.addButton(QMessageBox.StandardButton.Cancel)
-        box.setDefaultButton(quit_button)
-        box.exec()
-        if box.clickedButton() == quit_button:
+        preference = self.close_preference()
+        if not from_tray and preference == 'tray' and self.tray_available():
+            self.hide_to_tray()
+            return
+        if not from_tray and preference == 'quit':
             self.stop_protection_and_quit()
+            return
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        keep_button = None
+        if from_tray:
+            box.setWindowTitle('Quit LibreWard')
+            box.setText('Quitting LibreWard turns off Internet protection.')
+            box.setInformativeText('Websites will no longer be blocked until you open LibreWard again. '
+                                   'System authorization may be required. Your lists and settings are kept.')
+        else:
+            box.setWindowTitle('Internet protection is on')
+            box.setText('Keep LibreWard running to protect your browsing?')
+            box.setInformativeText('LibreWard keeps protecting while it runs in the background. If you quit, '
+                                   'Internet protection turns off. System authorization may be required.')
+            keep_button = box.addButton('Keep protection on in tray' if self.tray_available() else 'Minimize',
+                                        QMessageBox.ButtonRole.AcceptRole)
+        quit_button = box.addButton('Turn off protection and quit', QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(keep_button or quit_button)
+        remember = QCheckBox('Remember my choice (change it in Settings)', self)
+        if from_tray:
+            remember.hide()
+            remember.deleteLater()
+        else:
+            box.setCheckBox(remember)
+        box.exec()
+        if keep_button is not None and box.clickedButton() == keep_button:
+            if self.tray_available():
+                if remember.isChecked():
+                    self.remember_close_action('tray')
+                self.hide_to_tray()
+            else:
+                self.showMinimized()
+            return
+        if box.clickedButton() != quit_button:
+            return
+        if remember.isChecked() and not from_tray:
+            self.remember_close_action('quit')
+        self.stop_protection_and_quit()
+
+    def remember_close_action(self, action):
+        updated = dict(self.config, protected_close_action=action)
+        try:
+            save_config(updated)
+        except OSError as exc:
+            QMessageBox.warning(self, 'Settings', f'Cannot remember your choice: {exc}')
+            return
+        self.config = updated
+        self.close_action.setCurrentIndex(self.close_action.findData(action))
 
     def exit_check_failed(self, error):
         """Never trap the user in the app when protection cannot be checked."""
@@ -768,6 +870,13 @@ class QtMainWindow(QMainWindow):
         self.suppress_setup.setChecked(bool(self.config.get("suppress_clamav_setup_prompt", False)))
         box.addWidget(self.suppress_setup)
         box.addWidget(self.label("Uncheck to show the setup prompt again on the next launch.", "muted"))
+        box.addWidget(self.label('When closing with Internet protection on', 'sectionTitle'))
+        self.close_action = QComboBox()
+        self.close_action.addItem('Keep running in the system tray (recommended)', 'tray')
+        self.close_action.addItem('Ask every time', 'ask')
+        self.close_action.addItem('Turn off protection and quit', 'quit')
+        self.close_action.setCurrentIndex(max(0, self.close_action.findData(self.close_preference())))
+        box.addWidget(self.close_action)
         row = QHBoxLayout()
         row.addWidget(self.label("Color theme", "sectionTitle"))
         self.theme = QComboBox()
@@ -869,6 +978,7 @@ class QtMainWindow(QMainWindow):
             enabled_common_excludes=[label for label, check in self.exclude_checks.items() if check.isChecked()],
             user_excludes=[self.excluded_paths.item(i).text() for i in range(self.excluded_paths.count())],
             suppress_clamav_setup_prompt=self.suppress_setup.isChecked(),
+            protected_close_action=self.close_action.currentData(),
             qt_theme=self.theme.currentText(),
             parallel_scanning=self.parallel_scan.isChecked(),
             scan_workers=self.scan_workers.currentData(),
@@ -1391,9 +1501,11 @@ class QtMainWindow(QMainWindow):
         # Logging out or shutting down keeps protection as it is; it returns with
         # the computer and the app's autostart entry.
         if not getattr(self, '_exit_verified', False) and not QApplication.instance().isSavingSession():
+            from_tray = self.quit_requested
+            self.quit_requested = False
             event.ignore()
             self.start_task('internet-exit-check', backend.inspect_internet_protection,
-                            on_done=self.choose_close_action)
+                            on_done=lambda state: self.choose_close_action(state, from_tray))
             return
         self.timer.stop()
         self.database_watch_timer.stop()
@@ -1405,6 +1517,10 @@ class QtMainWindow(QMainWindow):
         except OSError as exc:
             self.log.appendPlainText(f'Cannot save window size and position: {exc}')
         event.accept()
+        if self.tray is not None:
+            self.tray.hide()
+            # Quit-on-last-window is off while a tray icon exists.
+            QApplication.instance().quit()
 
 
 def run(minimized=False):
@@ -1413,5 +1529,9 @@ def run(minimized=False):
     app.setOrganizationName(APP_NAME)
     app.setStyle("Fusion")
     window = QtMainWindow()
-    window.showMinimized() if minimized else window.show()
+    # Started at login, LibreWard protects from the tray (or minimized without one).
+    if not minimized:
+        window.show()
+    elif not window.tray_available():
+        window.showMinimized()
     return app.exec()

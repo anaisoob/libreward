@@ -144,7 +144,7 @@ class QtFrontendTests(unittest.TestCase):
             page.apply()
         apply.assert_not_called()
         consent = confirm.call_args.args[1]
-        for text in ('AdGuard DNS Family', 'third-party service', 'no warranty', 'Closing LibreWard turns it off'):
+        for text in ('AdGuard DNS Family', 'third-party service', 'no warranty', 'quitting LibreWard turns protection off'):
             self.assertIn(text, consent)
         with patch.object(self.window, 'confirm', return_value=True):
             page.apply()
@@ -513,7 +513,7 @@ class QtFrontendTests(unittest.TestCase):
             quit_button = object()
             box.addButton.return_value = quit_button
             box.clickedButton.return_value = quit_button
-            self.window.choose_close_action({'active': True, 'supported': True})
+            self.window.choose_close_action({'active': True, 'supported': True}, from_tray=True)
             self.assertEqual(task.call_args.args[0], 'internet-exit')
             self.assertFalse(getattr(self.window, '_exit_verified', False))
         self.window.config['internet_protection_on'] = True
@@ -535,6 +535,82 @@ class QtFrontendTests(unittest.TestCase):
             self.window.choose_close_action({'active': True, 'supported': True})
             stop.assert_not_called()
             close.assert_not_called()
+
+    def with_tray(self):
+        from unittest.mock import Mock
+        self.window.tray = Mock()
+        return patch('ui.main_window.QSystemTrayIcon.isSystemTrayAvailable', return_value=True)
+
+    def test_closing_the_window_goes_to_the_tray_without_asking(self):
+        self.assertEqual(self.window.close_action.currentData(), 'tray')
+        with self.with_tray(), patch('ui.main_window.QMessageBox') as message, \
+                patch.object(self.window, 'hide') as hide, \
+                patch.object(self.window, 'stop_protection_and_quit') as stop:
+            self.window.choose_close_action({'active': True, 'supported': True})
+            self.window.choose_close_action({'active': True, 'supported': True})
+            message.assert_not_called()
+            stop.assert_not_called()
+            self.assertEqual(hide.call_count, 2)
+            # One short hint per session, not on every close.
+            self.window.tray.showMessage.assert_called_once()
+
+    def test_ask_preference_offers_tray_and_can_remember_it(self):
+        self.window.remember_close_action('ask')
+        with self.with_tray(), patch('ui.main_window.QMessageBox') as message, \
+                patch('ui.main_window.QCheckBox') as checkbox, \
+                patch.object(self.window, 'hide') as hide:
+            tray_button, quit_button = object(), object()
+            message.return_value.addButton.side_effect = [tray_button, quit_button, None]
+            message.return_value.clickedButton.return_value = tray_button
+            checkbox.return_value.isChecked.return_value = True
+            self.window.choose_close_action({'active': True, 'supported': True})
+            hide.assert_called_once()
+            self.assertEqual(self.window.config['protected_close_action'], 'tray')
+            self.assertEqual(self.window.close_action.currentData(), 'tray')
+
+    def test_without_a_tray_closing_offers_to_minimize(self):
+        self.window.tray = None
+        with patch('ui.main_window.QMessageBox') as message, \
+                patch.object(self.window, 'showMinimized') as minimize, \
+                patch.object(self.window, 'stop_protection_and_quit') as stop:
+            keep_button, quit_button = object(), object()
+            message.return_value.addButton.side_effect = [keep_button, quit_button, None]
+            message.return_value.clickedButton.return_value = keep_button
+            self.window.choose_close_action({'active': True})
+            self.assertEqual(message.return_value.addButton.call_args_list[0].args[0], 'Minimize')
+            minimize.assert_called_once()
+            stop.assert_not_called()
+
+    def test_quit_from_tray_always_asks_and_turns_protection_off(self):
+        self.window.remember_close_action('tray')
+        with self.with_tray(), patch('ui.main_window.QMessageBox') as message, \
+                patch.object(self.window, 'stop_protection_and_quit') as stop:
+            quit_button = object()
+            message.return_value.addButton.side_effect = [quit_button, None]
+            message.return_value.clickedButton.return_value = quit_button
+            self.window.choose_close_action({'active': True}, from_tray=True)
+            labels = [call.args[0] for call in message.return_value.addButton.call_args_list]
+            self.assertNotIn('Keep protection on in tray', labels)
+            stop.assert_called_once()
+
+    def test_remembered_quit_turns_protection_off_without_asking(self):
+        self.window.remember_close_action('quit')
+        with patch.object(self.window, 'stop_protection_and_quit') as stop, \
+                patch('ui.main_window.QMessageBox') as message:
+            self.window.choose_close_action({'active': True})
+            stop.assert_called_once()
+            message.assert_not_called()
+
+    def test_closing_with_tray_icon_quits_the_application(self):
+        from PySide6.QtGui import QCloseEvent
+        self.window._exit_verified = True
+        with self.with_tray(), patch.object(QApplication.instance(), 'quit') as quit_app:
+            event = QCloseEvent()
+            self.window.closeEvent(event)
+            self.assertTrue(event.isAccepted())
+            self.window.tray.hide.assert_called_once()
+            quit_app.assert_called_once()
+        self.window.tray = None
 
     def test_exit_without_protection_skips_prompt(self):
         with patch.object(self.window, 'close') as close, patch('ui.main_window.QMessageBox') as message:

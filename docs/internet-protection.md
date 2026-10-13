@@ -208,17 +208,26 @@ automated tests never change the development computer's system DNS.
 
 ### Protection follows the open app
 
-Internet protection works while LibreWard is open. This keeps the behavior
-simple: if LibreWard is closed, websites are not blocked.
+Internet protection works while LibreWard is running, including from the system
+tray. If LibreWard is not running, websites are not blocked.
 
-- **Closing LibreWard** with protection on shows one question: turn off
-  protection and close, or cancel. Turning off may need system authorization.
-  LibreWard then remembers protection as off and does not start with the
-  computer. If turning off fails, the app stays open and offers to close anyway.
+- **Closing the window** with protection on keeps LibreWard running in the tray,
+  without a question; the first time per session a short notification says so.
+  Settings can change this to “Ask every time” or “Turn off protection and quit”.
+  Without a tray (for example GNOME without a tray extension), closing asks:
+  minimize, turn off protection and quit, or cancel. With protection off, closing
+  simply quits.
+- **Quit LibreWard** in the tray menu asks once, then turns protection off and
+  quits. Turning off may need system authorization. LibreWard then remembers
+  protection as off and does not start with the computer. If turning off fails,
+  the app stays open and offers to quit anyway.
 - **Restarting or shutting down** with protection on keeps it on. The filter
   service starts with the computer, and an XDG autostart entry
-  (`~/.config/autostart/libreward.desktop`) opens LibreWard minimized at login.
-  Logging out does not ask to turn protection off.
+  (`~/.config/autostart/libreward.desktop`) starts LibreWard in the tray at login
+  (minimized without a tray). Logging out does not ask to turn protection off.
+
+The tray badge uses white lettering on a green background with a light outline so
+it remains visible on both light and dark desktop panels.
 - **If LibreWard stops unexpectedly** (crash, killed, or the user logged out
   without shutting down), the filter notices that the app no longer sends its
   heartbeat and restores normal DNS after about two minutes. The next start

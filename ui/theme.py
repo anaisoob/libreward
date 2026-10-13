@@ -1,6 +1,27 @@
 """Shared Qt colors, widget styling and small code-drawn navigation icons."""
 from PySide6.QtCore import Qt, QPointF
-from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap, QFont
+
+
+def tray_icon():
+    """Opaque badge stays legible independently of the desktop panel theme."""
+    icon = QIcon()
+    for size in (22, 32, 48, 64):
+        pixmap = QPixmap(size, size)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QPen(QColor('#e8fff1'), max(1, size / 32)))
+        painter.setBrush(QColor('#237c53'))
+        painter.drawRoundedRect(1, 1, size - 2, size - 2, size / 5, size / 5)
+        font = QFont('DejaVu Sans')
+        font.setPixelSize(int(size * .43))
+        font.setBold(True)
+        painter.setFont(font)
+        painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, 'LW')
+        painter.end()
+        icon.addPixmap(pixmap)
+    return icon
 
 
 def stylesheet(dark):

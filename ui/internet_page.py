@@ -146,7 +146,7 @@ class InternetProtectionPage:
                                     'systemd-resolved instead send website lookups to the selected public filtering DNS '
                                     'service, encrypted where the network allows it. VPN connection settings are unchanged. '
                                     'Protection works while LibreWard is open. If the computer restarts with protection on, '
-                                    'LibreWard starts with it and protection continues. Closing LibreWard or pausing '
+                                    'LibreWard starts with it in the tray and protection continues. Closing the window keeps LibreWard running in the tray; quitting LibreWard or pausing '
                                     'removes LibreWard’s blocks until you enable protection again.\n\n'
                                     'Sources: The Block List Project, downloaded over HTTPS from GitHub. '
                                     'Upstream source URLs and license headers are preserved in the local list cache. '
@@ -369,7 +369,7 @@ class InternetProtectionPage:
                 'Apply these domain-blocking settings to this computer? Missing lists will be downloaded from '
                 'The Block List Project on GitHub. This may stop some websites or apps from working. '
                 'Protection works while LibreWard is open, including after restarting the computer. '
-                'Closing LibreWard turns it off. You can pause it or add allowed websites. '
+                'Closing the window keeps LibreWard running in the tray; quitting LibreWard turns protection off. You can pause it or add allowed websites. '
                 'Existing network and VPN connection settings will be kept. System authorization is required.'):
             return
         self.window.privileged_terminal_commands = ''
@@ -404,7 +404,7 @@ class InternetProtectionPage:
                 'It may block websites by mistake, and LibreWard and the service are provided with no warranty, '
                 'to the extent permitted by law.\n\n'
                 'Protection works while LibreWard is open, including after restarting the computer. '
-                'Closing LibreWard turns it off. Network and VPN connection settings are kept. '
+                'Closing the window keeps LibreWard running in the tray; quitting LibreWard turns protection off. Network and VPN connection settings are kept. '
                 'System authorization is required.'):
             return
         self.window.privileged_terminal_commands = ''
