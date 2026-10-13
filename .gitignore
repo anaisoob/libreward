@@ -29,7 +29,9 @@ clamav-runtime/
 # Build/package output
 build/
 dist/
+# PyInstaller specs; the RPM spec is tracked.
 *.spec
+!packaging/rpm/*.spec
 
 # Update manifests are tracked
 !updates/
