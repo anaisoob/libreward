@@ -255,10 +255,5 @@ class PlatformBackend(ABC):
         """Stop a privileged helper that is still waiting for the password; True if stopped."""
         return False
 
-    def internet_protection_keepalive(self):
-        """Tell an app-bound protection service that LibreWard is still open."""
-
-    def set_autostart(self, enabled):
-        """Start LibreWard at login while Internet protection is on."""
-        if enabled:
-            raise NotImplementedError('Starting LibreWard at login is currently available on Linux only.')
+    def remove_autostart(self):
+        """Remove a login autostart entry written by an earlier LibreWard version."""

@@ -3,7 +3,7 @@ from PySide6.QtCore import Qt, QPointF
 from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap, QFont
 
 
-def tray_icon():
+def app_icon():
     """Opaque badge stays legible independently of the desktop panel theme."""
     icon = QIcon()
     for size in (16, 22, 32, 48, 64, 128, 256):

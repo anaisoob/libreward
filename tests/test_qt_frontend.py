@@ -38,9 +38,8 @@ class QtFrontendTests(unittest.TestCase):
         self.patch('ui.main_window.load_config', return_value={'unrelated_setting': 'preserved'})
         self.patch('ui.main_window.save_config')
         self.patch('ui.internet_page.save_config')
-        # Never touch the developer's login autostart or send DNS heartbeats.
-        self.autostart = self.patch('ui.internet_page.backend.set_autostart')
-        self.keepalive = self.patch('ui.internet_page.backend.internet_protection_keepalive')
+        # Never touch the developer's login autostart.
+        self.autostart = self.patch('ui.main_window.backend.remove_autostart')
         self.online = self.patch('ui.internet_page.internet_available', return_value=True)
         from core.authorization import AuthorizationStatus
         self.patch('ui.main_window.backend.authorization_status', return_value=AuthorizationStatus(True, 'System dialog available'))
@@ -60,7 +59,6 @@ class QtFrontendTests(unittest.TestCase):
         if self.window.worker:
             self.window.worker.join(timeout=3)
         self.window.poll_events()
-        self.window._exit_verified = True
         self.window.close()
         self.window.deleteLater()
         self.app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
@@ -157,7 +155,7 @@ class QtFrontendTests(unittest.TestCase):
                  patch.object(self.window, 'confirm', return_value=False) as confirm:
                 page.apply()
             consent = confirm.call_args.args[1]
-            for text in ('AdGuard DNS Family', 'third-party service', 'no warranty', 'Quitting LibreWard turns protection off'):
+            for text in ('AdGuard DNS Family', 'third-party service', 'no warranty', 'even when LibreWard is closed'):
                 self.assertIn(text, consent)
             self.assertEqual(calls, [])
             with patch('ui.internet_page.backend.apply_internet_protection', side_effect=apply), \
@@ -170,7 +168,6 @@ class QtFrontendTests(unittest.TestCase):
             self.app.processEvents()
             self.assertTrue(page.state['active'])
             self.assertEqual(self.window.config['internet_protection']['provider'], 'adguard-family')
-            self.assertTrue(self.window.config['internet_protection_on'])
 
     def test_offline_apply_explains_and_changes_nothing(self):
         page = self.window.internet_page
@@ -605,184 +602,6 @@ class QtFrontendTests(unittest.TestCase):
         release.set()
         self.wait_idle()
 
-    def test_exit_checks_live_protection_before_closing(self):
-        from PySide6.QtGui import QCloseEvent
-        with patch.object(self.window, 'start_task', return_value=True) as task:
-            event = QCloseEvent()
-            self.window.closeEvent(event)
-            self.assertFalse(event.isAccepted())
-            self.assertEqual(task.call_args.args[0], 'internet-exit-check')
-            self.assertFalse(getattr(self.window, '_exit_verified', False))
-
-    def test_exit_with_active_protection_waits_for_successful_pause(self):
-        with patch('ui.main_window.QMessageBox') as message, \
-                patch.object(self.window, 'ensure_system_authorization', return_value=True), \
-                patch.object(self.window, 'start_task', return_value=True) as task:
-            box = message.return_value
-            quit_button = object()
-            box.addButton.return_value = quit_button
-            box.clickedButton.return_value = quit_button
-            self.window.choose_close_action({'active': True, 'supported': True}, from_tray=True)
-            self.assertEqual(task.call_args.args[0], 'internet-exit')
-            self.assertFalse(getattr(self.window, '_exit_verified', False))
-        self.window.config['internet_protection_on'] = True
-        with patch.object(self.window, 'close') as close:
-            self.window.protection_stopped_for_exit({'active': True})
-            close.assert_not_called()
-            self.window.protection_stopped_for_exit({'active': False})
-            close.assert_called_once()
-            self.assertTrue(self.window._exit_verified)
-        # A deliberate close is remembered as off: no autostart after a restart.
-        self.assertFalse(self.window.config['internet_protection_on'])
-        self.autostart.assert_called_with(False)
-
-    def test_cancelled_close_keeps_app_and_protection(self):
-        with patch('ui.main_window.QMessageBox') as message, \
-                patch.object(self.window, 'stop_protection_and_quit') as stop, \
-                patch.object(self.window, 'close') as close:
-            message.return_value.clickedButton.return_value = None
-            self.window.choose_close_action({'active': True, 'supported': True})
-            stop.assert_not_called()
-            close.assert_not_called()
-
-    def with_tray(self):
-        from unittest.mock import Mock
-        self.window.tray = Mock()
-        return patch('ui.main_window.QSystemTrayIcon.isSystemTrayAvailable', return_value=True)
-
-    def test_closing_the_window_goes_to_the_tray_without_asking(self):
-        self.assertEqual(self.window.close_action.currentData(), 'tray')
-        with self.with_tray(), patch('ui.main_window.QMessageBox') as message, \
-                patch.object(self.window, 'hide') as hide, \
-                patch.object(self.window, 'stop_protection_and_quit') as stop:
-            self.window.choose_close_action({'active': True, 'supported': True})
-            self.window.choose_close_action({'active': True, 'supported': True})
-            message.assert_not_called()
-            stop.assert_not_called()
-            self.assertEqual(hide.call_count, 2)
-            # One short hint per session, not on every close.
-            self.window.tray.showMessage.assert_called_once()
-
-    def test_ask_preference_offers_tray_and_can_remember_it(self):
-        self.window.remember_close_action('ask')
-        with self.with_tray(), patch('ui.main_window.QMessageBox') as message, \
-                patch('ui.main_window.QCheckBox') as checkbox, \
-                patch.object(self.window, 'hide') as hide:
-            tray_button, quit_button = object(), object()
-            message.return_value.addButton.side_effect = [tray_button, quit_button, None]
-            message.return_value.clickedButton.return_value = tray_button
-            checkbox.return_value.isChecked.return_value = True
-            self.window.choose_close_action({'active': True, 'supported': True})
-            hide.assert_called_once()
-            self.assertEqual(self.window.config['protected_close_action'], 'tray')
-            self.assertEqual(self.window.close_action.currentData(), 'tray')
-
-    def test_without_a_tray_closing_offers_to_minimize(self):
-        self.window.tray = None
-        with patch('ui.main_window.QMessageBox') as message, \
-                patch.object(self.window, 'showMinimized') as minimize, \
-                patch.object(self.window, 'stop_protection_and_quit') as stop:
-            keep_button, quit_button = object(), object()
-            message.return_value.addButton.side_effect = [keep_button, quit_button, None]
-            message.return_value.clickedButton.return_value = keep_button
-            self.window.choose_close_action({'active': True})
-            self.assertEqual(message.return_value.addButton.call_args_list[0].args[0], 'Minimize')
-            minimize.assert_called_once()
-            stop.assert_not_called()
-
-    def test_quit_from_tray_always_asks_and_turns_protection_off(self):
-        self.window.remember_close_action('tray')
-        with self.with_tray(), patch('ui.main_window.QMessageBox') as message, \
-                patch.object(self.window, 'stop_protection_and_quit') as stop:
-            quit_button = object()
-            message.return_value.addButton.side_effect = [quit_button, None]
-            message.return_value.clickedButton.return_value = quit_button
-            self.window.choose_close_action({'active': True}, from_tray=True)
-            labels = [call.args[0] for call in message.return_value.addButton.call_args_list]
-            self.assertNotIn('Keep protection on in tray', labels)
-            stop.assert_called_once()
-
-    def test_remembered_quit_turns_protection_off_without_asking(self):
-        self.window.remember_close_action('quit')
-        with patch.object(self.window, 'stop_protection_and_quit') as stop, \
-                patch('ui.main_window.QMessageBox') as message:
-            self.window.choose_close_action({'active': True})
-            stop.assert_called_once()
-            message.assert_not_called()
-
-    def test_closing_with_tray_icon_quits_the_application(self):
-        from PySide6.QtGui import QCloseEvent
-        self.window._exit_verified = True
-        with self.with_tray(), patch.object(QApplication.instance(), 'quit') as quit_app:
-            event = QCloseEvent()
-            self.window.closeEvent(event)
-            self.assertTrue(event.isAccepted())
-            self.window.tray.hide.assert_called_once()
-            quit_app.assert_called_once()
-        self.window.tray = None
-
-    def test_exit_without_protection_skips_prompt(self):
-        with patch.object(self.window, 'close') as close, patch('ui.main_window.QMessageBox') as message:
-            self.window.choose_close_action({'active': False})
-            close.assert_called_once()
-            message.assert_not_called()
-
-    def test_failed_exit_check_offers_to_close_anyway(self):
-        self.patch('ui.main_window.backend.inspect_internet_protection', side_effect=ValueError('status unreadable'))
-        question = self.patch('ui.main_window.QMessageBox.question', return_value=QMessageBox.StandardButton.Yes)
-        with patch.object(self.window, 'close', wraps=self.window.close) as close:
-            self.window.close()
-            self.wait_idle()
-            self.window.poll_events()
-            self.assertIn('status unreadable', question.call_args.args[2])
-            self.assertTrue(self.window._exit_verified)
-            self.assertEqual(close.call_count, 2)
-
-    def test_session_end_closes_without_turning_protection_off(self):
-        from PySide6.QtGui import QCloseEvent
-        with patch.object(QApplication.instance(), 'isSavingSession', return_value=True), \
-                patch.object(self.window, 'start_task') as task:
-            event = QCloseEvent()
-            self.window.closeEvent(event)
-            self.assertTrue(event.isAccepted())
-            task.assert_not_called()
-
-    def test_protection_is_remembered_with_autostart_and_keepalive(self):
-        page = self.window.internet_page
-        self.keepalive.reset_mock()
-        page.keepalive()
-        self.keepalive.assert_not_called()
-        page.applied({'active': True, 'supported': True, 'count': 1})
-        self.assertTrue(self.window.config['internet_protection_on'])
-        self.autostart.assert_called_with(True)
-        self.keepalive.assert_called_once()
-        page.paused({'active': False, 'supported': True, 'count': 0})
-        self.assertFalse(self.window.config['internet_protection_on'])
-        self.autostart.assert_called_with(False)
-
-    def test_start_after_restart_offers_to_restore_protection(self):
-        page = self.window.internet_page
-        self.window.config['internet_protection_on'] = True
-        page.startup_pending = True
-        self.patch('ui.internet_page.backend.inspect_internet_protection', return_value={
-            'active': False, 'supported': True, 'count': 0, 'engine': 'sqlite-setup'})
-        question = self.patch('ui.internet_page.QMessageBox.question', return_value=QMessageBox.StandardButton.Yes)
-        with patch.object(page, 'apply') as apply:
-            page.maybe_refresh()
-            self.wait_idle()
-            self.window.poll_events()
-            question.assert_called_once()
-            apply.assert_called_once_with(confirmed=True)
-        question.return_value = QMessageBox.StandardButton.No
-        page.startup_state({'active': False, 'supported': True})
-        self.assertFalse(self.window.config['internet_protection_on'])
-
-    def test_start_with_active_protection_does_not_prompt(self):
-        page = self.window.internet_page
-        question = self.patch('ui.internet_page.QMessageBox.question')
-        page.startup_state({'active': True, 'supported': True, 'count': 5})
-        question.assert_not_called()
-
     def test_settings_preserve_unknown_keys_and_update_excludes(self):
         save = self.patch('ui.main_window.save_config')
         self.window.path.setText('/scan')
@@ -1089,6 +908,31 @@ class QtFrontendTests(unittest.TestCase):
         self.window.auto_database_update_finished(False, True)
         self.assertNotIn('database_auto_update_at', self.window.config)
         self.assertTrue(self.window.auto_update_database.isChecked())
+
+    def test_closing_never_touches_internet_protection(self):
+        from PySide6.QtGui import QCloseEvent
+        inspect = self.patch('ui.main_window.backend.inspect_internet_protection')
+        apply = self.patch('ui.main_window.backend.apply_internet_protection')
+        event = QCloseEvent()
+        self.window.closeEvent(event)
+        self.assertTrue(event.isAccepted())
+        inspect.assert_not_called()
+        apply.assert_not_called()
+
+    def test_old_autostart_entry_is_removed_and_shows_nothing(self):
+        from ui.main_window import run
+        self.autostart.reset_mock()
+        with patch('ui.main_window.QApplication') as application:
+            self.assertEqual(run(autostart=True), 0)
+        self.autostart.assert_called_once()
+        application.assert_not_called()
+
+    def test_consent_explains_protection_is_a_system_setting(self):
+        page = self.window.internet_page
+        page.show_state({'supported': True, 'active': False, 'count': 0, 'engine': 'sqlite-setup', 'mode': 'networkmanager'})
+        text = page.consent_text(page.settings(), changes=False)
+        self.assertIn('system setting, like the firewall', text)
+        self.assertIn('even when LibreWard is closed', text)
 
     def test_scan_report_leads_with_the_outcome_and_offers_quarantine(self):
         from ui.dialogs import ScanReportDialog

@@ -338,32 +338,25 @@ class InternetBackendTests(unittest.TestCase):
 
 @unittest.skipUnless(os.name == 'posix', 'XDG autostart is Linux-specific')
 class AutostartTests(unittest.TestCase):
-    def test_autostart_entry_is_created_quoted_and_removed(self):
+    def test_entry_from_an_earlier_version_is_removed(self):
         from backends.linux import LinuxBackend
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {'XDG_CONFIG_HOME': directory}):
             linux = LinuxBackend.__new__(LinuxBackend)
-            with patch('sys.executable', '/opt/Lib Ward/py$thon "3"%'):
-                linux.set_autostart(True)
             path = Path(directory, 'autostart', 'libreward.desktop')
-            text = path.read_text()
-            self.assertIn('[Desktop Entry]\nType=Application\n', text)
-            self.assertIn('Exec="/opt/Lib Ward/py\\\\$thon \\\\"3\\\\"%%" ', text)
-            self.assertIn('main.py" "--autostart"\n', text)
-            self.assertIn('\nTryExec=/opt/Lib Ward/py$thon "3"%\n', text)
-            linux.set_autostart(True)
-            executable = __import__('sys').executable
-            self.assertIn(f'Exec="{executable}" ', path.read_text())
-            self.assertIn(f'\nTryExec={executable}\n', path.read_text())
-            self.assertEqual([item.name for item in path.parent.iterdir()], ['libreward.desktop'])
-            linux.set_autostart(False)
+            path.parent.mkdir()
+            other = path.parent / 'other.desktop'
+            other.write_text('[Desktop Entry]\nName=Other\n')
+            path.write_text('[Desktop Entry]\nName=LibreWard\nExec=libreward --autostart\n')
+            linux.remove_autostart()
             self.assertFalse(path.exists())
-            linux.set_autostart(False)
+            self.assertTrue(other.exists())
+            linux.remove_autostart()  # nothing to remove
 
-    def test_service_unit_passes_heartbeat_limit_and_starts_at_boot(self):
-        from backends.linux_dns_service import helper, IDLE_LIMIT
+    def test_service_unit_starts_at_boot_without_the_app(self):
+        from backends.linux_dns_service import helper
         namespace = {'__name__': 'test_units'}
         exec(helper('/usr/bin/nmcli', '/usr/sbin/NetworkManager', '/usr/bin/systemctl', '/usr/bin/python3'), namespace)
-        self.assertIn(f'--idle-limit {IDLE_LIMIT} __ARGS__\n', namespace['SERVICE_UNIT'])
+        self.assertIn('domains.sqlite3 __ARGS__\n', namespace['SERVICE_UNIT'])
         self.assertIn('--listen-port 53\n', namespace['service_unit']('networkmanager', None))
         self.assertIn('OnFailure=libreward-dns-recover.service', namespace['SERVICE_UNIT'])
         self.assertIn('WantedBy=multi-user.target', namespace['SERVICE_UNIT'])

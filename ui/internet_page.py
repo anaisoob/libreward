@@ -30,14 +30,6 @@ class InternetProtectionPage:
         self.health_timer.setInterval(30000)
         self.health_timer.timeout.connect(self.check_health)
         self.health_timer.start()
-        # Protection follows the open app: while it is on, tell the local filter
-        # LibreWard is still running. On the next start, offer to restore it.
-        self.keepalive_timer = QTimer(self.page)
-        self.keepalive_timer.setInterval(20000)
-        self.keepalive_timer.timeout.connect(self.keepalive)
-        self.keepalive_timer.start()
-        self.keepalive()
-        self.startup_pending = self.protection_remembered()
         scroll = QScrollArea()
         self.scroll = scroll
         self.scroll_position = None
@@ -63,6 +55,9 @@ class InternetProtectionPage:
         self.toggle_button.setEnabled(False)
         row.addWidget(self.toggle_button)
         row.addStretch()
+        help_button = window.button('Why is a website blocked?', self.explain_blocking)
+        help_button.setFlat(True)
+        row.addWidget(help_button)
         box.addLayout(row)
         # Shown only while protection is on and saved choices differ from the active ones.
         self.pending_bar = QWidget()
@@ -157,9 +152,8 @@ class InternetProtectionPage:
                                     'NetworkManager forwards allowed requests, including VPN domains. With systemd-resolved, '
                                     'allowed requests go to the selected DNS service over TLS, while resolved keeps sending '
                                     'VPN and local network names to their own servers. VPN connection settings are unchanged. '
-                                    'Protection works while LibreWard is open. If the computer restarts with protection on, '
-                                    'LibreWard starts with it in the tray and protection continues. Closing the window keeps LibreWard running in the tray; quitting LibreWard or pausing '
-                                    'removes LibreWard’s blocks until you enable protection again.\n\n'
+                                    'Protection is a system setting, like the firewall: it keeps working when LibreWard '
+                                    'is closed and after restarts, until you turn it off here.\n\n'
                                     'Sources: The Block List Project, downloaded over HTTPS from GitHub. '
                                     'Upstream source URLs and license headers are preserved in the local list cache. '
                                     'Lists can contain mistakes and are refreshed only when you choose to update. '
@@ -176,39 +170,14 @@ class InternetProtectionPage:
         self.advanced_toggle.toggled.connect(self.method_info.setVisible)
         layout.addStretch()
 
-    def protection_remembered(self):
-        return self.window.config.get('internet_protection_on') is True
-
-    def keepalive(self):
-        if self.protection_remembered():
-            backend.internet_protection_keepalive()
-
-    def remember_protection(self, enabled):
-        """Remember whether protection is on and start LibreWard at login accordingly."""
-        try:
-            backend.set_autostart(enabled)
-            if self.protection_remembered() != enabled:
-                config = dict(self.window.config, internet_protection_on=enabled)
-                save_config(config)
-                self.window.config = config
-        except (OSError, ValueError, NotImplementedError) as exc:
-            self.window.log.appendPlainText(f'Cannot update starting LibreWard with the computer: {exc}')
-        self.keepalive()
-
-    def startup_state(self, state):
-        self.show_state(state)
-        if state.get('active') or not state.get('supported'):
-            return
-        self.window.showNormal()
-        self.window.raise_()
-        self.window.switch_page('internet')
-        if QMessageBox.question(self.window, 'Internet protection',
-                'Internet protection was on when LibreWard was last running, but it is off now. Turn it on again?',
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.Yes) == QMessageBox.StandardButton.Yes:
-            self.apply(confirmed=True)
-        else:
-            self.remember_protection(False)
+    def explain_blocking(self):
+        QMessageBox.information(self.window, 'Why is a website blocked?',
+            'When Internet protection is on, LibreWard blocks websites from the lists you chose '
+            '(for example dangerous, advertising or adult websites) and the websites you added. '
+            'A blocked website looks unavailable in the browser.\n\n'
+            'Protection is a system setting, like the firewall: it keeps working when LibreWard is closed. '
+            'To open a trusted website, add it to Allowed websites, or turn protection off here. '
+            'An unavailable website is not always blocked by LibreWard.')
 
     def public_mode(self):
         """Behind systemd-resolved the filter forwards to a selected public DNS service."""
@@ -302,11 +271,6 @@ class InternetProtectionPage:
         self.maybe_refresh()
 
     def maybe_refresh(self):
-        if self.startup_pending and self.window.operation is None and QApplication.activeModalWidget() is None:
-            if self.window.start_task('internet-status', backend.inspect_internet_protection, on_done=self.startup_state):
-                self.startup_pending = False
-                self.status.setText('Checking domain protection…')
-            return
         if (self.pending and self.window.operation is None
                 and QApplication.activeModalWidget() is None
                 and self.window.pages.currentIndex() == self.window.page_indices['internet']):
@@ -439,8 +403,9 @@ class InternetProtectionPage:
         if changes:
             return '\n\n'.join(parts)
         return '\n\n'.join(parts + [
-            'Some websites or apps may stop working; you can allow them later. Protection works while LibreWard '
-            'is running, also from the tray. Quitting LibreWard turns protection off. Your password is needed.'])
+            'Internet protection is a system setting, like the firewall: it stays on until you turn it off here, '
+            'even when LibreWard is closed or the computer restarts. Some websites or apps may stop working; '
+            'you can allow them later. Your password is needed.'])
 
     def apply(self, confirmed=False, changes=False):
         if self.window.operation or not self.state or not self.state.get('supported'):
@@ -518,7 +483,6 @@ class InternetProtectionPage:
         self.show_state(state)
         if state.get('active'):
             self.remember_applied()
-        self.remember_protection(bool(state.get('active')))
         self.notice.setText('If a website still opens, restart the browser.' if state.get('active') else '')
         self.update_pending()
 
@@ -540,6 +504,4 @@ class InternetProtectionPage:
 
     def paused(self, state):
         self.show_state(state)
-        if not state.get('active'):
-            self.remember_protection(False)
         self.notice.setText('')

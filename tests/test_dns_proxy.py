@@ -9,7 +9,6 @@ from contextlib import closing
 import struct
 import tempfile
 import threading
-import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -119,27 +118,6 @@ class ProxyTests(unittest.TestCase):
         self.assertFalse(thread.is_alive())
         self.assertEqual(errors, [])
 
-    def test_filter_waits_for_first_app_heartbeat_then_exits_without_it(self):
-        from core.dns_proxy import HEARTBEAT
-        filter_ = Filter(str(self.db), upstream=('127.0.0.1', 1), timeout=0.05)
-        server = Server(filter_, address=('127.0.0.1', 0), idle_limit=0.3)
-        thread = threading.Thread(target=server.serve)
-        thread.start()
-        try:
-            # Before the app has started (boot, waiting for login) protection stays on.
-            time.sleep(0.6)
-            self.assertTrue(thread.is_alive())
-            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client:
-                client.settimeout(3)
-                client.sendto(query(HEARTBEAT), server.address)
-                self.assertEqual(client.recv(4096)[3] & 15, 0)
-            thread.join(3)
-            self.assertFalse(thread.is_alive())
-            self.assertTrue(server.expired)
-        finally:
-            server.stop()
-            thread.join(3)
-
     def test_failed_accept_does_not_stop_the_filter(self):
         original = socket.socket.accept
         failures = []
@@ -164,22 +142,16 @@ class ProxyTests(unittest.TestCase):
                 server.stop()
                 thread.join(3)
 
-    def test_service_unit_restarts_crashes_but_not_missing_heartbeat(self):
+    def test_service_unit_restarts_crashes_and_runs_without_the_app(self):
         from backends.linux_dns_service import helper
         namespace = {'__name__': 'test_units'}
         exec(helper('/usr/bin/nmcli', '/usr/sbin/NetworkManager', '/usr/bin/systemctl', '/usr/bin/python3'), namespace)
         unit = namespace['SERVICE_UNIT']
         self.assertIn('Restart=on-failure\n', unit)
-        self.assertIn('RestartPreventExitStatus=3\n', unit)
+        # Protection is a system setting: no dependency on the app being open.
+        self.assertNotIn('idle-limit', unit)
+        self.assertNotIn('RestartPreventExitStatus', unit)
         self.assertLess(unit.index('StartLimitBurst'), unit.index('[Service]'))
-
-    def test_stop_is_not_reported_as_expired(self):
-        server = Server(Filter(str(self.db)), address=('127.0.0.1', 0), idle_limit=60)
-        thread = threading.Thread(target=server.serve)
-        thread.start()
-        server.stop()
-        thread.join(3)
-        self.assertFalse(server.expired)
 
     def test_bad_upstream_transaction_is_not_relayed(self):
         filter_ = Filter(str(self.db))

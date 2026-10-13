@@ -1,7 +1,4 @@
 #!/bin/sh
-# LibreWard launcher installed by `make install`. Login autostart entries point
-# here, so they keep working after package upgrades.
-LIBREWARD_LAUNCHER=@BINDIR@/libreward
-export LIBREWARD_LAUNCHER
+# LibreWard launcher installed by `make install`.
 # -s and -E: user site-packages and PYTHON* variables cannot replace app modules.
 exec @PYTHON@ -s -E @APPDIR@/main.py "$@"

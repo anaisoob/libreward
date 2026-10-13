@@ -6,7 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -33,7 +33,6 @@ class InstallLayoutTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = self.install(directory)
             launcher = (root / 'usr/bin/libreward').read_text()
-            self.assertIn('LIBREWARD_LAUNCHER=/usr/bin/libreward\n', launcher)
             self.assertIn(f'exec {sys.executable} -s -E /usr/share/libreward/main.py "$@"\n', launcher)
             self.assertTrue(os.access(root / 'usr/bin/libreward', os.X_OK))
             desktop = (root / 'usr/share/applications/libreward.desktop').read_text()
@@ -68,19 +67,3 @@ class InstallLayoutTests(unittest.TestCase):
             'obs': re.search(r'^Version: ([^-]+)-', (ROOT / 'packaging/obs/libreward.dsc').read_text(), re.M).group(1),
         }
         self.assertEqual(len(set(versions.values())), 1, versions)
-
-
-@unittest.skipUnless(os.name == 'posix', 'XDG autostart is Linux-specific')
-class InstalledAutostartTests(unittest.TestCase):
-    def test_installed_app_autostarts_through_its_launcher(self):
-        from backends.linux import LinuxBackend
-        with tempfile.TemporaryDirectory() as directory:
-            launcher = Path(directory, 'libreward')
-            launcher.write_text('#!/bin/sh\n')
-            launcher.chmod(0o755)
-            with patch.dict(os.environ, {'XDG_CONFIG_HOME': directory, 'LIBREWARD_LAUNCHER': str(launcher)}):
-                LinuxBackend.__new__(LinuxBackend).set_autostart(True)
-            text = Path(directory, 'autostart', 'libreward.desktop').read_text()
-            self.assertIn(f'Exec="{launcher}" "--autostart"\n', text)
-            self.assertIn('\nIcon=libreward\n', text)
-            self.assertIn(f'\nTryExec={launcher}\n', text)

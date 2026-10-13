@@ -1004,73 +1004,17 @@ class LinuxBackend(PlatformBackend):
         code, output = self._firewall_query([resolvectl, 'dns'], timeout=5)
         return code == 0 and filter_is_global(output)
 
-    def internet_protection_keepalive(self):
-        # Fire-and-forget UDP query to the filter; the GUI thread never waits for a reply.
-        import json
-        import socket
-        import struct
-        from core.dns_proxy import HEARTBEAT
-        from .linux_dns_service import STATE
-        try:
-            with open(STATE, 'rb') as stream:
-                state = json.loads(stream.read(4097))
-        except (OSError, ValueError):
-            return
-        if not isinstance(state, dict) or state.get('active') is not True:
-            return
-        port = 5354 if state.get('mode') == 'resolved' else 53
-        name = b''.join(bytes([len(part)]) + part.encode('ascii') for part in HEARTBEAT.split('.')) + b'\0'
-        packet = os.urandom(2) + struct.pack('!5H', 0x0100, 1, 0, 0, 0) + name + struct.pack('!HH', 1, 1)
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-                sock.setblocking(False)
-                sock.sendto(packet, ('127.0.0.1', port))
-        except OSError:
-            pass
-
     def autostart_path(self):
         return Path(os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.config') / 'autostart' / 'libreward.desktop'
 
-    def set_autostart(self, enabled):
-        """XDG autostart entry, owned by LibreWard and written atomically."""
-        import sys
-        import tempfile
+    def remove_autostart(self):
+        """Earlier versions started LibreWard at login; Internet protection no longer needs it."""
         path = self.autostart_path()
-        if not enabled:
-            path.unlink(missing_ok=True)
-            return
-        root = Path(__file__).resolve().parent.parent
-        # Installed packages start through their launcher, which survives upgrades.
-        launcher = os.environ.get('LIBREWARD_LAUNCHER', '')
-        if launcher and os.path.isabs(launcher) and os.access(launcher, os.X_OK):
-            command, icon = [launcher], 'libreward'
-        else:
-            command = [sys.executable] if getattr(sys, 'frozen', False) else [sys.executable, str(root / 'main.py')]
-            icon = str(root / 'assets' / 'icons' / 'libreward.svg')
-
-        def quoted(argument):
-            if any(char in argument for char in '\n\r'):
-                raise ValueError('The LibreWard location cannot be used for autostart.')
-            # Desktop Entry quoting, then the general string escape, then field codes.
-            inner = ''.join('\\' + char if char in '"`$\\' else char for char in argument)
-            return ('"' + inner + '"').replace('\\', '\\\\').replace('%', '%%')
-
-        content = ('[Desktop Entry]\nType=Application\nName=LibreWard\n'
-                   'Comment=Keeps Internet protection on after restarting the computer\n'
-                   'Exec=' + ' '.join(quoted(part) for part in [*command, '--autostart']) + '\n'
-                   'Icon=' + icon + '\n'
-                   # Desktops skip the entry once the program is uninstalled.
-                   'TryExec=' + command[0] + '\n'
-                   'Terminal=false\nX-GNOME-Autostart-enabled=true\n')
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, name = tempfile.mkstemp(dir=path.parent, prefix='.libreward-', suffix='.desktop')
         try:
-            with os.fdopen(fd, 'w', encoding='utf-8') as stream:
-                stream.write(content)
-            os.replace(name, path)
-        finally:
-            if os.path.exists(name):
-                os.unlink(name)
+            if 'LibreWard' in path.read_text(errors='replace'):
+                path.unlink()
+        except OSError:
+            pass
 
     def apply_internet_protection(self, domains, provider=None):
         """PreparedDomains enables the local filter; [] pauses it.

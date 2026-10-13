@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Internet protection is now a system setting, like the firewall: the filter keeps
+  running when LibreWard is closed and after restarts, until turned off in LibreWard.
+  Removes the app heartbeat, login autostart (old entries are deleted), the close
+  question and the tray icon. Adds "Why is a website blocked?" help.
+
 - Simpler Internet protection page: one Turn on / Turn off switch, choices saved at once,
   and an "Apply changes" bar only while protection is on (leaving the page asks too).
   Status checks no longer overwrite unapplied choices or block editing. Shorter

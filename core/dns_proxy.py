@@ -19,11 +19,6 @@ import threading
 import time
 
 SENTINEL = 'libreward-protection-check.invalid'
-# The open LibreWard window sends this name periodically. After the first one,
-# a missing heartbeat (app crashed, user logged out) makes the service exit as
-# failed, and its OnFailure unit restores normal DNS. Before it, e.g. at boot
-# while waiting for login and autostart, protection stays as it was.
-HEARTBEAT = 'libreward-app-open.invalid'
 MAX_QUERY = 4096
 # Larger answers make UDP clients retry over TCP (EDNS default buffer size).
 MAX_UDP_REPLY = 1232
@@ -231,7 +226,6 @@ class Filter:
         self.index = DomainIndex(database)
         self.upstream = upstream if hasattr(upstream, 'exchange') else PlainUpstream(upstream, timeout)
         self.timeout = timeout
-        self.last_heartbeat = None
 
     def answer(self, packet, tcp=False):
         if len(packet) > MAX_QUERY:
@@ -240,9 +234,6 @@ class Filter:
             domain, kind, cls, end = question(packet)
         except (ValueError, UnicodeError):
             return error_response(packet, 1)
-        if domain == HEARTBEAT:
-            self.last_heartbeat = time.monotonic()
-            return blocked_response(packet, kind, cls, end)
         try:
             if self.index.blocked(domain):
                 return blocked_response(packet, kind, cls, end)
@@ -261,10 +252,8 @@ class Filter:
             return error_response(packet, 2)
 
 class Server:
-    def __init__(self, filter_, address=('127.0.0.1', 53), workers=8, pending=64, idle_limit=0):
+    def __init__(self, filter_, address=('127.0.0.1', 53), workers=8, pending=64):
         self.filter = filter_
-        self.idle_limit = idle_limit
-        self.expired = False
         self.stop_event = threading.Event()
         self.slots = threading.BoundedSemaphore(pending)
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=workers)
@@ -320,10 +309,6 @@ class Server:
     def serve(self):
         try:
             while not self.stop_event.is_set():
-                seen = self.filter.last_heartbeat
-                if self.idle_limit and seen is not None and time.monotonic() - seen > self.idle_limit:
-                    self.expired = True
-                    break
                 for key, _ in self.selector.select(timeout=0.2):
                     # One failed receive/accept (aborted connection, descriptor
                     # limit, spurious wakeup) must not stop DNS for everyone.
@@ -358,7 +343,6 @@ class Server:
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--database', required=True)
-    parser.add_argument('--idle-limit', type=float, default=0)
     parser.add_argument('--listen-port', type=int, default=53)
     # Behind systemd-resolved: ADDRESS#CERTIFICATE-NAME entries of the selected service.
     parser.add_argument('--tls-upstream', action='append', default=[])
@@ -366,11 +350,9 @@ if __name__ == '__main__':
     upstream = ('127.0.0.1', 5354)
     if args.tls_upstream:
         upstream = TlsUpstream([tuple(entry.split('#', 1)) for entry in args.tls_upstream])
-    server = Server(Filter(args.database, upstream=upstream), address=('127.0.0.1', args.listen_port),
-                    idle_limit=args.idle_limit)
+    server = Server(Filter(args.database, upstream=upstream), address=('127.0.0.1', args.listen_port))
     signal.signal(signal.SIGTERM, lambda *_: server.stop())
     signal.signal(signal.SIGINT, lambda *_: server.stop())
     server.serve()
-    raise SystemExit(3 if server.expired else 0)
 '''
 exec(SERVICE_SOURCE)

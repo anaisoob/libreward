@@ -19,8 +19,6 @@ from .linux_resolved import RESOLVED_CHECK
 DIRECTORY = '/etc/libreward'
 STATE = DIRECTORY + '/dns-state.json'
 PROXY_CONFIG = 'port=5354\n'
-# Seconds without a heartbeat from the open app before normal DNS is restored.
-IDLE_LIMIT = 120
 
 
 def inspect_service():
@@ -85,19 +83,16 @@ def helper(nmcli, network_manager, systemctl, python, resolvectl=None):
     # Share fixed-file helpers and resolver checks.
     prefix = shared_helper(nmcli, network_manager) + RESOLVED_CHECK
     recovery = RECOVERY_SOURCE.replace('__NMCLI__', repr(nmcli)).replace('__SYSTEMCTL__', repr(systemctl))
-    # Protection follows the open app. The filter starts at boot so a computer
-    # restarted with protection on keeps it; once LibreWard has sent heartbeats,
-    # their absence (app crashed or the user logged out) makes the filter exit
-    # as failed and the recovery unit restores normal DNS.
+    # Internet protection is a system setting, like the firewall: the filter runs
+    # independently of the app and starts at boot until it is turned off.
     service_unit = ('# Managed by LibreWard\n[Unit]\nDescription=LibreWard local DNS filter\n'
                     'After=NetworkManager.service\nOnFailure=libreward-dns-recover.service\n'
                     'StartLimitIntervalSec=60\nStartLimitBurst=3\n'
                     '[Service]\nType=simple\nDynamicUser=yes\n'
-                    # Restart after a crash; exit status 3 (no app heartbeat) and
-                    # repeated crashes go to the recovery unit instead.
-                    'Restart=on-failure\nRestartSec=1\nRestartPreventExitStatus=3\n'
+                    # Restart after a crash; repeated crashes go to the recovery unit instead.
+                    'Restart=on-failure\nRestartSec=1\n'
                     f'ExecStart={python} -I /etc/libreward/dns-service.py --database /etc/libreward/domains.sqlite3 '
-                    f'--idle-limit {IDLE_LIMIT} __ARGS__\n'
+                    '__ARGS__\n'
                     'AmbientCapabilities=CAP_NET_BIND_SERVICE\nCapabilityBoundingSet=CAP_NET_BIND_SERVICE\n'
                     'NoNewPrivileges=yes\nProtectSystem=strict\nProtectHome=yes\nPrivateTmp=yes\n'
                     'RestrictAddressFamilies=AF_INET AF_UNIX\nMemoryMax=128M\nTasksMax=32\n'
