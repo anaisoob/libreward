@@ -1,7 +1,8 @@
 """Standalone local DNS filter. Shared source is installed by the Linux backend.
 
-Only exact-domain membership is cached; DNS answers remain with the existing
-NetworkManager resolver so VPN forwarding and network changes stay there.
+Only exact-domain membership is cached. Allowed queries go either to the
+existing NetworkManager resolver (VPN forwarding and network changes stay there)
+or, behind systemd-resolved, to the selected public DNS service over TLS.
 """
 SERVICE_SOURCE = r'''
 import argparse
@@ -9,8 +10,10 @@ import collections
 import concurrent.futures
 import selectors
 import signal
+import queue
 import socket
 import sqlite3
+import ssl
 import struct
 import threading
 import time
@@ -22,6 +25,8 @@ SENTINEL = 'libreward-protection-check.invalid'
 # while waiting for login and autostart, protection stays as it was.
 HEARTBEAT = 'libreward-app-open.invalid'
 MAX_QUERY = 4096
+# Larger answers make UDP clients retry over TCP (EDNS default buffer size).
+MAX_UDP_REPLY = 1232
 
 def question(packet):
     if len(packet) < 12:
@@ -110,10 +115,121 @@ class DomainIndex:
     def close(self):
         self.connection.close()
 
+def truncated_response(packet, end):
+    flags = 0x8280 | (int.from_bytes(packet[2:4], 'big') & 0x0100)
+    return packet[:2] + struct.pack('!5H', flags, 1, 0, 0, 0) + packet[12:end]
+
+class PlainUpstream:
+    """Forward over the client's transport, e.g. to NetworkManager's dnsmasq."""
+    def __init__(self, address, timeout=3):
+        self.addresses = [address] if isinstance(address, tuple) else list(address)
+        self.timeout = timeout
+
+    def exchange(self, packet, tcp):
+        error = OSError('No upstream DNS server')
+        for address in self.addresses:
+            try:
+                return self._exchange(address, packet, tcp)
+            except OSError as exc:
+                error = exc
+        raise error
+
+    def _exchange(self, address, packet, tcp):
+        family = socket.SOCK_STREAM if tcp else socket.SOCK_DGRAM
+        with socket.socket(socket.AF_INET, family) as upstream:
+            upstream.settimeout(self.timeout)
+            upstream.connect(address)
+            if tcp:
+                upstream.sendall(struct.pack('!H', len(packet)) + packet)
+                deadline = time.monotonic() + self.timeout
+                length = struct.unpack('!H', receive_exact(upstream, 2, deadline))[0]
+                return receive_exact(upstream, length, deadline)
+            upstream.send(packet)
+            return upstream.recv(65535)
+
+class TlsUpstream:
+    """DNS-over-TLS with certificate checks and reused connections.
+
+    Opportunistic like systemd-resolved: if TLS is unreachable (port 853 blocked),
+    the same service is used over plain DNS for a minute before TLS is retried.
+    """
+    def __init__(self, servers, timeout=3, pool=4, context=None, port=853, plain=None):
+        self.servers = list(servers)  # [(address, certificate name)]
+        self.timeout = timeout
+        self.pool = pool
+        self.port = port
+        self.idle = queue.LifoQueue()
+        self.context = context or ssl.create_default_context()
+        self.context.minimum_version = ssl.TLSVersion.TLSv1_2
+        self.plain = plain or PlainUpstream([(address, 53) for address, _ in self.servers], timeout)
+        self.plain_until = 0
+
+    def _connect(self):
+        error = OSError('No DNS-over-TLS server')
+        for address, name in self.servers:
+            raw = None
+            try:
+                raw = socket.create_connection((address, self.port), timeout=self.timeout)
+                return self.context.wrap_socket(raw, server_hostname=name)
+            except (OSError, ssl.SSLError) as exc:
+                if raw is not None:
+                    raw.close()
+                error = exc
+        raise error
+
+    def _take(self):
+        while True:
+            try:
+                connection, used = self.idle.get_nowait()
+            except queue.Empty:
+                return None
+            if time.monotonic() - used < 15:
+                return connection
+            connection.close()
+
+    def _give(self, connection):
+        if self.idle.qsize() < self.pool:
+            self.idle.put((connection, time.monotonic()))
+        else:
+            connection.close()
+
+    def exchange(self, packet, tcp):
+        if time.monotonic() >= self.plain_until:
+            connection = self._take()
+            # A pooled connection may have been closed by the server: retry once with a
+            # fresh one. A failed fresh connection means TLS is unreachable right now.
+            while True:
+                pooled = connection is not None
+                try:
+                    if connection is None:
+                        connection = self._connect()
+                    deadline = time.monotonic() + self.timeout
+                    connection.settimeout(self.timeout)
+                    connection.sendall(struct.pack('!H', len(packet)) + packet)
+                    length = struct.unpack('!H', receive_exact(connection, 2, deadline))[0]
+                    reply = receive_exact(connection, length, deadline)
+                    self._give(connection)
+                    return reply
+                except (OSError, ssl.SSLError, struct.error):
+                    if connection is not None:
+                        connection.close()
+                    connection = None
+                    if not pooled:
+                        break
+            self.plain_until = time.monotonic() + 60
+        return self.plain.exchange(packet, tcp)
+
+    def close(self):
+        while True:
+            try:
+                self.idle.get_nowait()[0].close()
+            except queue.Empty:
+                return
+
 class Filter:
     def __init__(self, database, upstream=('127.0.0.1', 5354), timeout=3):
         self.index = DomainIndex(database)
-        self.upstream = upstream
+        self.upstream = upstream if hasattr(upstream, 'exchange') else PlainUpstream(upstream, timeout)
         self.timeout = timeout
         self.last_heartbeat = None
 
@@ -130,18 +246,7 @@ class Filter:
         try:
             if self.index.blocked(domain):
                 return blocked_response(packet, kind, cls, end)
-            family = socket.SOCK_STREAM if tcp else socket.SOCK_DGRAM
-            with socket.socket(socket.AF_INET, family) as upstream:
-                upstream.settimeout(self.timeout)
-                upstream.connect(self.upstream)
-                if tcp:
-                    upstream.sendall(struct.pack('!H', len(packet)) + packet)
-                    deadline = time.monotonic() + self.timeout
-                    length = struct.unpack('!H', receive_exact(upstream, 2, deadline))[0]
-                    reply = receive_exact(upstream, length, deadline)
-                else:
-                    upstream.send(packet)
-                    reply = upstream.recv(65535)
+            reply = self.upstream.exchange(packet, tcp)
             if len(reply) < 12 or reply[:2] != packet[:2] or not reply[2] & 0x80:
                 raise ValueError('Invalid upstream DNS response')
             # Response questions use the same parser after clearing QR/RCODE.
@@ -149,6 +254,8 @@ class Filter:
             name, rkind, rcls, _ = question(check)
             if (name, rkind, rcls) != (domain, kind, cls):
                 raise ValueError('Unmatched upstream response')
+            if not tcp and len(reply) > MAX_UDP_REPLY:
+                return truncated_response(packet, end)
             return reply
         except (OSError, ValueError, UnicodeError, sqlite3.Error):
             return error_response(packet, 2)
@@ -252,8 +359,15 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--database', required=True)
     parser.add_argument('--idle-limit', type=float, default=0)
+    parser.add_argument('--listen-port', type=int, default=53)
+    # Behind systemd-resolved: ADDRESS#CERTIFICATE-NAME entries of the selected service.
+    parser.add_argument('--tls-upstream', action='append', default=[])
     args = parser.parse_args()
-    server = Server(Filter(args.database), idle_limit=args.idle_limit)
+    upstream = ('127.0.0.1', 5354)
+    if args.tls_upstream:
+        upstream = TlsUpstream([tuple(entry.split('#', 1)) for entry in args.tls_upstream])
+    server = Server(Filter(args.database, upstream=upstream), address=('127.0.0.1', args.listen_port),
+                    idle_limit=args.idle_limit)
     signal.signal(signal.SIGTERM, lambda *_: server.stop())
     signal.signal(signal.SIGINT, lambda *_: server.stop())
     server.serve()

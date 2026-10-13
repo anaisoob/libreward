@@ -9,8 +9,6 @@ from config import save_config
 from core.dns_providers import PROVIDERS
 from core.internet import CATEGORIES, DiskDomainLists as DomainLists, normalize_domain, preferences
 
-PUBLIC_ENGINES = ('public-dns', 'public-dns-setup')
-
 
 class InternetProtectionPage:
     def __init__(self, window):
@@ -69,9 +67,9 @@ class InternetProtectionPage:
         except (ValueError, TypeError):
             saved = {'categories': ['dangerous'], 'provider': 'adguard', 'allowed': [], 'blocked': []}
             self.notice.setText('Saved website settings could not be read. Review them before applying protection.')
-        # Shown on systems without the local filter: a public filtering DNS service.
+        # Behind systemd-resolved, allowed lookups go to a chosen DNS service over TLS.
         self.public_card, box = window.card()
-        box.addWidget(window.label('DNS SERVICE', 'eyebrow'))
+        box.addWidget(window.label('ENCRYPTED DNS SERVICE', 'eyebrow'))
         self.provider = QComboBox()
         for key, provider in PROVIDERS.items():
             self.provider.addItem(provider.name + (' (recommended)' if key == 'adguard' else ''), key)
@@ -81,16 +79,15 @@ class InternetProtectionPage:
         self.provider_info = window.label('', 'muted')
         self.provider_info.setWordWrap(True)
         box.addWidget(self.provider_info)
-        note = window.label('This computer cannot run LibreWard’s own filter, so website lookups are sent to the '
-                            'selected service, which decides what to block. Your own allowed and blocked websites '
-                            'need the local filter and are not used here.', 'muted')
+        note = window.label('LibreWard first checks every website name on this computer against your choices below. '
+                            'Allowed lookups then go to this service, encrypted where the network allows it. '
+                            'It may block more on its own. Local network and VPN names are not sent to it.', 'muted')
         note.setWordWrap(True)
         box.addWidget(note)
         layout.addWidget(self.public_card)
         self.public_card.hide()
         self.provider_changed(notify=False)
         card, box = window.card()
-        self.filter_cards = [card]
         box.addWidget(window.label('WHAT TO BLOCK', 'eyebrow'))
         self.categories = {}
         for key, (title, _) in CATEGORIES.items():
@@ -129,7 +126,6 @@ class InternetProtectionPage:
             field.returnPressed.connect(lambda k=key, f=field: self.add_domain(k, f))
             box.addWidget(window.button('Remove selected', lambda checked=False, k=key: self.remove_domain(k)))
             lists_row.addWidget(card)
-            self.filter_cards.append(card)
         layout.addLayout(lists_row)
         note = window.label('This protection blocks exact domain names, not page contents. '
                             'Subdomains need their own entries. It cannot remove every ad. '
@@ -138,13 +134,12 @@ class InternetProtectionPage:
                             'Allowed websites only removes LibreWard blocks; it cannot override other security tools.', 'muted')
         note.setWordWrap(True)
         layout.addWidget(note)
-        self.filter_cards.append(note)
         self.advanced_toggle = QCheckBox('Show how protection works')
         layout.addWidget(self.advanced_toggle)
-        self.advanced = window.label('Linux with NetworkManager: a local service checks an indexed database on disk, and '
-                                    'NetworkManager forwards allowed requests, including VPN domains. Systems using '
-                                    'systemd-resolved instead send website lookups to the selected public filtering DNS '
-                                    'service, encrypted where the network allows it. VPN connection settings are unchanged. '
+        self.advanced = window.label('Linux: a local service checks an indexed database on disk. With NetworkManager, '
+                                    'NetworkManager forwards allowed requests, including VPN domains. With systemd-resolved, '
+                                    'allowed requests go to the selected DNS service over TLS, while resolved keeps sending '
+                                    'VPN and local network names to their own servers. VPN connection settings are unchanged. '
                                     'Protection works while LibreWard is open. If the computer restarts with protection on, '
                                     'LibreWard starts with it in the tray and protection continues. Closing the window keeps LibreWard running in the tray; quitting LibreWard or pausing '
                                     'removes LibreWard’s blocks until you enable protection again.\n\n'
@@ -193,7 +188,8 @@ class InternetProtectionPage:
             self.remember_protection(False)
 
     def public_mode(self):
-        return bool(self.state and self.state.get('engine') in PUBLIC_ENGINES)
+        """Behind systemd-resolved the filter forwards to a selected public DNS service."""
+        return bool(self.state and self.state.get('mode') == 'resolved')
 
     def provider_changed(self, *_args, notify=True):
         provider = PROVIDERS[self.provider.currentData()]
@@ -287,8 +283,6 @@ class InternetProtectionPage:
         supported = state.get('supported', False)
         public = self.public_mode()
         self.public_card.setVisible(public)
-        for card in self.filter_cards:
-            card.setVisible(not public)
         if public and state.get('provider') in PROVIDERS:
             self.provider.blockSignals(True)
             self.provider.setCurrentIndex(self.provider.findData(state['provider']))
@@ -300,9 +294,7 @@ class InternetProtectionPage:
         self.status.setProperty('severity', 'success' if active and supported else 'warning')
         self.status.style().unpolish(self.status)
         self.status.style().polish(self.status)
-        if public:
-            method = 'Method: Public filtering DNS service.\n'
-        elif state.get('engine') in ('sqlite-dns', 'sqlite-setup'):
+        if state.get('engine') in ('sqlite-dns', 'sqlite-setup'):
             method = f"{state.get('count', 0):,} domains in the active blocklist.\nMethod: Local DNS filter.\n"
         else:
             method = ''
@@ -350,9 +342,6 @@ class InternetProtectionPage:
     def apply(self, confirmed=False):
         if self.window.operation or not self.state or not self.state.get('supported'):
             return
-        if self.public_mode():
-            self.apply_public(confirmed)
-            return
         settings = self.settings()
         if not settings['categories'] and not settings['blocked']:
             QMessageBox.information(self.window, 'Internet protection', 'Choose a category or add a blocked website first.')
@@ -361,6 +350,14 @@ class InternetProtectionPage:
         if self.state.get('setup_available'):
             setup_text = ('LibreWard will set up a local website filter using your existing network manager. '
                           'Turning protection off restores the previous DNS mode. The internet may briefly reconnect. ')
+            if self.public_mode():
+                provider = PROVIDERS[settings['provider']]
+                setup_text += (f'Allowed website lookups will go to {provider.name}, encrypted where the network allows it. '
+                              f'{provider.blocks} {provider.name} is a third-party service, not part of LibreWard, used '
+                              f'under its own terms and privacy policy ({provider.homepage}). It can see which website '
+                              'names this computer looks up after LibreWard’s own checks, and it may block websites by '
+                              'mistake. LibreWard and the service are provided with no warranty, to the extent permitted '
+                              'by law.\n\n')
             if self.state.get('needs_dns_install'):
                 setup_text += (f"The required {self.state.get('dns_package') or 'dnsmasq'} package and its dependencies will be installed from your system repositories. "
                                'Installation and setup may each ask for system authorization. ')
@@ -389,38 +386,11 @@ class InternetProtectionPage:
                 if not len(domains):
                     raise ValueError('No domains remain to block after your allowed websites were applied.')
                 self.window.events.put(f'Applying {len(domains):,} blocked domains. Waiting for system authorization…\n')
-                state = backend.apply_internet_protection(domains)
+                state = backend.apply_internet_protection(
+                    domains, provider=settings['provider'] if self.public_mode() else None)
             self.window.events.put(f"Applied {state['count']:,} exact-domain blocks with the local filter.\n")
             return state
         self.window.start_task('internet-apply', work, title='Apply domain protection', on_done=self.applied)
-
-    def apply_public(self, confirmed):
-        settings = self.settings()
-        provider = PROVIDERS[settings['provider']]
-        if not confirmed and not self.window.confirm('Use a public DNS service',
-                f'Send this computer’s website lookups to {provider.name}? {provider.blocks}\n\n'
-                f'{provider.name} is a third-party service, not part of LibreWard, and is used under its own terms '
-                f'and privacy policy ({provider.homepage}). It can see which website names this computer looks up. '
-                'It may block websites by mistake, and LibreWard and the service are provided with no warranty, '
-                'to the extent permitted by law.\n\n'
-                'Protection works while LibreWard is open, including after restarting the computer. '
-                'Closing the window keeps LibreWard running in the tray; quitting LibreWard turns protection off. Network and VPN connection settings are kept. '
-                'System authorization is required.'):
-            return
-        self.window.privileged_terminal_commands = ''
-        if not self.window.ensure_system_authorization():
-            return
-        try:
-            self.persist(settings)
-        except OSError as exc:
-            QMessageBox.warning(self.window, 'Settings', str(exc))
-            return
-        def work():
-            self.window.events.put(f'Switching website lookups to {provider.name}. Waiting for system authorization…\n')
-            state = backend.apply_public_dns(provider.key)
-            self.window.events.put(f'Website lookups now go to {provider.name}.\n')
-            return state
-        self.window.start_task('internet-apply', work, title='Apply Internet protection', on_done=self.applied)
 
     def applied(self, state):
         self.show_state(state)

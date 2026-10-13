@@ -120,17 +120,9 @@ class ProviderTests(unittest.TestCase):
             validate_providers({'bad': bad})
 
 
-class PublicDnsTests(unittest.TestCase):
-    def test_dropin_uses_global_routing_and_opportunistic_tls(self):
-        from core.dns_providers import PROVIDERS
-        from backends.linux_public_dns import dropin_content
-        text = dropin_content(PROVIDERS['adguard-family']).decode()
-        self.assertTrue(text.startswith('# Managed by LibreWard\n# provider=adguard-family\n[Resolve]\n'))
-        self.assertIn('DNS=94.140.14.15#family.adguard-dns.com 94.140.15.16#family.adguard-dns.com', text)
-        self.assertIn('\nDomains=~.\nDNSOverTLS=opportunistic\n', text)
-
+class ResolvedTests(unittest.TestCase):
     def test_only_resolved_stub_with_resolver_first_in_nss_is_supported(self):
-        from backends.linux_public_dns import resolved_is_system_resolver
+        from backends.linux_resolved import resolved_is_system_resolver
         with tempfile.TemporaryDirectory() as directory:
             resolv = Path(directory, 'resolv.conf')
             resolv.symlink_to('/run/systemd/resolve/stub-resolv.conf')
@@ -144,93 +136,20 @@ class PublicDnsTests(unittest.TestCase):
             plain.write_text('nameserver 127.0.0.53\n')
             self.assertFalse(resolved_is_system_resolver('hosts: files dns', plain))
 
-    def test_global_servers_ignore_names_ports_and_links(self):
-        from backends.linux_public_dns import global_servers
-        output = ('Global: 94.140.14.14#dns.adguard-dns.com [2a10:50c0::ad1:ff]:853#dns.adguard-dns.com 1.1.1.1%eth0\n'
-                  'Link 2 (wlan0): 192.168.1.1\n')
-        self.assertEqual(global_servers(output), {'94.140.14.14', '2a10:50c0::ad1:ff', '1.1.1.1'})
-        self.assertEqual(global_servers('Link 2 (wlan0): 192.168.1.1\n'), set())
+    def test_filter_must_be_resolveds_global_server(self):
+        from backends.linux_resolved import filter_is_global, global_servers
+        output = 'Global: 127.0.0.1:5354\nLink 2 (wlan0): 192.168.1.1\nLink 5 (tun0): 10.0.0.1#vpn.example\n'
+        self.assertTrue(filter_is_global(output))
+        self.assertEqual(global_servers('Global: 1.1.1.1#one.one.one.one 9.9.9.9%eth0\n'), {'1.1.1.1', '9.9.9.9'})
+        self.assertFalse(filter_is_global('Global:\nLink 2 (wlan0): 127.0.0.1:5354\n'))
 
-    def test_inspect_recognizes_only_generated_dropins(self):
+    def test_upstream_table_has_ipv4_tls_servers_for_every_provider(self):
+        from backends.linux_dns_service import upstream_table
         from core.dns_providers import PROVIDERS
-        import backends.linux_public_dns as public
-        with tempfile.TemporaryDirectory() as directory, patch.object(public, 'DROPIN', str(Path(directory, 'x.conf'))):
-            self.assertIsNone(public.inspect_public())
-            Path(public.DROPIN).write_bytes(public.dropin_content(PROVIDERS['quad9']))
-            self.assertEqual(public.inspect_public(), 'quad9')
-            Path(public.DROPIN).write_bytes(public.dropin_content(PROVIDERS['quad9']) + b'DNS=203.0.113.1\n')
-            with self.assertRaisesRegex(ValueError, 'changed outside'):
-                public.inspect_public()
-
-
-@unittest.skipUnless(os.name == 'posix', 'Linux helper uses POSIX locks')
-class PublicDnsHelperTests(unittest.TestCase):
-    def setUp(self):
-        from backends.linux_public_dns import helper
-        self.ns = {'__name__': 'test_public_dns'}
-        exec(helper('/usr/bin/systemctl', '/usr/bin/resolvectl'), self.ns)
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        root = Path(self.temp.name)
-        self.dropin = root / 'resolved.conf.d' / '90-libreward-dns.conf'
-        self.ns.update(ROOT=str(root / 'libreward'), DIRECTORY=str(self.dropin.parent), DROPIN=str(self.dropin))
-        self.ns['secure_directory'] = lambda path, create=True: os.makedirs(path, exist_ok=True) if create else None
-        self.ns['reload_resolved'] = Mock()
-        self.ns['verify'] = Mock()
-
-    def test_select_switch_and_pause_write_only_the_owned_dropin(self):
-        self.assertEqual(self.ns['apply']('adguard'), {'provider': 'adguard'})
-        self.assertEqual(self.dropin.read_bytes(), self.ns['CONTENTS']['adguard'])
-        self.assertEqual(self.dropin.stat().st_mode & 0o777, 0o644)
-        self.ns['apply']('quad9')
-        self.assertIn(b'9.9.9.9#dns.quad9.net', self.dropin.read_bytes())
-        self.ns['apply'](None)
-        self.assertFalse(self.dropin.exists())
-        self.assertEqual(self.ns['reload_resolved'].call_count, 3)
-        self.assertEqual([item.name for item in self.dropin.parent.iterdir()], [])
-
-    def test_unreachable_service_restores_previous_selection(self):
-        self.ns['apply']('quad9')
-        previous = self.dropin.read_bytes()
-        self.ns['verify'].side_effect = RuntimeError('could not be reached')
-        with self.assertRaisesRegex(RuntimeError, 'could not be reached'):
-            self.ns['apply']('adguard')
-        self.assertEqual(self.dropin.read_bytes(), previous)
-        self.ns['apply'](None)
-        self.ns['verify'].side_effect = RuntimeError('could not be reached')
-        with self.assertRaises(RuntimeError):
-            self.ns['apply']('adguard')
-        self.assertFalse(self.dropin.exists())
-
-    def test_failed_restore_explains_manual_recovery(self):
-        self.ns['verify'].side_effect = RuntimeError('could not be reached')
-        self.ns['reload_resolved'].side_effect = [None, RuntimeError('reload failed')]
-        with self.assertRaisesRegex(RuntimeError, 'systemctl restart systemd-resolved.*could not be reached.*reload failed'):
-            self.ns['apply']('adguard')
-        self.assertFalse(self.dropin.exists())
-
-    def test_foreign_dropin_is_never_replaced(self):
-        self.dropin.parent.mkdir(parents=True)
-        self.dropin.write_text('[Resolve]\nDNS=192.0.2.1\n')
-        with self.assertRaisesRegex(ValueError, 'changed outside'):
-            self.ns['apply']('adguard')
-        self.assertEqual(self.dropin.read_text(), '[Resolve]\nDNS=192.0.2.1\n')
-        self.ns['reload_resolved'].assert_not_called()
-
-    def test_verify_requires_effective_servers_and_working_lookups(self):
-        from backends.linux_public_dns import helper
-        real = {'__name__': 'test_public_dns_verify'}
-        exec(helper('/usr/bin/systemctl', '/usr/bin/resolvectl'), real)
-        real['global_servers'] = Mock(return_value=set(real['ADDRESSES']['quad9']))
-        real['resolves'] = Mock(return_value=True)
-        real['verify']('quad9')
-        real['global_servers'] = Mock(return_value={'192.168.1.1'})
-        with patch('time.sleep'), self.assertRaisesRegex(RuntimeError, 'could not be reached'):
-            real['verify']('quad9')
-        real['global_servers'] = Mock(return_value=set(real['ADDRESSES']['quad9']))
-        real['resolves'] = Mock(return_value=False)
-        with patch('time.sleep'), self.assertRaisesRegex(RuntimeError, 'could not be reached'):
-            real['verify']('quad9')
+        table = upstream_table()
+        self.assertEqual(set(table), set(PROVIDERS))
+        self.assertIn(['9.9.9.9', 'dns.quad9.net'], table['quad9'])
+        self.assertTrue(all(':' not in address for servers in table.values() for address, _ in servers))
 
 
 class InternetBackendTests(unittest.TestCase):
@@ -238,25 +157,109 @@ class InternetBackendTests(unittest.TestCase):
         from backends.linux import LinuxBackend
         return LinuxBackend.__new__(LinuxBackend)
 
-    def inspect(self, backend, *, local=False, setup=False, public=False):
+    def inspect(self, backend, *, local=False, setup=False, resolved=False):
         with patch('backends.linux_dns_service.inspect_service', return_value=None), \
-             patch('backends.linux_public_dns.inspect_public', return_value=None), \
              patch.object(backend, '_trusted_firewall_executable', return_value='/usr/bin/tool'), \
              patch('backends.linux.Path.is_dir', return_value=True), \
              patch.object(backend, '_local_dns_available', return_value=local), \
              patch.object(backend, '_dns_setup_available', return_value=setup), \
-             patch.object(backend, '_public_dns_available', return_value=public):
+             patch.object(backend, '_resolved_available', return_value=resolved), \
+             patch.object(backend, 'distro_info', return_value={'pkg_manager': 'apt'}):
             return backend.inspect_internet_protection()
 
-    def test_local_filter_is_preferred_and_public_dns_is_the_fallback(self):
+    def test_networkmanager_filter_is_preferred_then_resolved(self):
         backend = self.backend()
-        self.assertEqual(self.inspect(backend, local=True, public=True)['engine'], 'sqlite-setup')
-        self.assertEqual(self.inspect(backend, setup=True, public=True)['engine'], 'sqlite-setup')
-        state = self.inspect(backend, public=True)
-        self.assertEqual((state['engine'], state['supported'], state['active']), ('public-dns-setup', True, False))
+        self.assertEqual(self.inspect(backend, local=True, resolved=True)['mode'], 'networkmanager')
+        self.assertEqual(self.inspect(backend, setup=True, resolved=True)['mode'], 'networkmanager')
+        state = self.inspect(backend, resolved=True)
+        self.assertEqual((state['engine'], state['mode'], state['supported']), ('sqlite-setup', 'resolved', True))
+        self.assertFalse(state['needs_dns_install'])
         state = self.inspect(backend)
         self.assertFalse(state['supported'])
         self.assertIsNone(state['engine'])
+
+    def test_active_resolved_filter_must_be_the_global_server(self):
+        backend = self.backend()
+        service = {'active': True, 'supported': True, 'count': 3, 'engine': 'sqlite-dns', 'mode': 'resolved',
+                   'provider': 'quad9', 'message': 'ok'}
+        with patch('backends.linux_dns_service.inspect_service', return_value=dict(service)), \
+             patch.object(backend, '_trusted_firewall_executable', return_value='/usr/bin/tool'), \
+             patch.object(backend, '_resolved_available', return_value=True), \
+             patch.object(backend, '_firewall_query', return_value=(0, 'Global: 127.0.0.1:5354\n')):
+            self.assertTrue(backend.inspect_internet_protection()['supported'])
+            with patch.object(backend, '_firewall_query', side_effect=[(0, ''), (0, 'Global: 192.168.1.1\n')]):
+                self.assertFalse(backend.inspect_internet_protection()['supported'])
+
+    def apply(self, backend, state, provider, final=None):
+        from core.internet import PreparedDomains
+        process = Mock(returncode=0)
+        process.communicate.return_value = ('{"count": 1, "digest": "d", "skipped": 0}', None)
+        with tempfile.NamedTemporaryFile() as payload:
+            prepared = PreparedDomains(payload.name, 1, 'd')
+            with patch.object(backend, 'inspect_internet_protection', side_effect=[state, final or {
+                    'count': 1, 'supported': True, 'active': True, 'provider': provider}]), \
+                 patch.object(backend, '_require_authorizer', return_value='/usr/bin/pkexec'), \
+                 patch.object(backend, '_install_dns_runtime') as install, \
+                 patch.object(backend, '_trusted_firewall_executable', side_effect=lambda name: '/usr/bin/' + name), \
+                 patch.object(backend, 'start_process', return_value=process) as start:
+                result = backend.apply_internet_protection(prepared, provider=provider)
+        return result, start.call_args.args[0], install
+
+    def test_resolved_apply_passes_mode_and_provider_and_verifies_them(self):
+        backend = self.backend()
+        state = {'supported': True, 'engine': 'sqlite-setup', 'mode': 'resolved'}
+        result, command, install = self.apply(backend, state, 'adguard-family')
+        self.assertEqual(command[:4], ['/usr/bin/pkexec', '--disable-internal-agent', '/usr/bin/python3', '-I'])
+        self.assertEqual(command[-2:], ['resolved', 'adguard-family'])
+        install.assert_not_called()
+        self.assertEqual(result['provider'], 'adguard-family')
+        with self.assertRaisesRegex(RuntimeError, 'could not be verified'):
+            self.apply(backend, state, 'quad9', final={'count': 1, 'supported': True, 'active': True, 'provider': 'adguard'})
+
+    def test_networkmanager_apply_installs_dnsmasq_and_passes_mode(self):
+        backend = self.backend()
+        _, command, install = self.apply(backend, {'supported': True, 'engine': 'sqlite-setup', 'mode': 'networkmanager'}, None)
+        self.assertEqual(command[-1], 'networkmanager')
+        install.assert_called_once()
+
+    def test_unknown_provider_and_unsupported_system_are_not_changed(self):
+        from core.internet import PreparedDomains
+        backend = self.backend()
+        prepared = PreparedDomains('/nonexistent', 1, 'd')
+        with patch.object(backend, 'start_process') as start:
+            with patch.object(backend, 'inspect_internet_protection', return_value={
+                    'supported': True, 'engine': 'sqlite-setup', 'mode': 'resolved'}), \
+                    self.assertRaisesRegex(ValueError, 'supported DNS service'):
+                backend.apply_internet_protection(prepared, provider='evil')
+            with patch.object(backend, 'inspect_internet_protection', return_value={
+                    'supported': False, 'engine': None, 'message': 'Unsupported resolver'}), \
+                    self.assertRaisesRegex(RuntimeError, 'Unsupported resolver'):
+                backend.apply_internet_protection(prepared, provider='quad9')
+        start.assert_not_called()
+
+    def test_pause_only_acts_on_an_active_filter(self):
+        backend = self.backend()
+        with patch.object(backend, 'inspect_internet_protection', return_value={'engine': 'sqlite-dns', 'active': True}), \
+             patch.object(backend, '_apply_database_protection', return_value={'active': False}) as local:
+            backend.apply_internet_protection([])
+        local.assert_called_once_with(None)
+        with patch.object(backend, 'inspect_internet_protection', return_value={'engine': 'sqlite-setup', 'active': False}), \
+             patch.object(backend, '_apply_database_protection') as local:
+            self.assertFalse(backend.apply_internet_protection([])['active'])
+        local.assert_not_called()
+        with self.assertRaises(ValueError):
+            backend.apply_internet_protection(['example.org'])
+
+    def test_authorization_cancellation_is_reported(self):
+        from core.authorization import AuthorizationError
+        backend = self.backend()
+        process = Mock(returncode=126)
+        process.communicate.return_value = ('cancelled', None)
+        with patch.object(backend, 'inspect_internet_protection', return_value={'engine': 'sqlite-dns', 'active': True}), \
+             patch.object(backend, '_require_authorizer', return_value='/usr/bin/pkexec'), \
+             patch.object(backend, '_trusted_firewall_executable', return_value='/usr/bin/python3'), \
+             patch.object(backend, 'start_process', return_value=process), self.assertRaises(AuthorizationError):
+            backend.apply_internet_protection([])
 
     def test_dnsmasq_is_installed_with_each_supported_package_manager(self):
         backend = self.backend()
@@ -286,77 +289,6 @@ class InternetBackendTests(unittest.TestCase):
                 self.assertRaisesRegex(RuntimeError, 'missing'):
             backend._install_dns_runtime()
 
-    def test_active_public_dns_requires_effective_global_servers(self):
-        from core.dns_providers import PROVIDERS
-        backend = self.backend()
-        addresses = ' '.join(PROVIDERS['quad9'].addresses)
-        with patch('backends.linux_dns_service.inspect_service', return_value=None), \
-             patch('backends.linux_public_dns.inspect_public', return_value='quad9'), \
-             patch.object(backend, '_trusted_firewall_executable', return_value='/usr/bin/resolvectl'), \
-             patch.object(backend, '_public_dns_available', return_value=True), \
-             patch.object(backend, '_firewall_query', return_value=(0, 'Global: ' + addresses + '\n')):
-            state = backend.inspect_internet_protection()
-            self.assertEqual((state['engine'], state['provider'], state['active'], state['supported']),
-                             ('public-dns', 'quad9', True, True))
-            with patch.object(backend, '_firewall_query', return_value=(0, 'Global:\n')):
-                self.assertFalse(backend.inspect_internet_protection()['supported'])
-
-    def test_apply_public_dns_sends_only_the_provider_key_and_verifies(self):
-        import json
-        backend = self.backend()
-        process = Mock(returncode=0)
-        sent = []
-        def communicate():
-            sent.append(json.loads(start.call_args.kwargs['stdin'].read()))
-            return ('{"provider": "quad9"}', None)
-        process.communicate.side_effect = communicate
-        states = [{'supported': True, 'engine': 'public-dns-setup', 'active': False},
-                  {'supported': True, 'engine': 'public-dns', 'active': True, 'provider': 'quad9', 'count': 0}]
-        with patch.object(backend, 'inspect_internet_protection', side_effect=states), \
-             patch.object(backend, '_require_authorizer', return_value='/usr/bin/pkexec'), \
-             patch.object(backend, '_trusted_firewall_executable', side_effect=lambda name: '/usr/bin/' + name), \
-             patch.object(backend, 'start_process', return_value=process) as start:
-            state = backend.apply_public_dns('quad9')
-        self.assertEqual(sent, [{'provider': 'quad9'}])
-        self.assertEqual(state['provider'], 'quad9')
-        command = start.call_args.args[0]
-        self.assertEqual(command[:4], ['/usr/bin/pkexec', '--disable-internal-agent', '/usr/bin/python3', '-I'])
-        self.assertNotIn('shell', start.call_args.kwargs)
-
-    def test_unknown_provider_and_unsupported_system_are_not_changed(self):
-        backend = self.backend()
-        with patch.object(backend, 'start_process') as start:
-            with self.assertRaisesRegex(ValueError, 'supported DNS service'):
-                backend.apply_public_dns('evil\nDNS=1.2.3.4')
-            with patch.object(backend, 'inspect_internet_protection', return_value={
-                    'supported': False, 'engine': None, 'message': 'Unsupported resolver'}), \
-                    self.assertRaisesRegex(RuntimeError, 'Unsupported resolver'):
-                backend.apply_public_dns('quad9')
-        start.assert_not_called()
-
-    def test_pause_removes_whichever_protection_is_active(self):
-        backend = self.backend()
-        with patch.object(backend, 'inspect_internet_protection', return_value={'engine': 'public-dns', 'active': True}), \
-             patch.object(backend, 'apply_public_dns', return_value={'active': False}) as public:
-            backend.apply_internet_protection([])
-        public.assert_called_once_with(None)
-        with patch.object(backend, 'inspect_internet_protection', return_value={'engine': 'sqlite-dns', 'active': True}), \
-             patch.object(backend, '_apply_database_protection', return_value={'active': False}) as local:
-            backend.apply_internet_protection([])
-        local.assert_called_once_with(None)
-        with self.assertRaises(ValueError):
-            backend.apply_internet_protection(['example.org'])
-
-    def test_authorization_cancellation_is_reported(self):
-        from core.authorization import AuthorizationError
-        backend = self.backend()
-        process = Mock(returncode=126)
-        process.communicate.return_value = ('cancelled', None)
-        with patch.object(backend, 'inspect_internet_protection', return_value={'supported': True, 'engine': 'public-dns-setup'}), \
-             patch.object(backend, '_require_authorizer', return_value='/usr/bin/pkexec'), \
-             patch.object(backend, '_trusted_firewall_executable', return_value='/usr/bin/python3'), \
-             patch.object(backend, 'start_process', return_value=process), self.assertRaises(AuthorizationError):
-            backend.apply_public_dns('adguard')
 
 
 @unittest.skipUnless(os.name == 'posix', 'XDG autostart is Linux-specific')
@@ -383,6 +315,7 @@ class AutostartTests(unittest.TestCase):
         from backends.linux_dns_service import helper, IDLE_LIMIT
         namespace = {'__name__': 'test_units'}
         exec(helper('/usr/bin/nmcli', '/usr/sbin/NetworkManager', '/usr/bin/systemctl', '/usr/bin/python3'), namespace)
-        self.assertIn(f'--idle-limit {IDLE_LIMIT}\n', namespace['SERVICE_UNIT'])
+        self.assertIn(f'--idle-limit {IDLE_LIMIT} __ARGS__\n', namespace['SERVICE_UNIT'])
+        self.assertIn('--listen-port 53\n', namespace['service_unit']('networkmanager', None))
         self.assertIn('OnFailure=libreward-dns-recover.service', namespace['SERVICE_UNIT'])
         self.assertIn('WantedBy=multi-user.target', namespace['SERVICE_UNIT'])

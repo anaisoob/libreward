@@ -72,8 +72,9 @@ Verify on Windows and a desktop Linux installation:
   removes the autostart entry, that a reboot with protection on restores it and
   opens LibreWard minimized at login, that killing the GUI restores normal DNS
   after about two minutes and the next start offers to turn protection on,
-  public filtering DNS on a systemd-resolved desktop (each service, pause, close,
-  reboot, unreachable service rollback, VPN split DNS), repeated enable/pause, and intentional
+  the filter behind systemd-resolved on Ubuntu Desktop and Fedora (each DNS
+  service, TLS and blocked port 853, pause, close, reboot, killed GUI, unreachable
+  service rollback, VPN split DNS and full-tunnel VPN), repeated enable/pause, and intentional
   filter termination/OOM recovery. Confirm normal DNS returns and the GUI stops
   claiming active protection. Test an occupied private port and failed reload.
 

@@ -1,5 +1,6 @@
 """Privileged DNS installer tested only against temporary files and fake services."""
 import io
+import json
 import os
 import hashlib
 import sqlite3
@@ -32,7 +33,8 @@ class InstallerTests(unittest.TestCase):
             'RECOVERY': str(service_dir / 'dns-recovery.py'), 'UNIT': str(root / 'libreward-dns.service'),
             'RECOVERY_UNIT_PATH': str(root / 'libreward-dns-recover.service'),
             'CONF': str(root / 'dnsmasq.d' / '90-libreward.conf'),
-            'SETUP_CONF': str(root / 'conf.d' / '90-libreward-dns.conf')}
+            'SETUP_CONF': str(root / 'conf.d' / '90-libreward-dns.conf'),
+            'RESOLVED_CONF': str(root / 'resolved.conf.d' / '90-libreward-filter.conf')}
         namespace.update(self.mapping)
         namespace['check_upstream_port'] = Mock()
         namespace['compatible'] = Mock(return_value=True)
@@ -41,14 +43,64 @@ class InstallerTests(unittest.TestCase):
         namespace['reload_dns'] = Mock()
         namespace['remove_legacy_hosts'] = Mock()
         namespace['wait_for_dns_port'] = Mock()
+        namespace['reload_resolved'] = Mock()
+        namespace['filter_health'] = Mock()
+        namespace['resolved_health'] = Mock()
         namespace['systemctl'] = Mock(side_effect=lambda *args, **kwargs: args[0] not in ('is-active', 'is-enabled'))
         self.run = patch('subprocess.run', return_value=Mock(stdout='[main]\ndns=dnsmasq\n', returncode=0))
         self.run.start()
         self.addCleanup(self.run.stop)
 
-    def apply(self, data=b'a.example.org\nb.example.org\n', count=2):
+    def apply(self, data=b'a.example.org\nb.example.org\n', count=2, mode='networkmanager', provider=None):
         with patch.object(Path, 'read_text', return_value=''):
-            return self.ns['apply_database'](io.BytesIO(data), count)
+            return self.ns['apply_database'](io.BytesIO(data), count, mode, provider)
+
+    def resolved(self, data=b'a.example.org\n', count=1, provider='quad9'):
+        with patch.dict(self.ns, network_ready=Mock(return_value=True)):
+            return self.apply(data, count, 'resolved', provider)
+
+    def test_resolved_mode_checks_the_filter_before_resolved_points_to_it(self):
+        order = []
+        resolved_conf = Path(self.mapping['RESOLVED_CONF'])
+        self.ns['filter_health'].side_effect = lambda: order.append(('filter checked', resolved_conf.exists()))
+        self.ns['reload_resolved'].side_effect = lambda: order.append(('resolved reloaded', resolved_conf.exists()))
+        self.ns['resolved_health'].side_effect = lambda allowed: order.append(('lookups checked', allowed))
+        self.resolved()
+        self.assertEqual(order, [('filter checked', False), ('resolved reloaded', True), ('lookups checked', 'example.org')])
+        self.assertEqual(resolved_conf.read_bytes(), self.ns['RESOLVED_CONTENT'])
+        unit = Path(self.mapping['UNIT']).read_text()
+        self.assertIn('--listen-port 5354 --tls-upstream 9.9.9.9#dns.quad9.net --tls-upstream 149.112.112.112#dns.quad9.net\n', unit)
+        state = json.loads(Path(self.mapping['STATE']).read_text())
+        self.assertEqual((state['mode'], state['provider'], state['phase']), ('resolved', 'quad9', 'enabled'))
+        # NetworkManager is neither changed nor reloaded on a resolved system.
+        self.assertFalse(Path(self.mapping['CONF']).exists())
+        self.ns['reload_dns'].assert_not_called()
+
+    def test_resolved_pause_and_failure_restore_normal_dns(self):
+        resolved_conf = Path(self.mapping['RESOLVED_CONF'])
+        self.ns['resolved_health'].side_effect = RuntimeError('Websites could not be reached')
+        with self.assertRaisesRegex(RuntimeError, 'could not be reached'):
+            self.resolved()
+        self.assertFalse(resolved_conf.exists())
+        self.assertFalse(Path(self.mapping['STATE']).exists())
+        self.assertEqual(self.ns['reload_resolved'].call_count, 2)  # apply and rollback
+        self.ns['resolved_health'].side_effect = None
+        self.ns['reload_resolved'].reset_mock()
+        self.resolved()
+        self.apply(b'', 0)
+        self.assertFalse(resolved_conf.exists())
+        self.assertEqual(self.ns['reload_resolved'].call_count, 2)
+        self.ns['reload_dns'].assert_not_called()
+        self.assertFalse(json.loads(Path(self.mapping['STATE']).read_text())['active'])
+
+    def test_foreign_resolved_dropin_is_never_replaced(self):
+        resolved_conf = Path(self.mapping['RESOLVED_CONF'])
+        resolved_conf.parent.mkdir()
+        resolved_conf.write_text('[Resolve]\nDNS=192.0.2.1\n')
+        with self.assertRaisesRegex(ValueError, 'changed outside'):
+            self.resolved()
+        self.assertEqual(resolved_conf.read_text(), '[Resolve]\nDNS=192.0.2.1\n')
+        self.ns['reload_resolved'].assert_not_called()
 
     def test_streaming_install_builds_indexed_db_and_pause_removes_dns_overrides(self):
         result = self.apply()
@@ -146,6 +198,28 @@ class PreparedDatabaseTests(unittest.TestCase):
                     self.assertEqual(header['count'], 2)
                     self.assertEqual(stream.read(), b'blocked.example.org\ncustom.example.org\n')
             self.assertFalse(path.exists())
+
+    def test_recovery_behind_resolved_removes_only_its_dropin(self):
+        from backends.linux_dns_service import RECOVERY_SOURCE
+        source = RECOVERY_SOURCE.replace('__NMCLI__', repr('/usr/bin/nmcli')).replace('__SYSTEMCTL__', repr('/usr/bin/systemctl'))
+        namespace = {'__name__': 'test_dns_recovery'}
+        exec(source, namespace)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state = root / 'state.json'
+            state.write_text(json.dumps({'active': True, 'count': 10, 'mode': 'resolved'}))
+            dropin = root / 'resolved.conf'
+            dropin.write_text(namespace['RESOLVED_CONTENT'])
+            (root / '.dns-lock').touch()
+            namespace.update(ROOT=str(root), STATE=str(state), CONF=str(root / 'none1'), SETUP=str(root / 'none2'),
+                             RESOLVED=str(dropin))
+            with patch('subprocess.run', return_value=Mock(returncode=1)) as run:
+                namespace['recover']()
+            commands = [call.args[0] for call in run.call_args_list]
+            self.assertFalse(dropin.exists())
+            self.assertIn(['/usr/bin/systemctl', 'reload-or-restart', 'systemd-resolved.service'], commands)
+            self.assertNotIn(['/usr/bin/nmcli', 'general', 'reload'], commands)
+            self.assertFalse(json.loads(state.read_text())['active'])
 
     def test_failure_recovery_restores_normal_dns_without_replacing_connection_profiles(self):
         from backends.linux_dns_service import RECOVERY_SOURCE

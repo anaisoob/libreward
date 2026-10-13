@@ -129,11 +129,12 @@ def helper(nmcli, network_manager):
     return SHARED_HELPER.replace('__NMCLI__', repr(nmcli)).replace('__NETWORK_MANAGER__', repr(network_manager))
 
 
-def filter_responds():
+def probe_filter(port=53):
+    """Unprivileged check that LibreWard's filter answers and blocks its test name."""
     namespace = {'__name__': 'libreward_dns_probe'}
-    exec(helper('/usr/bin/nmcli', '/usr/sbin/NetworkManager'), namespace)
+    exec(helper(None, None), namespace)
     try:
-        namespace['probe'](SENTINEL, True)
+        namespace['probe'](SENTINEL, True, server=('127.0.0.1', port))
         return True
     except (OSError, RuntimeError):
         return False

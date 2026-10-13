@@ -132,39 +132,48 @@ class QtFrontendTests(unittest.TestCase):
         self.warning.assert_called_once()
         self.assertEqual(page.settings()['blocked'], [])
 
-    def test_public_dns_apply_requires_consent_and_retains_report(self):
+    def test_resolved_filter_applies_lists_with_the_chosen_dns_service(self):
+        from core.internet import DiskDomainLists, PreparedDomains
         page = self.window.internet_page
-        page.show_state({'supported': True, 'active': False, 'count': 0, 'engine': 'public-dns-setup'})
-        self.assertFalse(page.public_card.isHidden())
-        self.assertTrue(all(card.isHidden() for card in page.filter_cards))
-        page.provider.setCurrentIndex(page.provider.findData('adguard-family'))
-        apply = self.patch('ui.internet_page.backend.apply_public_dns', return_value={
-            'supported': True, 'active': True, 'count': 0, 'engine': 'public-dns', 'provider': 'adguard-family'})
-        with patch.object(self.window, 'confirm', return_value=False) as confirm:
-            page.apply()
-        apply.assert_not_called()
-        consent = confirm.call_args.args[1]
-        for text in ('AdGuard DNS Family', 'third-party service', 'no warranty', 'quitting LibreWard turns protection off'):
-            self.assertIn(text, consent)
-        with patch.object(self.window, 'confirm', return_value=True):
-            page.apply()
-            dialog = self.window.update_dialog
-            self.wait_idle()
-        apply.assert_called_once_with('adguard-family')
-        self.assertFalse(page.state['active'])
-        dialog.accept()
-        self.app.processEvents()
-        self.assertTrue(page.state['active'])
-        self.assertTrue(page.pause_button.isEnabled())
-        self.assertIn('Public filtering DNS', page.info.text())
-        self.assertEqual(self.window.config['internet_protection']['provider'], 'adguard-family')
-        self.assertTrue(self.window.config['internet_protection_on'])
+        with tempfile.TemporaryDirectory() as directory:
+            page.store = DiskDomainLists(directory)
+            for checkbox in page.categories.values():
+                checkbox.setChecked(False)
+            page.domain_lists['blocked'].addItem('blocked.example.org')
+            page.show_state({'supported': True, 'active': False, 'count': 0, 'engine': 'sqlite-setup',
+                             'mode': 'resolved', 'setup_available': True, 'needs_dns_install': False})
+            self.assertFalse(page.public_card.isHidden())
+            self.assertFalse(page.categories['dangerous'].isHidden())
+            page.provider.setCurrentIndex(page.provider.findData('adguard-family'))
+            calls = []
+            def apply(prepared, provider=None):
+                self.assertIsInstance(prepared, PreparedDomains)
+                calls.append(provider)
+                return {'supported': True, 'active': True, 'count': 1, 'engine': 'sqlite-dns',
+                        'mode': 'resolved', 'provider': provider}
+            with patch('ui.internet_page.backend.apply_internet_protection', side_effect=apply), \
+                 patch.object(self.window, 'confirm', return_value=False) as confirm:
+                page.apply()
+            consent = confirm.call_args.args[1]
+            for text in ('AdGuard DNS Family', 'third-party service', 'no warranty', 'quitting LibreWard turns protection off'):
+                self.assertIn(text, consent)
+            self.assertEqual(calls, [])
+            with patch('ui.internet_page.backend.apply_internet_protection', side_effect=apply), \
+                 patch.object(self.window, 'confirm', return_value=True):
+                page.apply()
+                dialog = self.window.update_dialog
+                self.wait_idle()
+            self.assertEqual(calls, ['adguard-family'])
+            dialog.accept()
+            self.app.processEvents()
+            self.assertTrue(page.state['active'])
+            self.assertEqual(self.window.config['internet_protection']['provider'], 'adguard-family')
+            self.assertTrue(self.window.config['internet_protection_on'])
 
-    def test_local_filter_hides_public_dns_choice(self):
+    def test_networkmanager_filter_hides_dns_service_choice(self):
         page = self.window.internet_page
-        page.show_state({'supported': True, 'active': False, 'count': 0, 'engine': 'sqlite-setup'})
+        page.show_state({'supported': True, 'active': False, 'count': 0, 'engine': 'sqlite-setup', 'mode': 'networkmanager'})
         self.assertTrue(page.public_card.isHidden())
-        self.assertFalse(any(card.isHidden() for card in page.filter_cards))
 
     def test_debian_dns_setup_is_offered_with_installation_consent(self):
         page = self.window.internet_page
@@ -190,7 +199,8 @@ class QtFrontendTests(unittest.TestCase):
             page.show_state({'supported': True, 'active': False, 'count': 0, 'engine': 'sqlite-setup',
                              'setup_available': True, 'needs_dns_install': False})
             payloads = []
-            def apply(prepared):
+            def apply(prepared, provider=None):
+                self.assertIsNone(provider)
                 self.assertIsInstance(prepared, PreparedDomains)
                 self.assertTrue(prepared.path.exists())
                 payloads.append(prepared.path)

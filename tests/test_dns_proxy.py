@@ -1,5 +1,8 @@
 """Real DNS traffic on temporary loopback ports; never changes system DNS."""
 import concurrent.futures
+import shutil
+import ssl
+import subprocess
 import socket
 import sqlite3
 from contextlib import closing
@@ -11,7 +14,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from core.dns_proxy import Filter, Server, DomainIndex, question, receive_exact
+from core.dns_proxy import Filter, Server, DomainIndex, question, receive_exact, TlsUpstream, PlainUpstream
 
 
 def query(domain, kind=1, ident=1234):
@@ -187,3 +190,108 @@ class ProxyTests(unittest.TestCase):
         sock.recv.return_value = reply(query('different.example.org', ident=999))
         with patch('core.dns_proxy.socket.socket', return_value=sock):
             self.assertEqual(filter_.answer(query('allowed.example.org'))[3] & 15, 2)
+
+
+@unittest.skipUnless(shutil.which('openssl'), 'openssl creates the temporary test certificate')
+class TlsUpstreamTests(unittest.TestCase):
+    """Real DNS-over-TLS on a loopback port with a temporary certificate authority."""
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        directory = Path(self.temp.name)
+        self.cert, self.key = directory / 'cert.pem', directory / 'key.pem'
+        subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
+                        '-subj', '/CN=dns.test.example', '-addext', 'subjectAltName=DNS:dns.test.example',
+                        '-keyout', str(self.key), '-out', str(self.cert)],
+                       check=True, capture_output=True)
+        self.listener = socket.socket()
+        self.listener.bind(('127.0.0.1', 0))
+        self.listener.listen()
+        self.addCleanup(self.listener.close)
+        self.port = self.listener.getsockname()[1]
+        self.connections = 0
+        self.queries = []
+
+    def serve(self, count, connections=None):
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(self.cert, self.key)
+        def run():
+            self.listener.settimeout(5)
+            try:
+                while len(self.queries) < count or (connections and self.connections < connections):
+                    raw, _ = self.listener.accept()
+                    self.connections += 1
+                    try:
+                        client = context.wrap_socket(raw, server_side=True)
+                    except OSError:
+                        raw.close()
+                        continue
+                    with client:
+                        while len(self.queries) < count:
+                            try:
+                                size = struct.unpack('!H', receive_exact(client, 2))[0]
+                            except OSError:
+                                break
+                            packet = receive_exact(client, size)
+                            self.queries.append(packet)
+                            answer = reply(packet)
+                            client.sendall(struct.pack('!H', len(answer)) + answer)
+            except OSError:
+                pass
+        thread = threading.Thread(target=run)
+        thread.start()
+        self.addCleanup(thread.join, 5)
+
+    def client_context(self):
+        context = ssl.create_default_context(cafile=str(self.cert))
+        return context
+
+    def test_queries_are_encrypted_verified_and_reuse_one_connection(self):
+        self.serve(3)
+        upstream = TlsUpstream([('127.0.0.1', 'dns.test.example')], port=self.port, context=self.client_context())
+        self.addCleanup(upstream.close)
+        for number in range(3):
+            answer = upstream.exchange(query('allowed.example.org', ident=number), tcp=False)
+            self.assertTrue(answer.endswith(socket.inet_aton('192.0.2.9')))
+        self.assertEqual(len(self.queries), 3)
+        self.assertEqual(self.connections, 1)
+
+    def test_closed_pooled_connection_is_replaced_without_falling_back(self):
+        self.serve(2)
+        upstream = TlsUpstream([('127.0.0.1', 'dns.test.example')], port=self.port, context=self.client_context())
+        self.addCleanup(upstream.close)
+        upstream.exchange(query('allowed.example.org', ident=1), tcp=False)
+        # Simulate the server closing the idle connection.
+        connection, used = upstream.idle.get_nowait()
+        connection.close()
+        upstream.idle.put((connection, used))
+        answer = upstream.exchange(query('allowed.example.org', ident=2), tcp=False)
+        self.assertEqual(answer[:2], struct.pack('!H', 2))
+        self.assertEqual(upstream.plain_until, 0)
+
+    def test_wrong_certificate_name_falls_back_to_plain_dns_of_the_same_service(self):
+        self.serve(0, connections=1)
+        plain = PlainUpstream(('127.0.0.1', 1))
+        with patch.object(plain, 'exchange', return_value=b'plain answer') as fallback:
+            upstream = TlsUpstream([('127.0.0.1', 'other.example')], port=self.port,
+                                   context=self.client_context(), plain=plain)
+            self.assertEqual(upstream.exchange(query('allowed.example.org'), tcp=False), b'plain answer')
+            # TLS is not retried on every query while it is unreachable.
+            upstream.exchange(query('allowed.example.org'), tcp=False)
+            self.assertEqual(fallback.call_count, 2)
+            self.assertGreater(upstream.plain_until, 0)
+            self.assertEqual(self.connections, 1)
+
+    def test_large_answers_make_udp_clients_retry_over_tcp(self):
+        class Large:
+            def exchange(self, packet, tcp):
+                return reply(packet) + b'\0' * 2000
+        with closing(sqlite3.connect(Path(self.temp.name, 'db.sqlite3'))) as db, db:
+            db.execute('CREATE TABLE blocked(domain TEXT PRIMARY KEY) WITHOUT ROWID')
+        filter_ = Filter(str(Path(self.temp.name, 'db.sqlite3')), upstream=Large())
+        self.addCleanup(filter_.index.close)
+        packet = query('allowed.example.org')
+        udp = filter_.answer(packet)
+        self.assertTrue(udp[2] & 0x02)  # TC bit
+        self.assertEqual(udp[6:8], b'\0\0')
+        self.assertGreater(len(filter_.answer(packet, tcp=True)), 2000)

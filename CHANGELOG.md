@@ -9,10 +9,11 @@
   bounded memory, UDP/TCP forwarding through NetworkManager's dnsmasq (network and VPN DNS
   routing are kept), health checks, rollback and failure recovery. When dnsmasq is missing it
   offers consented installation with apt, pacman, dnf or zypper.
-- On systems using systemd-resolved (Ubuntu Desktop, Fedora, Arch), Internet protection
-  selects a public filtering DNS service instead: AdGuard DNS, AdGuard DNS Family, Quad9,
-  Cloudflare (malware) or Cloudflare for Families, with opportunistic DNS-over-TLS,
-  consent, verification and rollback.
+- On systems using systemd-resolved (Ubuntu Desktop, Linux Mint, Fedora, Arch), the same
+  local filter runs behind resolved and forwards allowed names over DNS-over-TLS to a chosen
+  service: AdGuard DNS, AdGuard DNS Family, Quad9, Cloudflare (malware) or Cloudflare for
+  Families. VPN and local network names stay with resolved. Consent, verification and
+  rollback as with NetworkManager.
 - Internet protection works while LibreWard is running, including from the system tray.
   Closing the window keeps LibreWard in the tray without asking (configurable in Settings);
   Quit from the tray asks once and turns protection off. A restart with protection on keeps
