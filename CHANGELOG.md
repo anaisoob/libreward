@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Simpler Internet protection page: one Turn on / Turn off switch, choices saved at once,
+  and an "Apply changes" bar only while protection is on (leaving the page asks too).
+  Status checks no longer overwrite unapplied choices or block editing. Shorter
+  confirmations, with a new DNS service still explained first.
+
 - Plain scan report: coloured outcome, one sentence with files checked and time, a calm
   note for files that could not be checked, threats by file name with Move all to
   quarantine, and details folded away.

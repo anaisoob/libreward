@@ -52,20 +52,29 @@ class InternetProtectionPage:
         scroll.setWidget(content)
         outer.addWidget(scroll)
         card, box = window.card()
-        self.status = window.label('Protection has not been checked', 'statusValue')
+        self.status = window.label('Checking Internet protection…', 'statusValue')
         box.addWidget(self.status)
-        self.info = window.label('Lists are downloaded only when you choose to enable or update protection.', 'muted')
+        self.info = window.label('', 'muted')
         self.info.setWordWrap(True)
         box.addWidget(self.info)
         row = QHBoxLayout()
-        self.apply_button = window.button('Enable / apply protection', self.apply, variant='primary')
-        self.pause_button = window.button('Pause protection', self.pause)
-        self.pause_button.setEnabled(False)
-        row.addWidget(self.apply_button)
-        row.addWidget(self.pause_button)
-        self.status_button = window.button('Check status', self.refresh)
-        row.addWidget(self.status_button)
+        # One switch; the state is checked automatically while this page is open.
+        self.toggle_button = window.button('Turn on', self.toggle, variant='primary')
+        self.toggle_button.setEnabled(False)
+        row.addWidget(self.toggle_button)
+        row.addStretch()
         box.addLayout(row)
+        # Shown only while protection is on and saved choices differ from the active ones.
+        self.pending_bar = QWidget()
+        pending = QHBoxLayout(self.pending_bar)
+        pending.setContentsMargins(0, 6, 0, 0)
+        pending_text = window.label('Your changes are saved but not active yet.', 'sectionTitle')
+        pending_text.setWordWrap(True)
+        pending.addWidget(pending_text, 1)
+        self.apply_button = window.button('Apply changes', lambda: self.apply(changes=True), variant='primary')
+        pending.addWidget(self.apply_button)
+        self.pending_bar.hide()
+        box.addWidget(self.pending_bar)
         self.notice = window.label('', 'muted')
         self.notice.setWordWrap(True)
         box.addWidget(self.notice)
@@ -108,7 +117,7 @@ class InternetProtectionPage:
                             'Add its exact domain to Allowed websites if needed.', 'muted')
         note.setWordWrap(True)
         box.addWidget(note)
-        box.addWidget(window.button('Update protection lists', self.download))
+        box.addWidget(window.button('Update lists now', self.download))
         layout.addWidget(card)
         lists_row = QHBoxLayout()
         self.domain_lists = {}
@@ -158,7 +167,13 @@ class InternetProtectionPage:
         self.advanced.setWordWrap(True)
         self.advanced.hide()
         layout.addWidget(self.advanced)
+        # Technical status from the backend, for those who open "how it works".
+        self.method_info = window.label('', 'muted')
+        self.method_info.setWordWrap(True)
+        self.method_info.hide()
+        layout.addWidget(self.method_info)
         self.advanced_toggle.toggled.connect(self.advanced.setVisible)
+        self.advanced_toggle.toggled.connect(self.method_info.setVisible)
         layout.addStretch()
 
     def protection_remembered(self):
@@ -206,7 +221,42 @@ class InternetProtectionPage:
             self.changed()
 
     def changed(self):
-        self.notice.setText('Changes are not applied yet. Choose “Enable / apply protection” to use these settings.')
+        """Save every edit at once, so status checks and restarts never lose it."""
+        try:
+            self.persist(self.settings())
+        except OSError as exc:
+            self.notice.setText(f'Your change could not be saved: {exc}')
+        self.update_pending()
+
+    def lists_version(self):
+        try:
+            return self.store.load().get('updated')
+        except Exception:
+            return None
+
+    def active_choices(self, settings=None):
+        """What the running filter depends on; the DNS service only behind resolved."""
+        settings = dict(settings or self.settings())
+        if not self.public_mode():
+            settings.pop('provider', None)
+        settings['lists'] = self.lists_version()
+        return settings
+
+    def has_pending(self):
+        applied = self.window.config.get('internet_protection_applied')
+        return bool(self.state and self.state.get('active') and applied is not None
+                    and self.active_choices() != applied)
+
+    def remember_applied(self):
+        config = dict(self.window.config, internet_protection_applied=self.active_choices())
+        try:
+            save_config(config)
+        except OSError:
+            pass
+        self.window.config = config
+
+    def update_pending(self):
+        self.pending_bar.setVisible(self.has_pending())
 
     def settings(self):
         return {'categories': [key for key, check in self.categories.items() if check.isChecked()],
@@ -295,30 +345,44 @@ class InternetProtectionPage:
         supported = state.get('supported', False)
         public = self.public_mode()
         self.public_card.setVisible(public)
-        if public and state.get('provider') in PROVIDERS:
-            self.provider.blockSignals(True)
-            self.provider.setCurrentIndex(self.provider.findData(state['provider']))
-            self.provider.blockSignals(False)
-            self.provider_changed(notify=False)
-        self.status.setText('Domain blocking is on' if active and supported else
-                            'Domain entries are installed — protection needs checking' if active else
-                            'Protection is off' if supported else 'Protection is unavailable on this setup')
+        # The page shows the saved choices; the active ones are compared, never copied back.
+        if active and self.window.config.get('internet_protection_applied') is None:
+            self.remember_applied()  # protection enabled by an earlier version
+        self.status.setText('Internet protection is on' if active and supported else
+                            'Internet protection needs attention' if active else
+                            'Internet protection is off' if supported else 'Not available on this computer')
         self.status.setProperty('severity', 'success' if active and supported else 'warning')
         self.status.style().unpolish(self.status)
         self.status.style().polish(self.status)
-        if state.get('engine') in ('sqlite-dns', 'sqlite-setup'):
-            method = f"{state.get('count', 0):,} domains in the active blocklist.\nMethod: Local DNS filter.\n"
+        provider = PROVIDERS.get(state.get('provider'))
+        if active and supported:
+            count = state.get('count', 0)
+            text = f"Blocking {count:,} website{'s' if count != 1 else ''}."
+            if provider is not None:
+                text += f' Other lookups go to {provider.name}.'
+        elif active:
+            text = 'Turn protection off to restore normal internet access, then turn it on again.'
+        elif supported:
+            text = 'Turn on to block dangerous websites on this computer.'
         else:
-            method = ''
-        self.info.setText(method + state.get('message', ''))
+            text = state.get('message', '')
+        self.info.setText(text)
+        self.method_info.setText(state.get('message', '') if supported else '')
+        self.toggle_button.setText('Turn off' if active else 'Turn on')
+        self.toggle_button.setObjectName('secondaryButton' if active else 'primaryButton')
+        self.toggle_button.style().unpolish(self.toggle_button)
+        self.toggle_button.style().polish(self.toggle_button)
         self.update_controls()
 
     def update_controls(self):
         idle = self.window.operation is None
-        self.apply_button.setEnabled(idle and bool(self.state and self.state.get('supported')))
-        self.pause_button.setEnabled(idle and bool(self.state and self.state.get('active')))
+        # A background status check must not interrupt editing.
+        editable = idle or self.window.operation == 'internet-status'
+        self.toggle_button.setEnabled(idle and bool(self.state and (self.state.get('supported') or self.state.get('active'))))
+        self.apply_button.setEnabled(idle)
         for widget in [*self.categories.values(), *self.domain_lists.values(), *self.domain_fields, self.provider]:
-            widget.setEnabled(idle)
+            widget.setEnabled(editable)
+        self.update_pending()
         if idle and self.scroll_position is not None:
             self.scroll_restore_timer.start(0)
 
@@ -328,7 +392,8 @@ class InternetProtectionPage:
         self.status.setProperty('severity', 'warning')
         self.status.style().unpolish(self.status)
         self.status.style().polish(self.status)
-        self.notice.setText('The operation was not confirmed. Check status before relying on protection.')
+        self.notice.setText('The last change was not confirmed. LibreWard checks the status again when this page is open.')
+        self.pending = True
         self.update_controls()
 
     def download(self):
@@ -338,48 +403,55 @@ class InternetProtectionPage:
         if not settings['categories']:
             QMessageBox.information(self.window, 'Protection lists', 'Choose at least one protection category to download.')
             return
-        if not self.window.confirm('Update protection lists',
-                'Download the selected lists from The Block List Project on GitHub? '
-                'Lists can contain mistakes. This download does not change active protection; apply the lists afterwards.'):
+        if not self.window.confirm('Update lists',
+                'Download the latest lists of unwanted websites from The Block List Project on GitHub?'):
             return
         def work():
             bundle = self.store.update(settings['categories'], self.window.events.put)
-            count = bundle.get('count', 0)
-            self.window.events.put(f'Downloaded {count:,} unique domains. Apply protection to use the updated lists.\n')
+            self.window.events.put(f"Downloaded {bundle.get('count', 0):,} websites.\n")
             return {'updated': bundle['updated']}
-        self.window.start_task('internet-download', work,
-                               title='Update protection lists', on_done=lambda bundle: self.notice.setText(
-                                   f"Lists downloaded: {bundle['updated']}. Apply protection to use them."))
 
-    def apply(self, confirmed=False):
+        def done(_bundle):
+            self.notice.setText('Lists updated.')
+            self.update_pending()
+        self.window.start_task('internet-download', work, title='Update lists', on_done=done)
+
+    def toggle(self):
+        if self.state and self.state.get('active'):
+            self.pause()
+        else:
+            self.apply()
+
+    def consent_text(self, settings, changes):
+        """Short; a new third-party DNS service always gets its own explanation."""
+        applied = self.window.config.get('internet_protection_applied') or {}
+        parts = []
+        if self.public_mode() and (not changes or applied.get('provider') != settings['provider']):
+            provider = PROVIDERS[settings['provider']]
+            parts.append(f'Website lookups that LibreWard allows go to {provider.name}, a third-party service that is '
+                         f'not part of LibreWard, with its own terms and privacy policy ({provider.homepage}). '
+                         f'{provider.blocks} It can see which websites '
+                         'this computer visits after LibreWard’s checks. Both are provided with no warranty, to the '
+                         'extent permitted by law.')
+        if self.state.get('needs_dns_install'):
+            parts.append(f"LibreWard will install the {self.state.get('dns_package') or 'dnsmasq'} package from your "
+                         'system’s software sources.')
+        if changes:
+            return '\n\n'.join(parts)
+        return '\n\n'.join(parts + [
+            'Some websites or apps may stop working; you can allow them later. Protection works while LibreWard '
+            'is running, also from the tray. Quitting LibreWard turns protection off. Your password is needed.'])
+
+    def apply(self, confirmed=False, changes=False):
         if self.window.operation or not self.state or not self.state.get('supported'):
             return
         settings = self.settings()
         if not settings['categories'] and not settings['blocked']:
-            QMessageBox.information(self.window, 'Internet protection', 'Choose a category or add a blocked website first.')
+            QMessageBox.information(self.window, 'Internet protection', 'Choose what to block first.')
             return
-        setup_text = ''
-        if self.state.get('setup_available'):
-            setup_text = ('LibreWard will set up a local website filter using your existing network manager. '
-                          'Turning protection off restores the previous DNS mode. The internet may briefly reconnect. ')
-            if self.public_mode():
-                provider = PROVIDERS[settings['provider']]
-                setup_text += (f'Allowed website lookups will go to {provider.name}, encrypted where the network allows it. '
-                              f'{provider.blocks} {provider.name} is a third-party service, not part of LibreWard, used '
-                              f'under its own terms and privacy policy ({provider.homepage}). It can see which website '
-                              'names this computer looks up after LibreWard’s own checks, and it may block websites by '
-                              'mistake. LibreWard and the service are provided with no warranty, to the extent permitted '
-                              'by law.\n\n')
-            if self.state.get('needs_dns_install'):
-                setup_text += (f"The required {self.state.get('dns_package') or 'dnsmasq'} package and its dependencies will be installed from your system repositories. "
-                               'Installation and setup may each ask for system authorization. ')
-        if not confirmed and not self.window.confirm('Enable domain protection',
-                setup_text +
-                'Apply these domain-blocking settings to this computer? Missing lists will be downloaded from '
-                'The Block List Project on GitHub. This may stop some websites or apps from working. '
-                'Protection works while LibreWard is open, including after restarting the computer. '
-                'Closing the window keeps LibreWard running in the tray; quitting LibreWard turns protection off. You can pause it or add allowed websites. '
-                'Existing network and VPN connection settings will be kept. System authorization is required.'):
+        text = self.consent_text(settings, changes)
+        if not confirmed and text and not self.window.confirm(
+                'Apply changes' if changes else 'Turn on Internet protection', text):
             return
         self.window.privileged_terminal_commands = ''
         if not self.window.ensure_system_authorization():
@@ -407,7 +479,9 @@ class InternetProtectionPage:
             self.window.events.put(f"Applied {state['count']:,} exact-domain blocks with the local filter.\n")
             return state
         self.reset_cancel()
-        if self.window.start_task('internet-apply', work, title='Apply domain protection', on_done=self.applied):
+        if self.window.start_task('internet-apply', work,
+                                  title='Applying changes' if changes else 'Turning on Internet protection',
+                                  on_done=self.applied):
             self.offer_cancel()
 
     def reset_cancel(self):
@@ -442,16 +516,17 @@ class InternetProtectionPage:
 
     def applied(self, state):
         self.show_state(state)
+        if state.get('active'):
+            self.remember_applied()
         self.remember_protection(bool(state.get('active')))
-        self.notice.setText('Protection settings were applied. Restart an affected app if it is still using cached addresses.')
+        self.notice.setText('If a website still opens, restart the browser.' if state.get('active') else '')
+        self.update_pending()
 
     def pause(self):
         if self.window.operation or not self.state or not self.state.get('active'):
             return
-        if not self.window.confirm('Pause domain protection',
-                'Remove LibreWard’s active domain blocks? Your choices and downloaded lists will be kept. '
-                'Protection stays paused until you enable it again. '
-                'System authorization is required.'):
+        if not self.window.confirm('Turn off Internet protection',
+                'Websites will no longer be blocked. Your choices are kept for next time. Your password is needed.'):
             return
         self.window.privileged_terminal_commands = ''
         if not self.window.ensure_system_authorization():
@@ -460,11 +535,11 @@ class InternetProtectionPage:
             self.start_system_change()
             return backend.apply_internet_protection([])
         self.reset_cancel()
-        if self.window.start_task('internet-pause', work, title='Pause domain protection', on_done=self.paused):
+        if self.window.start_task('internet-pause', work, title='Turning off Internet protection', on_done=self.paused):
             self.offer_cancel()
 
     def paused(self, state):
         self.show_state(state)
         if not state.get('active'):
             self.remember_protection(False)
-        self.notice.setText('Protection is paused. Choose “Enable / apply protection” when you want to resume.')
+        self.notice.setText('')

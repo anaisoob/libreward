@@ -100,8 +100,9 @@ class QtFrontendTests(unittest.TestCase):
         self.wait_idle()
         inspect.assert_called_once()
         apply.assert_not_called()
-        self.assertTrue(page.apply_button.isEnabled())
-        self.assertFalse(page.pause_button.isEnabled())
+        self.assertTrue(page.toggle_button.isEnabled())
+        self.assertEqual(page.toggle_button.text(), 'Turn on')
+        self.assertTrue(page.pending_bar.isHidden())
 
     def test_internet_status_check_keeps_scroll_position(self):
         self.patch('ui.internet_page.backend.inspect_internet_protection', return_value={
@@ -113,8 +114,8 @@ class QtFrontendTests(unittest.TestCase):
         page = self.window.internet_page
         self.app.processEvents()
         page.scroll.verticalScrollBar().setValue(0)
-        page.status_button.setFocus()
-        page.status_button.click()
+        page.toggle_button.setFocus()
+        page.refresh()
         self.wait_idle()
         self.app.processEvents()
         self.assertEqual(page.scroll.verticalScrollBar().value(), 0)
@@ -156,7 +157,7 @@ class QtFrontendTests(unittest.TestCase):
                  patch.object(self.window, 'confirm', return_value=False) as confirm:
                 page.apply()
             consent = confirm.call_args.args[1]
-            for text in ('AdGuard DNS Family', 'third-party service', 'no warranty', 'quitting LibreWard turns protection off'):
+            for text in ('AdGuard DNS Family', 'third-party service', 'no warranty', 'Quitting LibreWard turns protection off'):
                 self.assertIn(text, consent)
             self.assertEqual(calls, [])
             with patch('ui.internet_page.backend.apply_internet_protection', side_effect=apply), \
@@ -234,6 +235,39 @@ class QtFrontendTests(unittest.TestCase):
         page.show_state(recovered)
         self.assertEqual(page.notice.text(), 'Other notice')
 
+    def test_status_checks_never_undo_unapplied_choices(self):
+        page = self.window.internet_page
+        page.show_state({'supported': True, 'active': True, 'count': 5, 'engine': 'sqlite-dns',
+                         'mode': 'resolved', 'provider': 'quad9'})
+        self.assertTrue(page.pending_bar.isHidden())
+        page.provider.setCurrentIndex(page.provider.findData('adguard-family'))
+        # Saved at once, and shown as waiting to be applied.
+        self.assertEqual(self.window.config['internet_protection']['provider'], 'adguard-family')
+        self.assertFalse(page.pending_bar.isHidden())
+        # The periodic status check reports the active service; the choice stays.
+        page.show_state({'supported': True, 'active': True, 'count': 5, 'engine': 'sqlite-dns',
+                         'mode': 'resolved', 'provider': 'quad9'})
+        self.assertEqual(page.provider.currentData(), 'adguard-family')
+        self.assertFalse(page.pending_bar.isHidden())
+        page.applied({'supported': True, 'active': True, 'count': 5, 'engine': 'sqlite-dns',
+                      'mode': 'resolved', 'provider': 'adguard-family'})
+        self.assertTrue(page.pending_bar.isHidden())
+
+    def test_changes_while_off_need_no_apply_and_leaving_with_changes_asks(self):
+        page = self.window.internet_page
+        page.show_state({'supported': True, 'active': False, 'count': 0, 'engine': 'sqlite-setup', 'mode': 'networkmanager'})
+        page.categories['ads'].setChecked(True)
+        self.assertTrue(page.pending_bar.isHidden())
+        self.assertIn('ads', self.window.config['internet_protection']['categories'])
+        page.show_state({'supported': True, 'active': True, 'count': 5, 'engine': 'sqlite-dns', 'mode': 'networkmanager'})
+        page.categories['tracking'].setChecked(True)
+        self.window.pages.setCurrentIndex(self.window.page_indices['internet'])
+        self.patch('ui.main_window.QMessageBox.question', return_value=QMessageBox.StandardButton.Yes)
+        with patch.object(page, 'apply') as apply:
+            self.window.switch_page('settings')
+        apply.assert_called_once_with(changes=True)
+        self.assertEqual(self.window.pages.currentIndex(), self.window.page_indices['internet'])
+
     def test_networkmanager_filter_hides_dns_service_choice(self):
         page = self.window.internet_page
         page.show_state({'supported': True, 'active': False, 'count': 0, 'engine': 'sqlite-setup', 'mode': 'networkmanager'})
@@ -248,7 +282,6 @@ class QtFrontendTests(unittest.TestCase):
         with patch.object(self.window, 'confirm', return_value=False) as confirm:
             page.apply()
         self.assertIn('dnsmasq-base', confirm.call_args.args[1])
-        self.assertIn('restores the previous DNS mode', confirm.call_args.args[1])
         apply.assert_not_called()
         self.assertTrue(page.apply_button.isEnabled())
 
@@ -279,7 +312,8 @@ class QtFrontendTests(unittest.TestCase):
             dialog.accept()
             self.app.processEvents()
             self.assertTrue(page.state['active'])
-            self.assertIn('Local DNS filter', page.info.text())
+            self.assertEqual(page.info.text(), 'Blocking 1 website.')
+            self.assertEqual(page.toggle_button.text(), 'Turn off')
 
     def test_internet_pause_only_removes_libreward_blocks(self):
         page = self.window.internet_page
@@ -294,7 +328,7 @@ class QtFrontendTests(unittest.TestCase):
         dialog.accept()
         self.app.processEvents()
         self.assertFalse(page.state['active'])
-        self.assertIn('paused', page.notice.text())
+        self.assertEqual(page.toggle_button.text(), 'Turn on')
 
     def test_firewall_refresh_prefers_active_tool_and_switches_rules(self):
         from core.firewall import FirewallSnapshot, FirewallTool

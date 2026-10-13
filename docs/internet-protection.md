@@ -19,8 +19,9 @@ Other setups show that Internet protection is unavailable and nothing is changed
 
 ## Enable protection
 
-Choose categories and select **Enable / apply protection**. Dangerous websites
-and phishing are selected by default. Tracking, ads and adult websites are
+The page has one switch: **Turn on** or **Turn off**. Its state is checked
+automatically while the page is open. Dangerous websites and phishing are
+selected by default. Tracking, ads and adult websites are
 optional; adult filtering is off by default. Missing lists are downloaded from
 The Block List Project over HTTPS only after confirmation.
 
@@ -167,20 +168,24 @@ Allowed websites override downloaded and custom blocks inside LibreWard. They
 do not override other security tools or upstream filtering. Existing system hosts
 entries retain their precedence over DNS.
 
-Changes remain drafts until applied. Saved choices are not evidence of active
-protection: the status reports the installed count and checks the running filter.
-While its page is open, active protection is checked every 30 seconds when no
-other operation is running. Counts represent installed domains, not blocked visits.
+Every change is saved at once. While protection is off, nothing else is needed:
+the saved choices are used when you turn it on. While it is on, a bar says
+**Your changes are saved but not active yet** with **Apply changes**, and leaving
+the page asks whether to apply them. Status checks (every 30 seconds while the
+page is open) compare the active choices with the saved ones and never overwrite
+your edits; editing stays possible during a check. Confirmation is short: a new
+DNS service behind systemd-resolved, or a package installation, is always
+explained first. Counts represent installed domains, not blocked visits.
 
 ## Updates, pause and recovery
 
-**Update protection lists** updates the local cache. Apply protection afterwards
-to use the new lists. A single undecodable line in a downloaded list is skipped. Downloads are manual; failed downloads leave the last cache
+**Update lists now** updates the local cache; while protection is on, the
+Apply changes bar then offers to use the new lists. A single undecodable line in a downloaded list is skipped. Downloads are manual; failed downloads leave the last cache
 and active protection alone.
 
-**Pause protection** stops/disables the filter and removes LibreWard's
+**Turn off** stops/disables the filter and removes LibreWard's
 NetworkManager snippets or resolved drop-in. Normal DNS is reloaded.
-Choices and downloaded lists are kept. Pause persists until you enable protection
+Choices and downloaded lists are kept. Protection stays off until you turn it on
 again. Installed service files/database remain available for the next enable.
 
 Installation builds and validates the new root-owned database before changing
@@ -196,7 +201,7 @@ it after one second. Three failures within a minute, or a missing app heartbeat
 (exit status 3, never restarted), trigger a separate root recovery service that removes LibreWard's DNS routing
 snippets, reloads normal DNS and disables the failed filter. This restores internet
 access while stopping domain protection; the GUI reports the recovered state.
-If an interrupted setup needs attention, use **Pause protection** to restore DNS.
+If an interrupted setup needs attention, use **Turn off** to restore DNS.
 A recovery reload failure still needs administrator attention.
 
 ## Memory and privacy

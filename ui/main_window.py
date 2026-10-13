@@ -292,6 +292,16 @@ class QtMainWindow(QMainWindow):
         self.update_exclude_summary()
 
     def switch_page(self, key):
+        leaving_internet = (key != 'internet' and self.pages.currentIndex() == self.page_indices.get('internet')
+                            and self.operation is None)
+        if leaving_internet and self.internet_page.has_pending():
+            answer = QMessageBox.question(
+                self, 'Apply your changes?',
+                'Your Internet protection changes are saved but not active yet. Apply them now?',
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.Yes)
+            if answer == QMessageBox.StandardButton.Yes:
+                self.internet_page.apply(changes=True)
+                return
         self.pages.setCurrentIndex(self.page_indices[key])
         for name, button in self.nav_buttons.items():
             button.setChecked(name == key)
