@@ -256,32 +256,62 @@ class UpdateProgressDialog(QDialog):
 
 
 class ScanReportDialog(QDialog):
-    """Complete scan report, including warnings and ClamAV summary output."""
+    """Outcome first in plain words; file lists and engine output under Show details."""
+    QUARANTINE_ALL = 2
+
     def __init__(self, parent, result):
-        from core.scan_service import scan_outcome
+        from html import escape
+        from core.scan_report import friendly_report, report_summary
         from core.scan_warnings import warning_report
-        from core.scan_report import friendly_report
         super().__init__(parent)
         self.setWindowTitle("Scan report")
-        self.resize(680, 460)
+        self.setMinimumWidth(520)
+        summary = report_summary(result)
         layout = QVBoxLayout(self)
-        title = QLabel(scan_outcome(result))
-        title.setObjectName("pageTitle")
+        title = QLabel(summary['title'])
+        title.setObjectName('statusValue')
+        title.setProperty('severity', summary['severity'])
+        title.setStyleSheet('font-size: 24px;')
         layout.addWidget(title)
-        report = QPlainTextEdit()
-        report.setReadOnly(True)
+        subtitle = QLabel(summary['subtitle'])
+        subtitle.setWordWrap(True)
+        layout.addWidget(subtitle)
+        self.threat_labels = []
+        for name, folder, threat in summary['threats'][:8]:
+            row = QLabel(f'<b>{escape(name)}</b> &nbsp;·&nbsp; {escape(threat)}<br>'
+                         f'<span style="font-size: 11px;">{escape(folder)}</span>')
+            row.setTextFormat(Qt.TextFormat.RichText)
+            row.setWordWrap(True)
+            layout.addWidget(row)
+            self.threat_labels.append(row)
+        if len(summary['threats']) > 8:
+            layout.addWidget(QLabel(f"…and {len(summary['threats']) - 8} more, listed on the scan page."))
+        if summary['note']:
+            note = QLabel(summary['note'])
+            note.setObjectName('muted')
+            note.setWordWrap(True)
+            layout.addWidget(note)
+        self.details_button = QPushButton('Show details')
+        self.details_button.setFlat(True)
+        self.details_button.clicked.connect(self.toggle_details)
+        layout.addWidget(self.details_button, 0, Qt.AlignmentFlag.AlignLeft)
         lines = result.get('summary_lines', [])
         engine_report = ''.join(lines) if lines else 'No ClamAV summary is available for this scan.'
-        report.setPlainText(friendly_report(result))
-        layout.addWidget(report)
-        details = QCheckBox('Show technical details')
-        layout.addWidget(details)
-        technical = QPlainTextEdit()
-        technical.setReadOnly(True)
-        technical.setPlainText(warning_report(result) + '\n' + engine_report)
-        technical.hide()
-        details.toggled.connect(technical.setVisible)
-        layout.addWidget(technical)
+        self.details = QPlainTextEdit()
+        self.details.setReadOnly(True)
+        self.details.setPlainText(friendly_report(result) + '\n\n' + warning_report(result) + '\n' + engine_report)
+        self.details.setMinimumHeight(240)
+        self.details.hide()
+        layout.addWidget(self.details, 1)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        if summary['threats']:
+            quarantine = buttons.addButton('Move all to quarantine', QDialogButtonBox.ButtonRole.ActionRole)
+            quarantine.setObjectName('primaryButton')
+            quarantine.clicked.connect(lambda: self.done(self.QUARANTINE_ALL))
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+    def toggle_details(self):
+        self.details.setVisible(not self.details.isVisible())
+        self.details_button.setText('Hide details' if self.details.isVisible() else 'Show details')
+        self.adjustSize()

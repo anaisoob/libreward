@@ -120,13 +120,14 @@ class WarningTests(unittest.TestCase):
         backend.find_clamd.return_value = 'clamd'
         backend.clamd_listen_config.return_value = (('tcp', ('127.0.0.1', 3310)), ['TCPAddr 127.0.0.1', 'TCPSocket 3310'])
         backend.start_process.return_value.poll.return_value = None
-        session = ClamdSession(backend, 'extended')
+        with patch('core.scan_policy.os.cpu_count', return_value=8):
+            session = ClamdSession(backend, 'extended')
         try:
             with patch('core.clamd.ping', return_value=True):
                 session.acquire('clamscan', Path('/db'), lambda: False)
             config = Path(backend.start_process.call_args.args[0][-1]).read_text()
             self.assertIn('MaxFileSize 1024M', config)
             self.assertIn('MaxScanSize 2048M', config)
-            self.assertIn('MaxThreads 2', config)
+            self.assertIn('MaxThreads 4', config)  # half of 8 cores, also for larger files
         finally:
             session.close()

@@ -781,7 +781,9 @@ class QtMainWindow(QMainWindow):
 
     def show_scan_report(self):
         if self.last_result is not None:
-            ScanReportDialog(self, self.last_result).exec()
+            if ScanReportDialog(self, self.last_result).exec() == ScanReportDialog.QUARANTINE_ALL:
+                self.results.selectAll()
+                self.handle_findings('quarantine')
 
     def build_quarantine_page(self):
         page, layout = self.page("Quarantine", "Review isolated files and restore trusted items to their original locations.")
@@ -832,17 +834,17 @@ class QtMainWindow(QMainWindow):
         self.parallel_scan.setChecked(self.config.get("parallel_scanning", True))
         box.addWidget(self.parallel_scan)
         box.addWidget(self.label('Parallel file checks', 'muted'))
+        from core.scan_policy import automatic_workers, cpu_cores, worker_choices
         self.scan_workers = QComboBox()
-        self.scan_workers.addItem('Automatic (CPU count, up to 16)', 'auto')
-        for count in (4, 8, 16):
-            self.scan_workers.addItem(str(count), count)
+        self.scan_workers.addItem(f'Automatic: half of {cpu_cores()} cores ({automatic_workers()} at once)', 'auto')
+        for count in worker_choices():
+            self.scan_workers.addItem(f'{count} at once', count)
         index = self.scan_workers.findData(self.config.get('scan_workers', 'auto'))
         self.scan_workers.setCurrentIndex(max(0, index))
         self.scan_workers.setEnabled(self.parallel_scan.isChecked())
         self.parallel_scan.toggled.connect(self.scan_workers.setEnabled)
-        self.scan_workers.setToolTip('Automatic uses up to two checks for larger files. '
-                                    'Manual settings may use substantially more memory. '
-                                    'Existing system clamd may enforce a lower limit.')
+        self.scan_workers.setToolTip('More checks at once finish sooner but use more memory, '
+                                    'especially with larger files. An existing system clamd may use a lower limit.')
         box.addWidget(self.scan_workers)
         self.large_file_scan = QCheckBox('Check larger files (slower, uses more memory)')
         self.large_file_scan.setChecked(self.config.get('scan_profile') == 'extended')

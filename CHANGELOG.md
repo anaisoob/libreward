@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Plain scan report: coloured outcome, one sentence with files checked and time, a calm
+  note for files that could not be checked, threats by file name with Move all to
+  quarantine, and details folded away.
+
 - Dark theme for context menus and other popups (the theme now applies to the whole
   application, with a matching palette). Progress windows show a title, one status line
   and progress; the technical log and the scan page event log are under Show details.
@@ -75,8 +79,8 @@
 - Present scan reports in plain language, with optional technical details and
   scan durations formatted as hours, minutes and seconds.
 
-- Choose parallel scan workers automatically from CPU count (up to 16), or
-  select 4, 8 or 16 in Settings. Larger-file automatic scans remain capped at 2.
+- Choose parallel scan workers automatically as half of the CPU cores (1 to 16), also
+  for larger-file scans, or pick a count the computer can run in Settings.
 
 - Avoid competing with an existing Linux FreshClam updater; explain log-lock
   conflicts and monitor database availability after first installation.

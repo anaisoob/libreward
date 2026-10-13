@@ -24,7 +24,12 @@ If startup fails or the executable is absent, the log explains the fallback
 to standard `clamscan` scanning.
 
 The worker discovers files while scanning, removes overlapping roots and queues
-at most 256 file paths, with up to four file checks active at once. Owned daemons
+at most 256 file paths. **Parallel file checks** in Settings defaults to
+**Automatic: half of the CPU cores** (at least 1, at most 16), also when **Check
+larger files** is on, which leaves the computer usable during a scan. Manual
+choices list only counts the computer can run (1, 2, 4, 8 or 16 up to its cores);
+a saved count above the current cores falls back to automatic. More checks at once
+use more memory, especially with larger files. Owned daemons
 open local paths directly, avoiding large-file transfers
 through a socket. Reused daemons receive INSTREAM requests so they do not need
 permission to open original paths; their configured streaming limits still apply.
@@ -65,6 +70,13 @@ result; several other files can still be active. An animated icon appears beside
 Completed parallel work reaches 100% even with warnings/errors. Final status
 states the outcome separately; cancellation retains partial progress. The report
 dialog opens automatically afterward. **View scan report** reopens it.
+
+The report leads with the outcome in colour (**No threats found**, **2 threats
+found**, **The scan did not finish**) and one sentence such as “18,234 files checked
+in 6 min 52 s.” Files that could not be checked get one calm note instead of a
+list. Threats are listed by file name, threat name and folder, with **Move all to
+quarantine**; quarantined files can be restored. Counts per cause, file paths and
+the ClamAV summary are under **Show details**.
 
 ## Warnings and threats
 

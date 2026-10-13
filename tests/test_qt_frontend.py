@@ -1056,6 +1056,25 @@ class QtFrontendTests(unittest.TestCase):
         self.assertNotIn('database_auto_update_at', self.window.config)
         self.assertTrue(self.window.auto_update_database.isChecked())
 
+    def test_scan_report_leads_with_the_outcome_and_offers_quarantine(self):
+        from ui.dialogs import ScanReportDialog
+        result = {'scanned': 2, 'duration_seconds': 3,
+                  'infected': [('/tmp/a/eicar.com', 'Eicar-Test-Signature'), ('/tmp/b<i>.zip', 'Win.Trojan.X')]}
+        dialog = ScanReportDialog(self.window, result)
+        texts = [label.text() for label in dialog.findChildren(QLabel)]
+        self.assertIn('2 threats found', texts)
+        self.assertEqual(len(dialog.threat_labels), 2)
+        self.assertIn('b&lt;i&gt;.zip', dialog.threat_labels[1].text())  # file names are escaped
+        self.assertTrue(dialog.details.isHidden())
+        dialog.deleteLater()
+        self.window.last_result = result
+        with patch('ui.main_window.ScanReportDialog') as report, \
+                patch.object(self.window, 'handle_findings') as handle:
+            report.QUARANTINE_ALL = ScanReportDialog.QUARANTINE_ALL
+            report.return_value.exec.return_value = ScanReportDialog.QUARANTINE_ALL
+            self.window.show_scan_report()
+        handle.assert_called_once_with('quarantine')
+
     def test_progress_window_shows_progress_not_the_log(self):
         dialog = UpdateProgressDialog(self.window, 'Update virus database')
         self.assertTrue(dialog.log.isHidden())
