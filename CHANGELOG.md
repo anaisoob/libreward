@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Refresh LibreWard's own virus database automatically in the background while the
+  app runs (every 12 hours, 2 hours after a failure), without a window or password.
+  Can be turned off in Settings.
+
 - Linux virus database: use a current system database (`/var/lib/clamav`), otherwise
   LibreWard's own database under `~/.local/share/libreward/clamav-db`, updated by
   freshclam as the user without a password. Distribution freshclam configs (Fedora's

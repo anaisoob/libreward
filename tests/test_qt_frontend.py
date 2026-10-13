@@ -1028,6 +1028,34 @@ class QtFrontendTests(unittest.TestCase):
         confirm.assert_not_called()
         start.assert_called_once()
 
+    def test_automatic_database_update_runs_quietly_when_due(self):
+        self.window.startup_status = self.ready
+        self.patch('ui.main_window.own_database_needs_refresh', return_value=True)
+        run = self.patch('ui.main_window.run_freshclam_update', return_value=(True, 'updated'))
+        save = self.patch('ui.main_window.save_config')
+        self.assertTrue(self.window.maybe_auto_update_database())
+        self.window.auto_database_thread.join(3)
+        self.assertEqual(run.call_args.kwargs, {'wait': False})
+        self.window.poll_events()
+        self.assertTrue(self.window.config['database_auto_update_ok'])
+        self.assertIn('database_auto_update_at', save.call_args.args[0])
+        self.assertIn('updated automatically', self.window.log.toPlainText())
+        # Just updated: not due again.
+        self.assertFalse(self.window.maybe_auto_update_database())
+        self.assertIsNone(self.window.update_dialog)
+
+    def test_automatic_database_update_respects_the_setting_and_pending_runs(self):
+        self.window.startup_status = self.ready
+        self.patch('ui.main_window.own_database_needs_refresh', return_value=True)
+        run = self.patch('ui.main_window.run_freshclam_update')
+        self.window.config['auto_update_database'] = False
+        self.assertFalse(self.window.maybe_auto_update_database())
+        run.assert_not_called()
+        self.window.config['auto_update_database'] = True
+        self.window.auto_database_update_finished(False, True)
+        self.assertNotIn('database_auto_update_at', self.window.config)
+        self.assertTrue(self.window.auto_update_database.isChecked())
+
     def test_package_authorization_failure_shows_help_after_report_close(self):
         from core.authorization import AuthorizationError, PackageInstallPlan
         plan = PackageInstallPlan('apt', 'sudo apt-get install clamav', ('clamav',), 'Install packages')

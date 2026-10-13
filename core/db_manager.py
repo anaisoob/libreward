@@ -12,10 +12,36 @@ Platform differences:
 
 import os
 import subprocess
+import threading
 
 from backends import backend
 from core.constants import CLAMAV_DB_MIRROR
 from core.database_update import DatabaseUpdateResult
+
+# Manual and automatic updates never run freshclam at the same time.
+DATABASE_UPDATE_LOCK = threading.Lock()
+# Automatic refresh of LibreWard's own database while the app runs.
+AUTO_UPDATE_INTERVAL = 12 * 3600
+AUTO_UPDATE_RETRY = 2 * 3600
+
+
+def auto_update_due(now, last_attempt, last_succeeded=True):
+    """Whether an automatic update is due; restarts never shorten the interval."""
+    if not isinstance(last_attempt, (int, float)) or last_attempt > now:
+        return True
+    return now - last_attempt >= (AUTO_UPDATE_INTERVAL if last_succeeded else AUTO_UPDATE_RETRY)
+
+
+def own_database_needs_refresh():
+    """Automatic updates refresh only LibreWard's own existing database.
+
+    A current system database is the distribution's job, and the first large
+    download stays a choice the user makes in setup.
+    """
+    from backends.base import newest_database_time
+    own = backend.db_dir() if backend.manages_own_database() else None
+    return (own is not None and not backend.system_database_current()
+            and newest_database_time(own) is not None)
 
 
 # ── freshclam.conf generation ───────────────────────────────────────
@@ -110,6 +136,21 @@ def _run_freshclam_cmd(cmd: list[str], log_callback=None) -> tuple[bool, str]:
 
 
 def run_freshclam_update(
+    freshclam_path: str,
+    conf_path: str | None = None,
+    log_callback=None,
+    wait: bool = True,
+) -> tuple[bool, str] | DatabaseUpdateResult:
+    """Serialized wrapper; with wait=False a running update makes this a pending no-op."""
+    if not DATABASE_UPDATE_LOCK.acquire(blocking=wait):
+        return DatabaseUpdateResult(False, 'A virus database update is already running.\n', pending=True)
+    try:
+        return _run_freshclam_update(freshclam_path, conf_path, log_callback)
+    finally:
+        DATABASE_UPDATE_LOCK.release()
+
+
+def _run_freshclam_update(
     freshclam_path: str,
     conf_path: str | None = None,
     log_callback=None,

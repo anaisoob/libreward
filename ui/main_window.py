@@ -2,6 +2,7 @@
 import os
 import queue
 import threading
+import time
 
 from PySide6.QtCore import Qt, QTimer, QSize, QByteArray
 from PySide6.QtGui import QColor
@@ -17,7 +18,7 @@ from backends import backend
 from config import load_config, save_config
 from core.authorization import AuthorizationError
 from core.constants import APP_NAME, APP_VERSION, CLAMAV_HOMEPAGE, CLAMAV_SOURCE
-from core.db_manager import database_summary, run_freshclam_update
+from core.db_manager import auto_update_due, database_summary, own_database_needs_refresh, run_freshclam_update
 from core.quarantine import (
     delete_file, delete_quarantined_file, list_quarantined_files,
     open_file_location, quarantine_file, restore_file,
@@ -71,6 +72,13 @@ class QtMainWindow(QMainWindow):
         self.database_watch_timer = QTimer(self)
         self.database_watch_timer.setInterval(10000)
         self.database_watch_timer.timeout.connect(self.poll_system_database)
+        # Background refresh of LibreWard's own virus database while the app runs.
+        self.auto_database_thread = None
+        self.auto_database_timer = QTimer(self)
+        self.auto_database_timer.setInterval(10 * 60 * 1000)
+        self.auto_database_timer.timeout.connect(self.maybe_auto_update_database)
+        self.auto_database_timer.start()
+        QTimer.singleShot(60 * 1000, self.maybe_auto_update_database)
         self.start_task("check", self.check_runtime, on_done=self.offer_setup)
 
     def setup_tray(self):
@@ -810,6 +818,9 @@ class QtMainWindow(QMainWindow):
         row.addWidget(self.database_button)
         row.addWidget(self.button("Check status", self.refresh_state))
         box.addLayout(row)
+        self.auto_update_database = QCheckBox('Update the virus database automatically')
+        self.auto_update_database.setChecked(self.config.get('auto_update_database', True))
+        box.addWidget(self.auto_update_database)
         self.parallel_scan = QCheckBox("Parallel scanning (use clamd when available)")
         self.parallel_scan.setChecked(self.config.get("parallel_scanning", True))
         box.addWidget(self.parallel_scan)
@@ -980,6 +991,7 @@ class QtMainWindow(QMainWindow):
             protected_close_action=self.close_action.currentData(),
             qt_theme=self.theme.currentText(),
             parallel_scanning=self.parallel_scan.isChecked(),
+            auto_update_database=self.auto_update_database.isChecked(),
             scan_workers=self.scan_workers.currentData(),
             scan_profile='extended' if self.large_file_scan.isChecked() else 'standard',
         )
@@ -1146,6 +1158,44 @@ class QtMainWindow(QMainWindow):
             return {'status': self.check_runtime(), 'pending': pending}
 
         self.start_task("database", run_update, title="Update virus database", on_done=self.database_update_finished)
+
+    def maybe_auto_update_database(self):
+        """Quietly refresh LibreWard's own database; never asks and never blocks the UI."""
+        status = self.startup_status
+        if (not self.config.get('auto_update_database', True) or self.operation == 'database'
+                or (self.auto_database_thread and self.auto_database_thread.is_alive())
+                or status is None or not status.can_update_db
+                or not auto_update_due(time.time(), self.config.get('database_auto_update_at'),
+                                       self.config.get('database_auto_update_ok', True))
+                or not own_database_needs_refresh()):
+            return False
+        freshclam = status.runtime.freshclam
+
+        def work():
+            try:
+                result = run_freshclam_update(freshclam, wait=False)
+                success, pending = bool(result[0]), getattr(result, 'pending', False)
+            except Exception:
+                success, pending = False, False
+            self.events.put(('__DATABASE_AUTO__', success, pending))
+            if success:
+                self.check_runtime(quiet=True)
+
+        self.auto_database_thread = threading.Thread(target=work, daemon=True)
+        self.auto_database_thread.start()
+        return True
+
+    def auto_database_update_finished(self, success, pending):
+        if pending:
+            return  # another update was running; try again at the next check
+        updated = dict(self.config, database_auto_update_at=time.time(), database_auto_update_ok=success)
+        try:
+            save_config(updated)
+            self.config = updated
+        except OSError:
+            self.config = updated  # still avoid retrying immediately in this session
+        self.log.appendPlainText('Virus database updated automatically.' if success else
+                                 'Automatic virus database update did not finish. LibreWard tries again later.')
 
     def database_update_finished(self, result):
         if result['pending'] and not result['status'].db_found:
@@ -1361,6 +1411,9 @@ class QtMainWindow(QMainWindow):
                     self.update_dialog.append(event)
                 continue
             kind, *values = event
+            if kind == '__DATABASE_AUTO__':
+                self.auto_database_update_finished(*values)
+                continue
             if kind == "__STATE__":
                 state = values[0]
                 self.startup_status = state["status"]

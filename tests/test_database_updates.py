@@ -150,3 +150,35 @@ class FedoraClamAVTests(unittest.TestCase):
         with patch.object(backend, 'distro_info', return_value={'pkg_manager': 'dnf'}):
             _, spec = backend._clamav_install_spec()
         self.assertEqual(spec[2], ['clamav', '/usr/bin/freshclam', 'clamd'])
+
+
+class AutomaticDatabaseUpdateTests(unittest.TestCase):
+    def test_due_after_interval_and_sooner_after_a_failure(self):
+        now = 1_000_000
+        self.assertTrue(db_manager.auto_update_due(now, None))
+        self.assertFalse(db_manager.auto_update_due(now, now - 3600, True))
+        self.assertTrue(db_manager.auto_update_due(now, now - db_manager.AUTO_UPDATE_INTERVAL, True))
+        self.assertFalse(db_manager.auto_update_due(now, now - 3600, False))
+        self.assertTrue(db_manager.auto_update_due(now, now - db_manager.AUTO_UPDATE_RETRY, False))
+        # A clock set back never blocks updates forever.
+        self.assertTrue(db_manager.auto_update_due(now, now + 86400, True))
+
+    def test_only_libreward_own_existing_database_is_refreshed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            own = Path(directory)
+            backend = Mock()
+            backend.manages_own_database.return_value = True
+            backend.db_dir.return_value = own
+            backend.system_database_current.return_value = False
+            with patch.object(db_manager, 'backend', backend):
+                self.assertFalse(db_manager.own_database_needs_refresh())  # first download is the user's choice
+                (own / 'daily.cld').write_bytes(b'db')
+                self.assertTrue(db_manager.own_database_needs_refresh())
+                backend.system_database_current.return_value = True
+                self.assertFalse(db_manager.own_database_needs_refresh())
+
+    def test_automatic_update_never_runs_beside_another_update(self):
+        with db_manager.DATABASE_UPDATE_LOCK, patch.object(db_manager, '_run_freshclam_update') as run:
+            result = db_manager.run_freshclam_update('/usr/bin/freshclam', wait=False)
+        self.assertTrue(result.pending)
+        run.assert_not_called()
