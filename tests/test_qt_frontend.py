@@ -927,6 +927,31 @@ class QtFrontendTests(unittest.TestCase):
         self.autostart.assert_called_once()
         application.assert_not_called()
 
+    def test_first_turn_on_and_first_close_explain_that_protection_keeps_working(self):
+        from PySide6.QtGui import QCloseEvent
+        info = self.patch('ui.internet_page.QMessageBox.information')
+        page = self.window.internet_page
+        on = {'supported': True, 'active': True, 'count': 3, 'engine': 'sqlite-dns', 'mode': 'networkmanager'}
+        page.applied(on)
+        page.applied(on)
+        self.assertEqual(info.call_count, 1)
+        self.assertIn('keeps working when LibreWard is closed', info.call_args.args[2])
+        info.reset_mock()
+        self.patch('ui.main_window.backend.internet_protection_enabled', return_value=True)
+        for _ in range(2):
+            event = QCloseEvent()
+            self.window.closeEvent(event)
+            self.assertTrue(event.isAccepted())
+        self.assertEqual(info.call_count, 1)
+        self.assertIn('keeps blocking websites', info.call_args.args[2])
+
+    def test_social_media_can_be_blocked(self):
+        from core.internet import CATEGORIES
+        self.assertEqual(CATEGORIES['social'][1], ('facebook', 'whatsapp', 'tiktok', 'twitter'))
+        checkbox = self.window.internet_page.categories['social']
+        self.assertFalse(checkbox.isChecked())
+        self.assertIn('Instagram', checkbox.text())
+
     def test_consent_explains_protection_is_a_system_setting(self):
         page = self.window.internet_page
         page.show_state({'supported': True, 'active': False, 'count': 0, 'engine': 'sqlite-setup', 'mode': 'networkmanager'})

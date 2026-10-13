@@ -21,8 +21,9 @@ Other setups show that Internet protection is unavailable and nothing is changed
 
 The page has one switch: **Turn on** or **Turn off**. Its state is checked
 automatically while the page is open. Dangerous websites and phishing are
-selected by default. Tracking, ads and adult websites are
-optional; adult filtering is off by default. Missing lists are downloaded from
+selected by default. Tracking, ads, adult websites and social media (Facebook,
+Instagram, Messenger and WhatsApp, TikTok and X/Twitter, from the project's
+`facebook`, `whatsapp`, `tiktok` and `twitter` lists) are optional and off by default. Missing lists are downloaded from
 The Block List Project over HTTPS only after confirmation.
 
 On supported Linux systems, LibreWard prepares an indexed domain database on
@@ -39,9 +40,8 @@ open, **Cancel** in the progress window stops the request. Once authorization is
 given, the change finishes or rolls back and cannot be cancelled: pkexec then runs
 as root, and the system refuses the stop signal.
 
-Protection works while LibreWard is open (see
-[Protection follows the open app](#protection-follows-the-open-app)). Turning
-protection off restores normal DNS. Setup may briefly interrupt name resolution.
+Internet protection is a system setting, like the firewall (see
+[A system setting](#a-system-setting)). Turning protection off restores normal DNS. Setup may briefly interrupt name resolution.
 
 ## How the database backend works
 
@@ -197,8 +197,7 @@ and reloads DNS. Recovery failures report both the original and recovery errors.
 
 A failed receive or accept on one socket is skipped; the filter keeps serving.
 If the filter process crashes or hits its systemd memory limit, systemd restarts
-it after one second. Three failures within a minute, or a missing app heartbeat
-(exit status 3, never restarted), trigger a separate root recovery service that removes LibreWard's DNS routing
+it after one second. Three failures within a minute trigger a separate root recovery service that removes LibreWard's DNS routing
 snippets, reloads normal DNS and disables the failed filter. This restores internet
 access while stopping domain protection; the GUI reports the recovered state.
 If an interrupted setup needs attention, use **Turn off** to restore DNS.
@@ -233,37 +232,17 @@ unprivileged loopback ports. Service installation, NetworkManager changes,
 reboot and crash recovery still require smoke tests on a supported Linux machine;
 automated tests never change the development computer's system DNS.
 
-### Protection follows the open app
+### A system setting
 
-Internet protection works while LibreWard is running, including from the system
-tray. If LibreWard is not running, websites are not blocked.
+Internet protection works like the firewall: once turned on, the filter service
+runs independently of the LibreWard window. It keeps blocking when LibreWard is
+closed, after logging out and after restarts, until it is turned off on the
+Internet protection page. LibreWard needs no tray icon or login autostart for
+this; closing the window simply closes it.
 
-- **Closing the window** with protection on keeps LibreWard running in the tray,
-  without a question; the first time per session a short notification says so.
-  Settings can change this to “Ask every time” or “Turn off protection and quit”.
-  Without a tray (for example GNOME without a tray extension), closing asks:
-  minimize, turn off protection and quit, or cancel. With protection off, closing
-  simply quits.
-- **Quit LibreWard** in the tray menu asks once, then turns protection off and
-  quits. Turning off may need system authorization. LibreWard then remembers
-  protection as off and does not start with the computer. If turning off fails,
-  the app stays open and offers to quit anyway.
-- **Restarting or shutting down** with protection on keeps it on. The filter
-  service starts with the computer, and an XDG autostart entry
-  (`~/.config/autostart/libreward.desktop`) starts LibreWard in the tray at login
-  (minimized without a tray). Logging out does not ask to turn protection off.
-
-The tray badge uses white lettering on a green background with a light outline so
-it remains visible on both light and dark desktop panels.
-- **If LibreWard stops unexpectedly** (crash, killed, or the user logged out
-  without shutting down), the filter notices that the app no longer sends its
-  heartbeat and restores normal DNS after about two minutes. The next start
-  asks whether to turn protection on again; “No” remembers protection as off.
-
-The open app sends a fire-and-forget DNS query for
-`libreward-app-open.invalid` to `127.0.0.1:53` every 20 seconds. The filter
-answers it locally and, after the first heartbeat, exits with a failure status
-when none arrives for 120 seconds; `OnFailure=` then runs the recovery unit.
-Before the first heartbeat, for example at boot while waiting for login, the
-filter keeps protecting. Behind systemd-resolved the heartbeat goes to port 5354
-and recovery also removes the resolved drop-in.
+So that this is never a surprise, LibreWard explains it three times: in the
+confirmation before turning protection on, in a message after it is first on,
+and in a message the first time LibreWard is closed while protection is on (the
+two messages appear once each). **Why is a website blocked?** on the page explains
+how to allow a website or turn protection off. Login autostart entries from
+earlier versions are removed when LibreWard starts.

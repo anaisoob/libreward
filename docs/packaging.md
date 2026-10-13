@@ -18,9 +18,8 @@ Flatpak sandbox blocks exactly these operations, and working around it with
 | `/usr/share/icons/hicolor/{scalable,256x256}/apps/libreward.*` | Icon |
 
 The modules live in a private directory instead of site-packages because their
-names (`core`, `ui`, `config`, …) would clash with other packages. The launcher
-sets `LIBREWARD_LAUNCHER`; the login autostart entry then runs
-`/usr/bin/libreward --autostart`, which keeps working after upgrades.
+names (`core`, `ui`, `config`, …) would clash with other packages. LibreWard
+installs no login autostart entry; Internet protection runs as a system service.
 Run `make test` for the test suite. `tests/test_packaging.py` checks that every
 module is installed and that package versions match.
 
@@ -33,11 +32,10 @@ or systemd-resolved snippets. The package scripts run
 not on upgrades: RPM `%preun` when `$1` is 0, Debian `prerm remove`, Arch
 `pre_remove`. `make uninstall` does the same for a direct installation.
 
-The cleanup uses the same transaction as **Pause protection**, removes only files
+The cleanup uses the same transaction as **Turn off**, removes only files
 LibreWard wrote, keeps anything else in `/etc/libreward`, and never fails the
 removal; on errors it prints the manual steps. User data (settings, lists,
-quarantine) stays in the home directory. The login autostart entry has
-`TryExec=/usr/bin/libreward`, so desktops skip it once LibreWard is removed.
+quarantine) stays in the home directory.
 Firewall rules belong to UFW or firewalld and are kept.
 
 ## Distribution support

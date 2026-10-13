@@ -1414,6 +1414,11 @@ class QtMainWindow(QMainWindow):
                 self.set_status("Wait for the current operation before closing.")
             event.ignore()
             return
+        if backend.internet_protection_enabled():
+            # Once: closing the app does not switch protection off.
+            self.internet_page.explain_once('internet_protection_close_notice', 'Internet protection stays on',
+                'LibreWard is closing, but Internet protection keeps blocking websites, like the firewall. '
+                'To turn it off, open LibreWard and choose Turn off on the Internet protection page.')
         self.timer.stop()
         self.database_watch_timer.stop()
         updated = dict(self.config)

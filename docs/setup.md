@@ -65,7 +65,7 @@ For the virus database LibreWard combines two sources:
   config.
 - A stale system database is still used when LibreWard has none of its own.
 
-While LibreWard runs, also from the tray, it refreshes its own database in the
+While LibreWard is open, it refreshes its own database in the
 background every 12 hours, or 2 hours after an unsuccessful attempt, without a
 window or password and without blocking scans. The time of the last attempt is
 saved, so restarting the app does not contact the ClamAV mirrors more often.

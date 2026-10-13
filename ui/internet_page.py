@@ -170,6 +170,18 @@ class InternetProtectionPage:
         self.advanced_toggle.toggled.connect(self.method_info.setVisible)
         layout.addStretch()
 
+    def explain_once(self, key, title, text):
+        """Show an explanation the first time only."""
+        if self.window.config.get(key):
+            return
+        config = dict(self.window.config, **{key: True})
+        try:
+            save_config(config)
+        except OSError:
+            pass
+        self.window.config = config
+        QMessageBox.information(self.window, title, text)
+
     def explain_blocking(self):
         QMessageBox.information(self.window, 'Why is a website blocked?',
             'When Internet protection is on, LibreWard blocks websites from the lists you chose '
@@ -483,6 +495,9 @@ class InternetProtectionPage:
         self.show_state(state)
         if state.get('active'):
             self.remember_applied()
+            self.explain_once('internet_protection_on_notice', 'Internet protection is on',
+                'LibreWard now blocks the websites you chose on this whole computer. It keeps working when '
+                'LibreWard is closed and after restarts, like the firewall. Turn it off on this page at any time.')
         self.notice.setText('If a website still opens, restart the browser.' if state.get('active') else '')
         self.update_pending()
 

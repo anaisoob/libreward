@@ -15,6 +15,7 @@ CATEGORIES = {
     'tracking': ('Tracking', ('tracking',)),
     'ads': ('Ads', ('ads',)),
     'adult': ('Adult websites', ('porn',)),
+    'social': ('Social media (Facebook, Instagram, WhatsApp, TikTok, X)', ('facebook', 'whatsapp', 'tiktok', 'twitter')),
 }
 SOURCE = 'https://raw.githubusercontent.com/blocklistproject/Lists/master/alt-version/{}-nl.txt'
 MAX_DOWNLOAD = 64 * 1024 * 1024

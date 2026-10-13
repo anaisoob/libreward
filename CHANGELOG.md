@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Optional social media category (Facebook, Instagram, WhatsApp, TikTok, X) from The
+  Block List Project. One-time messages after first turning Internet protection on and
+  when first closing LibreWard while it is on explain that blocking keeps working.
+
 - Internet protection is now a system setting, like the firewall: the filter keeps
   running when LibreWard is closed and after restarts, until turned off in LibreWard.
   Removes the app heartbeat, login autostart (old entries are deleted), the close

@@ -1004,6 +1004,16 @@ class LinuxBackend(PlatformBackend):
         code, output = self._firewall_query([resolvectl, 'dns'], timeout=5)
         return code == 0 and filter_is_global(output)
 
+    def internet_protection_enabled(self):
+        from .linux_dns_service import STATE
+        import json
+        try:
+            with open(STATE, 'rb') as stream:
+                state = json.loads(stream.read(4097))
+        except (OSError, ValueError):
+            return False
+        return isinstance(state, dict) and state.get('active') is True
+
     def autostart_path(self):
         return Path(os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.config') / 'autostart' / 'libreward.desktop'
 

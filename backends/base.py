@@ -255,5 +255,9 @@ class PlatformBackend(ABC):
         """Stop a privileged helper that is still waiting for the password; True if stopped."""
         return False
 
+    def internet_protection_enabled(self):
+        """Cheap check, without probing DNS: is the protection service switched on?"""
+        return False
+
     def remove_autostart(self):
         """Remove a login autostart entry written by an earlier LibreWard version."""

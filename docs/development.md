@@ -67,10 +67,9 @@ Verify on Windows and a desktop Linux installation:
 - Linux Internet protection in a disposable VM: enable, cancel authorization,
   allow/block an exact domain, update lists, pause, restart, and check IPv4/IPv6
   resolution. Verify VPN/DNS connection settings remain intact.
-  On NetworkManager/systemd, check that closing the GUI turns protection off and
-  removes the autostart entry, that a reboot with protection on restores it and
-  opens LibreWard minimized at login, that killing the GUI restores normal DNS
-  after about two minutes and the next start offers to turn protection on,
+  On NetworkManager/systemd, check that protection keeps working after closing the
+  GUI, logging out and rebooting, that the first turn-on and first close show their
+  one-time messages, that Turn off restores normal DNS,
   the filter behind systemd-resolved on Ubuntu Desktop and Fedora (each DNS
   service, TLS and blocked port 853, pause, close, reboot, killed GUI, unreachable
   service rollback, VPN split DNS and full-tunnel VPN), repeated enable/pause, and intentional
