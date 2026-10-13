@@ -641,10 +641,19 @@ class QtMainWindow(QMainWindow):
         self.log.clear()
 
     def show_scan_report(self):
-        if self.last_result is not None:
-            if ScanReportDialog(self, self.last_result).exec() == ScanReportDialog.QUARANTINE_ALL:
-                self.results.selectAll()
-                self.handle_findings('quarantine')
+        if self.last_result is None:
+            return
+        try:
+            report = ScanReportDialog(self, self.last_result)
+        except Exception:
+            # Never leave a finished scan without a visible outcome.
+            import traceback
+            self.log.appendPlainText('Scan report could not be shown:\n' + traceback.format_exc())
+            QMessageBox.information(self, 'Scan report', scan_outcome(self.last_result) + '.')
+            return
+        if report.exec() == ScanReportDialog.QUARANTINE_ALL:
+            self.results.selectAll()
+            self.handle_findings('quarantine')
 
     def build_quarantine_page(self):
         page, layout = self.page("Quarantine", "Review isolated files and restore trusted items to their original locations.")

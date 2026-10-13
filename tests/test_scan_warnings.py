@@ -131,3 +131,36 @@ class WarningTests(unittest.TestCase):
             self.assertIn('MaxThreads 4', config)  # half of 8 cores, also for larger files
         finally:
             session.close()
+
+
+class RealResultReportTests(unittest.TestCase):
+    """The report must accept the exact result a scan produces (flags, not lists)."""
+    def scan_result(self, output):
+        with tempfile.TemporaryDirectory() as tmp:
+            process = SimpleNamespace(stdout=io.StringIO(output.format(root=tmp)), poll=lambda: 1, wait=lambda: 1)
+            backend = SimpleNamespace(start_process=lambda *args, **kwargs: process,
+                                      scan_may_need_admin=lambda roots: False)
+            service = ScanService()
+            with patch('core.scan_service.backend', backend), \
+                 patch('core.scan_service.build_clamscan_command', return_value=['clamscan']):
+                service.run(tmp, [], 'clamscan')
+            return service.result
+
+    def test_locked_files_and_threats_reach_the_plain_report(self):
+        from core.scan_report import friendly_report, report_summary
+        result = self.scan_result(
+            '{root}/locked.db: Can\'t open file or directory ERROR\n'
+            '{root}/eicar.com: Eicar-Test-Signature FOUND\n'
+            '----------- SCAN SUMMARY -----------\nInfected files: 1\nScanned files: 2\n')
+        self.assertIs(result['warnings'], True)
+        summary = report_summary(result)
+        self.assertEqual(summary['title'], '1 threat found')
+        self.assertEqual(summary['threats'][0][0], 'eicar.com')
+        self.assertIn('could not be checked', summary['note'])
+        friendly_report(result)
+        warning_report(result)
+
+    def test_clean_scan_reaches_the_plain_report(self):
+        from core.scan_report import report_summary
+        result = self.scan_result('----------- SCAN SUMMARY -----------\nInfected files: 0\nScanned files: 0\n')
+        self.assertEqual(report_summary(result)['title'], 'No threats found')

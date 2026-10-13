@@ -25,7 +25,8 @@ def report_summary(result):
     """What a person needs first: outcome, one sentence, threats and a calm note."""
     import os
     infected = result.get('infected', [])
-    incomplete = sum(result.get('warning_counts', {}).values()) or len(result.get('warnings', []))
+    # `warnings` is a flag in scan results; the counts live in warning_counts.
+    incomplete = sum(result.get('warning_counts', {}).values()) or result.get('warning_count') or 0
     checked = f"{result.get('scanned', 0):,} files checked"
     if result.get('duration_seconds') is not None:
         checked += f" in {human_duration(result['duration_seconds'])}"
@@ -44,9 +45,10 @@ def report_summary(result):
         title = 'No threats found'
         subtitle = checked + '.'
     note = ''
-    if incomplete:
-        note = (f'{incomplete:,} file{"s" if incomplete != 1 else ""} could not be checked, usually because '
-                'they were in use, protected or too large. This is common and does not mean they are infected.')
+    if incomplete or result.get('warnings'):
+        files = f'{incomplete:,} file{"s" if incomplete != 1 else ""}' if incomplete else 'Some files'
+        note = (f'{files} could not be checked, usually because they were in use, protected or too large. '
+                'This is common and does not mean they are infected.')
     threats = [(os.path.basename(path) or path, os.path.dirname(path), threat) for path, threat in infected]
     return {'severity': severity, 'title': title, 'subtitle': subtitle, 'note': note, 'threats': threats}
 

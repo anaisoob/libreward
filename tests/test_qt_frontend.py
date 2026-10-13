@@ -909,6 +909,28 @@ class QtFrontendTests(unittest.TestCase):
         self.assertNotIn('database_auto_update_at', self.window.config)
         self.assertTrue(self.window.auto_update_database.isChecked())
 
+    def test_scan_report_opens_for_a_result_with_warnings(self):
+        from ui.dialogs import ScanReportDialog
+        # As produced by ScanService: flags plus separate counts (Fedora quick scan).
+        result = {'infected': [], 'infected_found': False, 'total': 900, 'scanned': 880, 'stopped': False,
+                  'errors': False, 'warnings': True, 'summary_lines': [], 'parallel': True,
+                  'warning_counts': {'access': 20}, 'warning_count': 20,
+                  'warning_details': [{'path': '/home/u/.cache/a', 'reason': 'Permission denied', 'category': 'access'}],
+                  'scan_profile': 'standard', 'duration_seconds': 42.0, 'workers': 4, 'uses_system_daemon': False}
+        dialog = ScanReportDialog(self.window, result)
+        texts = [label.text() for label in dialog.findChildren(QLabel)]
+        self.assertIn('No threats found', texts)
+        self.assertTrue(any('20 files could not be checked' in text for text in texts))
+        dialog.deleteLater()
+
+    def test_a_broken_report_still_shows_the_outcome(self):
+        self.window.last_result = {'infected': [], 'warnings': False, 'errors': False, 'scanned': 1}
+        info = self.patch('ui.main_window.QMessageBox.information')
+        with patch('ui.main_window.ScanReportDialog', side_effect=TypeError('broken')):
+            self.window.show_scan_report()
+        self.assertEqual(info.call_args.args[2], 'No threats found.')
+        self.assertIn('TypeError: broken', self.window.log.toPlainText())
+
     def test_closing_never_touches_internet_protection(self):
         from PySide6.QtGui import QCloseEvent
         inspect = self.patch('ui.main_window.backend.inspect_internet_protection')

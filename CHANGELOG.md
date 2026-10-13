@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fix the scan report never opening when some files could not be checked (as on every
+  quick scan): it counted the warnings flag as a list. A report failure now still shows
+  the scan outcome and logs the details.
+
 - Optional social media category (Facebook, Instagram, WhatsApp, TikTok, X) from The
   Block List Project. One-time messages after first turning Internet protection on and
   when first closing LibreWard while it is on explain that blocking keeps working.
