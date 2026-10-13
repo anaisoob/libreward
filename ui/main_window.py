@@ -1525,11 +1525,12 @@ class QtMainWindow(QMainWindow):
 
 
 def run(minimized=False):
+    # Before the application exists: lets Wayland compositors match the window to
+    # libreward.desktop, and Qt registers this app ID with the desktop portal once.
+    QApplication.setDesktopFileName('libreward')
     app = QApplication([])
     app.setApplicationName(APP_NAME)
     app.setOrganizationName(APP_NAME)
-    # Lets Wayland compositors match the window to libreward.desktop and its icon.
-    app.setDesktopFileName('libreward')
     app.setStyle("Fusion")
     window = QtMainWindow()
     # Started at login, LibreWard protects from the tray (or minimized without one).

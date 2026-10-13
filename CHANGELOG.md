@@ -2,9 +2,12 @@
 
 ## Unreleased
 
-- Fedora: update the virus database although `/etc/freshclam.conf` still has its
-  `Example` line (a temporary copy without it is used; the system file is unchanged),
-  and find ClamAV tools in sbin, so installed ClamAV is no longer offered again.
+- Fedora: update the virus database and recognize freshclam although
+  `/etc/freshclam.conf` still has its `Example` line (freshclam rejects it even for
+  `--version`; a temporary copy without it is used and the system file is unchanged).
+  Install freshclam by file path, since Fedora renamed `clamav-update` to
+  `clamav-freshclam`, and find ClamAV tools in sbin, so installed ClamAV is no longer
+  offered again. Register the app ID with the desktop portal only once.
 - Simplify the antivirus setup window to one sentence and one next step, with details
   folded away, and drop the second confirmation after choosing Install.
 

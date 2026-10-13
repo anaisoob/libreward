@@ -59,8 +59,8 @@ LibreWard checks availability every ten seconds for up to ten minutes of checks.
 If it remains unavailable, inspect the system FreshClam service log.
 
 Fedora's `/etc/freshclam.conf` contains an active `Example` line until an
-administrator removes it, and freshclam refuses to run with it. LibreWard then
-runs freshclam with a temporary copy of the configuration without that line,
+administrator removes it, and freshclam refuses to run with it, even for
+`freshclam --version`. LibreWard then checks and runs freshclam with a temporary copy of the configuration without that line,
 keeping every other distribution setting (for example `DatabaseOwner clamupdate`)
 and leaving `/etc/freshclam.conf` unchanged. Fedora's own scheduled updater
 (`clamav-freshclam.service`) still needs the line removed. ClamAV tools in

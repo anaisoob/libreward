@@ -136,3 +136,32 @@ class FedoraClamAVTests(unittest.TestCase):
             self.assertEqual(backend.freshclam_privileged_command('/usr/bin/freshclam')[:3], ['/usr/bin/python3', '-I', '-c'])
         with patch('backends.linux.freshclam_example_config', return_value=None):
             self.assertEqual(backend.freshclam_privileged_command('/usr/bin/freshclam'), ['/usr/bin/freshclam'])
+
+
+class FreshclamVersionTests(unittest.TestCase):
+    def test_version_check_survives_fedoras_unedited_config(self):
+        import sys
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory, 'freshclam.conf')
+            config.write_text('# Comment out or remove the line below.\nExample\nDatabaseOwner clamupdate\n')
+            fake = Path(directory, 'freshclam')
+            # Like Fedora's freshclam: --version parses the config and rejects `Example`.
+            fake.write_text(f'#!{sys.executable}\nimport sys\nargs = sys.argv[1:]\n'
+                            f'path = args[1] if args[:1] == ["--config-file"] else {str(config)!r}\n'
+                            'if any(line.strip() == "Example" for line in open(path)):\n'
+                            '    print("ERROR: Can\'t open/parse the config file " + path); sys.exit(1)\n'
+                            'print("ClamAV 1.4.3/27800/Tue Oct 13 2026")\n')
+            fake.chmod(0o755)
+            backend = LinuxBackend.__new__(LinuxBackend)
+            with patch('backends.linux.freshclam_example_config', return_value=str(config)):
+                self.assertIsNone(backend.get_clamav_version(str(fake)))
+                self.assertEqual(backend.get_freshclam_version(str(fake)), 'ClamAV 1.4.3/27800/Tue Oct 13 2026')
+            self.assertIn('\nExample\n', config.read_text())
+
+    def test_dnf_asks_for_freshclam_by_file_path(self):
+        backend = LinuxBackend.__new__(LinuxBackend)
+        with patch.object(backend, 'distro_info', return_value={'pkg_manager': 'dnf'}):
+            _, spec = backend._clamav_install_spec()
+        self.assertEqual(spec[2], ['clamav', '/usr/bin/freshclam', 'clamd'])

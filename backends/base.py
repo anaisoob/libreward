@@ -179,6 +179,9 @@ class PlatformBackend(ABC):
         """Local daemon endpoints: ('unix', path) or ('tcp', (host, port))."""
         return [("tcp", ("127.0.0.1", 3310))]
 
+    def get_freshclam_version(self, freshclam_path):
+        return self.get_clamav_version(freshclam_path)
+
     def freshclam_privileged_command(self, freshclam_path):
         """Command run as root to update a system virus database."""
         return [freshclam_path]

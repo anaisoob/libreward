@@ -88,7 +88,7 @@ def check_startup(log: Callable[[str], None] | None = None) -> StartupStatus:
     # Freshclam check
     freshclam_ok = False
     if runtime.freshclam:
-        fc_version = backend.get_clamav_version(runtime.freshclam)
+        fc_version = backend.get_freshclam_version(runtime.freshclam)
         freshclam_ok = fc_version is not None
         if log:
             if freshclam_ok:

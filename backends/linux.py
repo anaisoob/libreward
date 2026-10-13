@@ -34,6 +34,12 @@ def _parse_version(raw: str | None) -> str | None:
 FRESHCLAM_CONFIGS = ('/etc/freshclam.conf', '/etc/clamav/freshclam.conf')
 
 
+def config_without_example(path):
+    """Lines of a ClamAV config file without its active `Example` line."""
+    with open(path, 'rb') as stream:
+        return [line for line in stream.read(1024 * 1024).splitlines(keepends=True) if line.strip() != b'Example']
+
+
 def freshclam_example_config(paths=FRESHCLAM_CONFIGS):
     """Path of the system freshclam config if it still has an active `Example` line."""
     for path in paths:
@@ -205,6 +211,24 @@ class LinuxBackend(PlatformBackend):
             return [python, '-I', '-c', FRESHCLAM_HELPER, freshclam_path]
         return [freshclam_path]
 
+    def get_freshclam_version(self, freshclam_path):
+        # freshclam parses its config even for --version, so Fedora's unedited
+        # /etc/freshclam.conf fails it. Check with a private copy, as updates do.
+        version = self.get_clamav_version(freshclam_path)
+        config = None if version else freshclam_example_config()
+        if config is None:
+            return version
+        import tempfile
+        try:
+            with tempfile.NamedTemporaryFile('wb', prefix='libreward-freshclam-', suffix='.conf') as copy:
+                copy.writelines(config_without_example(config))
+                copy.flush()
+                result = subprocess.run([freshclam_path, '--config-file', copy.name, '--version'],
+                                        capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return result.stdout.strip().split('\n')[0] if result.returncode == 0 and result.stdout.strip() else None
+
     def detect_clamav_runtime(self) -> RuntimeInfo:
         """Find ClamAV via system PATH and the standard sbin directories."""
         cs = self._which_clamav("clamscan")
@@ -254,7 +278,7 @@ class LinuxBackend(PlatformBackend):
                 "Please install ClamAV using your system's package manager.\n"
                 "Common package names:\n"
                 "  • Debian/Ubuntu:  clamav clamav-freshclam clamav-daemon\n"
-                "  • Fedora/RHEL:    clamav clamav-update clamd\n"
+                "  • Fedora/RHEL:    clamav clamav-freshclam clamd\n"
                 "  • Arch/Manjaro:   clamav\n"
                 "  • openSUSE:       clamav\n"
                 "  • Gentoo:         app-antivirus/clamav\n"
@@ -423,17 +447,17 @@ class LinuxBackend(PlatformBackend):
             },
             "fedora": {
                 "pkg_manager": "dnf",
-                "install_cmd": "sudo dnf install clamav clamav-update clamd",
+                "install_cmd": "sudo dnf install clamav /usr/bin/freshclam clamd",
                 "update_cmd": "sudo dnf upgrade",
             },
             "rhel": {
                 "pkg_manager": "dnf",
-                "install_cmd": "sudo dnf install clamav clamav-update clamd",
+                "install_cmd": "sudo dnf install clamav /usr/bin/freshclam clamd",
                 "update_cmd": "sudo dnf upgrade",
             },
             "centos": {
                 "pkg_manager": "dnf",
-                "install_cmd": "sudo dnf install clamav clamav-update clamd",
+                "install_cmd": "sudo dnf install clamav /usr/bin/freshclam clamd",
                 "update_cmd": "sudo dnf upgrade",
             },
             "opensuse-tumbleweed": {
@@ -848,7 +872,9 @@ class LinuxBackend(PlatformBackend):
         specs = {
             'apt': ('apt-get', ['install', '--assume-yes', '--no-remove'], ['clamav', 'clamav-freshclam', 'clamav-daemon']),
             'pacman': ('pacman', ['-S', '--needed', '--noconfirm'], ['clamav']),
-            'dnf': ('dnf', ['install', '--assumeyes'], ['clamav', 'clamav-update', 'clamd']),
+            # Fedora renamed clamav-update to clamav-freshclam (Fedora 39); the file
+            # path lets dnf choose whichever package provides freshclam.
+            'dnf': ('dnf', ['install', '--assumeyes'], ['clamav', '/usr/bin/freshclam', 'clamd']),
             'apk': ('apk', ['add'], ['clamav', 'clamav-daemon', 'freshclam']),
             'zypper': ('zypper', ['--non-interactive', 'install', '--no-recommends'], ['clamav']),
         }
