@@ -165,24 +165,34 @@ class AuthorizationHelpDialog(QDialog):
 
 
 class UpdateProgressDialog(QDialog):
-    """Application-modal progress display; callers update it on the GUI thread."""
+    """Title, one status line and progress; the technical log stays under Show details."""
     def __init__(self, parent, title):
         super().__init__(parent)
         self.setWindowTitle(title)
         self.setWindowModality(Qt.WindowModality.ApplicationModal)
-        self.resize(640, 400)
+        self.setMinimumWidth(460)
         self.active = True
         layout = QVBoxLayout(self)
-        self.status = QLabel('Operation in progress…')
+        heading = QLabel(title)
+        heading.setObjectName('sectionTitle')
+        layout.addWidget(heading)
+        self.status = QLabel('Please wait. This can take a few minutes.')
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 0)
+        self.progress.setTextVisible(False)
+        layout.addWidget(self.progress)
+        self.details_button = QPushButton('Show details')
+        self.details_button.setFlat(True)
+        self.details_button.clicked.connect(self.toggle_details)
+        layout.addWidget(self.details_button, 0, Qt.AlignmentFlag.AlignLeft)
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
         self.log.setMaximumBlockCount(5000)
-        layout.addWidget(self.log)
-        self.progress = QProgressBar()
-        self.progress.setRange(0, 0)
-        layout.addWidget(self.progress)
+        self.log.setMinimumHeight(220)
+        self.log.hide()
+        layout.addWidget(self.log, 1)
         self.cancel_button = QPushButton('Cancel')
         self.cancel_button.hide()
         layout.addWidget(self.cancel_button)
@@ -191,6 +201,11 @@ class UpdateProgressDialog(QDialog):
         self.close_button.clicked.connect(self.accept)
         layout.addWidget(self.close_button)
 
+    def toggle_details(self):
+        self.log.setVisible(not self.log.isVisible())
+        self.details_button.setText('Hide details' if self.log.isVisible() else 'Show details')
+        self.adjustSize()
+
     def enable_cancel(self, callback):
         """Offer cancelling while the operation can still stop safely."""
         self.cancel_button.clicked.connect(callback)
@@ -198,6 +213,11 @@ class UpdateProgressDialog(QDialog):
 
     def append(self, message):
         self.log.appendPlainText(message.rstrip())
+        # Tools such as freshclam report percentages; use them when present.
+        import re
+        match = re.search(r'(\d{1,3})(?:\.\d+)?%', message)
+        if self.active and match and int(match.group(1)) <= 100:
+            self.set_progress(int(match.group(1)), 100)
 
     def set_progress(self, done, total):
         if total:
@@ -209,13 +229,14 @@ class UpdateProgressDialog(QDialog):
     def finish(self, success, message=''):
         self.active = False
         self.cancel_button.hide()
-        self.status.setText('Completed successfully. Review the details below.' if success else
-                            'Operation failed. Review the error below.')
+        # One plain line; the full output stays under Show details.
+        summary = (message or '').strip().splitlines()[0] if (message or '').strip() else ''
+        self.status.setText('Done.' if success else
+                            'This did not finish. ' + (summary or 'Show details for more information.'))
         if message:
-            self.append(message)
+            self.log.appendPlainText(message.rstrip())
         self.progress.setRange(0, 100)
-        if success:
-            self.progress.setValue(100)
+        self.progress.setValue(100 if success else 0)
         self.close_button.setEnabled(True)
         self.close_button.setFocus()
 

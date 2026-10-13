@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Dark theme for context menus and other popups (the theme now applies to the whole
+  application, with a matching palette). Progress windows show a title, one status line
+  and progress; the technical log and the scan page event log are under Show details.
+
 - Refresh LibreWard's own virus database automatically in the background while the
   app runs (every 12 hours, 2 hours after a failure), without a window or password.
   Can be turned off in Settings.

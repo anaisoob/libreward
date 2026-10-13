@@ -29,7 +29,7 @@ from core.updater import check_for_updates, perform_update
 from excludes import get_active_exclude_patterns, get_common_excludes
 from .dialogs import ClamAVConsentDialog, UpdateProgressDialog, ScanReportDialog, AntivirusSetupDialog, AuthorizationHelpDialog
 from .firewall_dialog import FirewallRuleDialog
-from .theme import stylesheet, navigation_icon, tray_icon
+from .theme import palette, stylesheet, navigation_icon, tray_icon
 from .widgets import ElidedPathLabel, BusyNavigationButton
 
 
@@ -755,10 +755,17 @@ class QtMainWindow(QMainWindow):
         self.report_button.clicked.connect(self.show_scan_report)
         row.addWidget(self.report_button)
         log_box.addLayout(row)
+        # Technical messages stay folded away; results and reports are shown elsewhere.
+        self.log_toggle = QPushButton('Show details')
+        self.log_toggle.setFlat(True)
+        log_box.addWidget(self.log_toggle, 0, Qt.AlignmentFlag.AlignLeft)
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
         self.log.setMaximumBlockCount(10000)
         self.log.setPlaceholderText("Scan events and update messages will appear here.")
+        self.log.hide()
+        self.log_toggle.clicked.connect(lambda: (self.log.setVisible(not self.log.isVisible()),
+                                                 self.log_toggle.setText('Hide details' if self.log.isVisible() else 'Show details')))
         log_box.addWidget(self.log)
         self.scan_panels.addWidget(log_card)
         self.scan_panels.setChildrenCollapsible(False)
@@ -944,7 +951,11 @@ class QtMainWindow(QMainWindow):
 
     def apply_theme(self, theme):
         dark = theme == "dark" or (theme == "system" and QApplication.instance().styleHints().colorScheme() == Qt.ColorScheme.Dark)
-        self.setStyleSheet(stylesheet(dark))
+        # Application-wide: context menus and other popups are separate windows
+        # that would otherwise keep the system's light colours in the dark theme.
+        app = QApplication.instance()
+        app.setPalette(palette(dark))
+        app.setStyleSheet(stylesheet(dark))
         for key, button in self.nav_buttons.items():
             button.setIcon(navigation_icon(key, "#92b6a3" if dark else "#4e685a"))
         self.update()
@@ -1154,7 +1165,7 @@ class QtMainWindow(QMainWindow):
             success, _ = result
             pending = getattr(result, 'pending', False)
             if not success and not pending:
-                raise RuntimeError("Database update failed. See the log.")
+                raise RuntimeError("The virus database could not be downloaded. Check the internet connection and try again.")
             return {'status': self.check_runtime(), 'pending': pending}
 
         self.start_task("database", run_update, title="Update virus database", on_done=self.database_update_finished)

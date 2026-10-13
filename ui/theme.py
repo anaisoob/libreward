@@ -90,7 +90,33 @@ def stylesheet(dark):
     QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}
     QSplitter::handle {{ background: transparent; height: 10px; }}
     QToolTip {{ background: {c['surface']}; color: {c['text']}; border: 1px solid {c['border']}; padding: 6px; }}
+    QMenu {{ background: {c['surface']}; color: {c['text']}; border: 1px solid {c['border']}; padding: 4px; }}
+    QMenu::item {{ padding: 6px 22px 6px 14px; border-radius: 5px; background: transparent; }}
+    QMenu::item:selected {{ background: {c['selected']}; color: {c['text']}; }}
+    QMenu::item:disabled {{ color: {c['muted']}; }}
+    QMenu::separator {{ height: 1px; background: {c['border']}; margin: 4px 8px; }}
     '''
+
+
+def palette(dark):
+    """Fusion palette matching the stylesheet, for popups and widgets it does not cover."""
+    from PySide6.QtGui import QPalette
+    c = dict(window='#101713', base='#142019', alternate='#19251e', text='#edf5ef', muted='#91a99a',
+             button='#1b2820', highlight='#278359') if dark else dict(
+             window='#f3f7f4', base='#ffffff', alternate='#f7faf8', text='#18241d', muted='#5d7466',
+             button='#ffffff', highlight='#278359')
+    result = QPalette()
+    roles = QPalette.ColorRole
+    for role, key in ((roles.Window, 'window'), (roles.Base, 'base'), (roles.AlternateBase, 'alternate'),
+                      (roles.Button, 'button'), (roles.ToolTipBase, 'button'), (roles.Highlight, 'highlight')):
+        result.setColor(role, QColor(c[key]))
+    for role in (roles.WindowText, roles.Text, roles.ButtonText, roles.ToolTipText, roles.BrightText):
+        result.setColor(role, QColor(c['text']))
+    result.setColor(roles.HighlightedText, QColor('#ffffff'))
+    result.setColor(roles.PlaceholderText, QColor(c['muted']))
+    for role in (roles.WindowText, roles.Text, roles.ButtonText):
+        result.setColor(QPalette.ColorGroup.Disabled, role, QColor(c['muted']))
+    return result
 
 
 def navigation_icon(name, color):

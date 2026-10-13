@@ -880,7 +880,7 @@ class QtFrontendTests(unittest.TestCase):
         dialog = self.window.findChildren(UpdateProgressDialog)[-1]
         self.assertTrue(dialog.isVisible())
         self.assertTrue(dialog.close_button.isEnabled())
-        self.assertIn('successfully', dialog.status.text())
+        self.assertEqual(dialog.status.text(), 'Done.')
         callback.assert_not_called()
         dialog.close()
         callback.assert_called_once_with('result')
@@ -1055,6 +1055,28 @@ class QtFrontendTests(unittest.TestCase):
         self.window.auto_database_update_finished(False, True)
         self.assertNotIn('database_auto_update_at', self.window.config)
         self.assertTrue(self.window.auto_update_database.isChecked())
+
+    def test_progress_window_shows_progress_not_the_log(self):
+        dialog = UpdateProgressDialog(self.window, 'Update virus database')
+        self.assertTrue(dialog.log.isHidden())
+        dialog.append('Downloading daily.cvd [=====>    ] 42%\n')
+        self.assertEqual(dialog.progress.value(), 42)
+        dialog.toggle_details()
+        self.assertFalse(dialog.log.isHidden())
+        self.assertIn('daily.cvd', dialog.log.toPlainText())
+        dialog.finish(False, 'The virus database could not be downloaded.\nTraceback details')
+        self.assertEqual(dialog.status.text(), 'This did not finish. The virus database could not be downloaded.')
+        dialog.deleteLater()
+
+    def test_dark_theme_covers_context_menus(self):
+        from PySide6.QtGui import QPalette
+        self.window.apply_theme('dark')
+        app = QApplication.instance()
+        self.assertIn('QMenu {', app.styleSheet())
+        self.assertEqual(app.palette().color(QPalette.ColorRole.Window).name(), '#101713')
+        self.assertTrue(self.window.log.isHidden())
+        self.window.log_toggle.click()
+        self.assertFalse(self.window.log.isHidden())
 
     def test_package_authorization_failure_shows_help_after_report_close(self):
         from core.authorization import AuthorizationError, PackageInstallPlan
