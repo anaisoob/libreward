@@ -1463,7 +1463,8 @@ class QtMainWindow(QMainWindow):
                     callback(payload)
             else:
                 self.set_status("Operation failed", "danger")
-                if completed_operation.startswith('internet-'):
+                cancelled = isinstance(payload, AuthorizationError) and payload.kind == 'cancelled'
+                if completed_operation.startswith('internet-') and not cancelled:
                     self.internet_page.unknown()
                 if completed_operation in ('internet-exit-check', 'internet-exit'):
                     self.log.appendPlainText(str(payload))

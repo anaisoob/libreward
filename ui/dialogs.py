@@ -141,10 +141,18 @@ class UpdateProgressDialog(QDialog):
         self.progress = QProgressBar()
         self.progress.setRange(0, 0)
         layout.addWidget(self.progress)
+        self.cancel_button = QPushButton('Cancel')
+        self.cancel_button.hide()
+        layout.addWidget(self.cancel_button)
         self.close_button = QPushButton("Close")
         self.close_button.setEnabled(False)
         self.close_button.clicked.connect(self.accept)
         layout.addWidget(self.close_button)
+
+    def enable_cancel(self, callback):
+        """Offer cancelling while the operation can still stop safely."""
+        self.cancel_button.clicked.connect(callback)
+        self.cancel_button.show()
 
     def append(self, message):
         self.log.appendPlainText(message.rstrip())
@@ -158,6 +166,7 @@ class UpdateProgressDialog(QDialog):
 
     def finish(self, success, message=''):
         self.active = False
+        self.cancel_button.hide()
         self.status.setText('Completed successfully. Review the details below.' if success else
                             'Operation failed. Review the error below.')
         if message:

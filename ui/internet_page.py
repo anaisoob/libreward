@@ -1,13 +1,16 @@
 """Plain-language domain protection UI; system work belongs to backends."""
+import threading
+
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QHBoxLayout, QLineEdit, QListWidget, QMessageBox,
     QScrollArea, QVBoxLayout, QWidget,
 )
 from backends import backend
+from core.authorization import AuthorizationError
 from config import save_config
 from core.dns_providers import PROVIDERS
-from core.internet import CATEGORIES, DiskDomainLists as DomainLists, normalize_domain, preferences
+from core.internet import CATEGORIES, DiskDomainLists as DomainLists, internet_available, normalize_domain, preferences
 
 
 class InternetProtectionPage:
@@ -15,6 +18,11 @@ class InternetProtectionPage:
         self.window = window
         self.state = None
         self.pending = False
+        self.recovery_noticed = False
+        # Cancelling stops before the system change starts or while authorization is pending.
+        self.cancel_lock = threading.Lock()
+        self.cancel_requested = False
+        self.backend_started = False
         self.store = DomainLists(backend.data_dir())
         self.page, outer = window.page('Internet protection', 'Block connections to unwanted website domains.')
         self.page.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -277,8 +285,12 @@ class InternetProtectionPage:
 
     def show_state(self, state):
         self.state = state
-        if state.get('recovered'):
+        # Say once that the filter stopped; later status checks keep other notices.
+        if state.get('recovered') and not state.get('active') and not self.recovery_noticed:
+            self.recovery_noticed = True
             self.notice.setText('The filter stopped. Normal internet access was restored automatically. You can enable protection again.')
+        elif state.get('active'):
+            self.recovery_noticed = False
         active = state.get('active', False)
         supported = state.get('supported', False)
         public = self.public_mode()
@@ -378,6 +390,9 @@ class InternetProtectionPage:
             QMessageBox.warning(self.window, 'Settings', str(exc))
             return
         def work():
+            if not internet_available():
+                raise ValueError('This computer is not connected to the internet. Connect, then try again. '
+                                 'No settings were changed.')
             available = set(self.store.load()['lists'])
             if any(key not in available for key in settings['categories']):
                 self.store.update(settings['categories'], self.window.events.put)
@@ -386,11 +401,44 @@ class InternetProtectionPage:
                 if not len(domains):
                     raise ValueError('No domains remain to block after your allowed websites were applied.')
                 self.window.events.put(f'Applying {len(domains):,} blocked domains. Waiting for system authorization…\n')
+                self.start_system_change()
                 state = backend.apply_internet_protection(
                     domains, provider=settings['provider'] if self.public_mode() else None)
             self.window.events.put(f"Applied {state['count']:,} exact-domain blocks with the local filter.\n")
             return state
-        self.window.start_task('internet-apply', work, title='Apply domain protection', on_done=self.applied)
+        self.reset_cancel()
+        if self.window.start_task('internet-apply', work, title='Apply domain protection', on_done=self.applied):
+            self.offer_cancel()
+
+    def reset_cancel(self):
+        # Before the worker starts, so its checkpoint never sees a stale request.
+        with self.cancel_lock:
+            self.cancel_requested = self.backend_started = False
+        backend.reset_cancellation()
+
+    def start_system_change(self):
+        """Worker checkpoint: honour a cancel request made before the system change."""
+        with self.cancel_lock:
+            if self.cancel_requested:
+                raise AuthorizationError('cancelled', 'Cancelled. No changes were made.')
+            self.backend_started = True
+
+    def offer_cancel(self):
+        dialog = self.window.update_dialog
+        if dialog is None:
+            return
+
+        def cancel():
+            with self.cancel_lock:
+                before_change = not self.backend_started
+                self.cancel_requested = before_change
+            if before_change or backend.cancel_authorization():
+                dialog.status.setText('Cancelling…')
+            else:
+                dialog.status.setText('Authorization was already given. LibreWard is finishing the change safely '
+                                      'and cannot stop it now.')
+            dialog.cancel_button.setEnabled(False)
+        dialog.enable_cancel(cancel)
 
     def applied(self, state):
         self.show_state(state)
@@ -408,8 +456,12 @@ class InternetProtectionPage:
         self.window.privileged_terminal_commands = ''
         if not self.window.ensure_system_authorization():
             return
-        self.window.start_task('internet-pause', lambda: backend.apply_internet_protection([]),
-                               title='Pause domain protection', on_done=self.paused)
+        def work():
+            self.start_system_change()
+            return backend.apply_internet_protection([])
+        self.reset_cancel()
+        if self.window.start_task('internet-pause', work, title='Pause domain protection', on_done=self.paused):
+            self.offer_cancel()
 
     def paused(self, state):
         self.show_state(state)

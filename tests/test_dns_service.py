@@ -153,6 +153,13 @@ class InstallerTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'did not release'):
                 self.ns_real['wait_for_dns_port'](3)
 
+    def test_unreachable_websites_are_explained_and_rolled_back(self):
+        self.ns['probe'].side_effect = RuntimeError('Local DNS health check failed.')
+        with self.assertRaisesRegex(RuntimeError, 'internet connection'):
+            self.apply()
+        for name in ('CONF', 'SETUP_CONF', 'DATABASE', 'STATE'):
+            self.assertFalse(Path(self.mapping[name]).exists(), name)
+
     def test_bad_records_do_not_change_network_configuration(self):
         for data, count in ((b'a.example.org\n', 2), (b'a.example.org\na.example.org\n', 2),
                             (b'127.0.0.1\n', 1), (b'bad.local\n', 1), (b'a.org\nextra.org\n', 1)):

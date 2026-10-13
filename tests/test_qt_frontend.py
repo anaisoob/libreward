@@ -41,6 +41,7 @@ class QtFrontendTests(unittest.TestCase):
         # Never touch the developer's login autostart or send DNS heartbeats.
         self.autostart = self.patch('ui.internet_page.backend.set_autostart')
         self.keepalive = self.patch('ui.internet_page.backend.internet_protection_keepalive')
+        self.online = self.patch('ui.internet_page.internet_available', return_value=True)
         from core.authorization import AuthorizationStatus
         self.patch('ui.main_window.backend.authorization_status', return_value=AuthorizationStatus(True, 'System dialog available'))
         self.patch('ui.main_window.database_summary', return_value='Database ready')
@@ -169,6 +170,69 @@ class QtFrontendTests(unittest.TestCase):
             self.assertTrue(page.state['active'])
             self.assertEqual(self.window.config['internet_protection']['provider'], 'adguard-family')
             self.assertTrue(self.window.config['internet_protection_on'])
+
+    def test_offline_apply_explains_and_changes_nothing(self):
+        page = self.window.internet_page
+        page.show_state({'supported': True, 'active': False, 'count': 0, 'engine': 'sqlite-setup', 'mode': 'networkmanager'})
+        self.online.return_value = False
+        apply = self.patch('ui.internet_page.backend.apply_internet_protection')
+        with patch.object(self.window, 'confirm', return_value=True):
+            page.apply()
+            dialog = self.window.update_dialog
+            self.wait_idle()
+        apply.assert_not_called()
+        self.assertIn('not connected to the internet', dialog.log.toPlainText())
+        dialog.accept()
+
+    def test_cancel_before_the_system_change_stops_the_operation(self):
+        page = self.window.internet_page
+        page.show_state({'supported': True, 'active': True, 'count': 1, 'engine': 'sqlite-dns', 'mode': 'networkmanager'})
+        release = threading.Event()
+        self.addCleanup(release.set)
+        apply = self.patch('ui.internet_page.backend.apply_internet_protection')
+        self.patch('ui.internet_page.backend.reset_cancellation')
+        original = page.start_system_change
+        def slow_checkpoint():
+            release.wait(3)
+            original()
+        with patch.object(page, 'start_system_change', side_effect=slow_checkpoint), \
+                patch.object(self.window, 'confirm', return_value=True):
+            page.pause()
+            dialog = self.window.update_dialog
+            self.assertFalse(dialog.cancel_button.isHidden())
+            dialog.cancel_button.click()
+            self.assertEqual(dialog.status.text(), 'Cancelling…')
+            release.set()
+            self.wait_idle()
+        apply.assert_not_called()
+        self.assertIn('Cancelled', dialog.log.toPlainText())
+        self.assertTrue(dialog.cancel_button.isHidden())
+        # A cancelled change keeps the known state instead of "needs checking".
+        self.assertTrue(page.state['active'])
+        dialog.accept()
+
+    def test_cancel_after_authorization_explains_that_the_change_finishes(self):
+        page = self.window.internet_page
+        page.reset_cancel()
+        page.start_system_change()
+        dialog = UpdateProgressDialog(self.window, 'Apply')
+        self.window.update_dialog = dialog
+        self.patch('ui.internet_page.backend.cancel_authorization', return_value=False)
+        page.offer_cancel()
+        dialog.cancel_button.click()
+        self.assertIn('finishing the change safely', dialog.status.text())
+        self.assertFalse(dialog.cancel_button.isEnabled())
+        self.window.update_dialog = None
+        dialog.deleteLater()
+
+    def test_recovered_notice_is_shown_once(self):
+        page = self.window.internet_page
+        recovered = {'supported': True, 'active': False, 'count': 0, 'engine': 'sqlite-setup', 'recovered': True}
+        page.show_state(recovered)
+        self.assertIn('filter stopped', page.notice.text())
+        page.notice.setText('Other notice')
+        page.show_state(recovered)
+        self.assertEqual(page.notice.text(), 'Other notice')
 
     def test_networkmanager_filter_hides_dns_service_choice(self):
         page = self.window.internet_page

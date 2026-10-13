@@ -46,6 +46,28 @@ def normalize_domain(value):
     return value
 
 
+def internet_available(timeout=6):
+    """Whether ordinary names resolve now; checked before asking for authorization."""
+    import socket
+    import threading
+    result = []
+
+    def lookup():
+        for name in ('example.org', 'example.com'):
+            try:
+                socket.getaddrinfo(name, 443, type=socket.SOCK_STREAM)
+            except OSError:
+                continue
+            result.append(True)
+            return
+
+    # getaddrinfo cannot be interrupted; a daemon thread bounds the wait.
+    thread = threading.Thread(target=lookup, daemon=True)
+    thread.start()
+    thread.join(timeout)
+    return bool(result)
+
+
 def preferences(config):
     from .dns_providers import DEFAULT_PROVIDER, PROVIDERS
     value = config.get('internet_protection', {})
@@ -118,7 +140,10 @@ class DiskDomainLists:
                             if len(raw) > 4096 or total > MAX_DOWNLOAD:
                                 raise ValueError('Downloaded list is too large or has invalid lines.')
                             digest.update(raw)
-                            line = raw.decode('utf-8').strip()
+                            try:
+                                line = raw.decode('utf-8').strip()
+                            except UnicodeDecodeError:
+                                continue  # one damaged line must not fail the whole list
                             if line.startswith('#') and len(headers) < 100:
                                 headers.append(line)
                             line = line.split('#', 1)[0].strip()

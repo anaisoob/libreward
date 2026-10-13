@@ -454,7 +454,11 @@ def apply_database(stream, count, mode='networkmanager', provider=None):
                     wait_for_dns_port()
                     systemctl('start', 'libreward-dns.service')
                     query_health(count)
-                    probe(allowed, False)
+                    try:
+                        probe(allowed, False)
+                    except (OSError, RuntimeError) as exc:
+                        raise RuntimeError('Websites could not be reached through the network’s DNS servers. '
+                                           'Check the internet connection and try again.') from exc
                 systemctl('enable', 'libreward-dns.service')
                 write(STATE, json.dumps(dict(state, phase='enabled')).encode())
             else:

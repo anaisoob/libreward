@@ -17,6 +17,18 @@ class DomainTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 normalize_domain(value)
 
+    def test_internet_check_resolves_ordinary_names_with_a_bound(self):
+        from core.internet import internet_available
+        with patch('socket.getaddrinfo', return_value=[('addr',)]):
+            self.assertTrue(internet_available())
+        with patch('socket.getaddrinfo', side_effect=OSError('offline')):
+            self.assertFalse(internet_available())
+        import threading
+        blocked = threading.Event()
+        self.addCleanup(blocked.set)
+        with patch('socket.getaddrinfo', side_effect=lambda *a, **k: blocked.wait(5)):
+            self.assertFalse(internet_available(timeout=0.1))
+
     def test_default_categories_provider_and_invalid_settings(self):
         self.assertEqual(preferences({})['categories'], ['dangerous'])
         self.assertEqual(preferences({})['provider'], 'adguard')
@@ -96,6 +108,14 @@ class DiskDomainListTests(unittest.TestCase):
                     self.assertEqual(stream.read(), b'adult.example.org\nextra.example.org\n')
             with self.assertRaisesRegex(ValueError, 'Download'):
                 store.prepare({'categories': ['ads'], 'blocked': [], 'allowed': []})
+
+    def test_damaged_line_is_skipped_instead_of_failing_the_list(self):
+        from core.internet import DiskDomainLists
+        with tempfile.TemporaryDirectory() as directory:
+            store = DiskDomainLists(directory)
+            with patch('core.internet.urlopen', return_value=self.response(b'good.example.org\nbad\xff.example.org\nnext.example.org\n')):
+                metadata = store.update(['adult'])
+            self.assertEqual(metadata['lists'], {'adult': 2})
 
     def test_failed_download_retains_previous_database(self):
         from core.internet import DiskDomainLists
@@ -249,6 +269,31 @@ class InternetBackendTests(unittest.TestCase):
         local.assert_not_called()
         with self.assertRaises(ValueError):
             backend.apply_internet_protection(['example.org'])
+
+    def test_cancel_stops_pkexec_only_before_authorization(self):
+        from core.authorization import AuthorizationError
+        backend = self.backend()
+        backend.reset_cancellation()
+        # Nothing started yet: the helper is never started.
+        self.assertTrue(backend.cancel_authorization())
+        with patch.object(backend, 'start_process') as start, self.assertRaises(AuthorizationError):
+            backend.start_privileged(['/usr/bin/pkexec'])
+        start.assert_not_called()
+        process = Mock(pid=4321)
+        process.poll.return_value = None
+        with patch.object(backend, 'start_process', return_value=process):
+            backend.start_privileged(['/usr/bin/pkexec'])
+        with patch('backends.linux.os.kill') as kill:
+            self.assertTrue(backend.cancel_authorization())
+        kill.assert_called_once()
+        with self.assertRaisesRegex(AuthorizationError, 'No changes were made'):
+            backend._privileged_finished(process)
+        # Authorized: pkexec runs as root and the signal is refused.
+        with patch.object(backend, 'start_process', return_value=process):
+            backend.start_privileged(['/usr/bin/pkexec'])
+        with patch('backends.linux.os.kill', side_effect=PermissionError):
+            self.assertFalse(backend.cancel_authorization())
+        backend._privileged_finished(process)
 
     def test_authorization_cancellation_is_reported(self):
         from core.authorization import AuthorizationError

@@ -231,6 +231,13 @@ class PlatformBackend(ABC):
     def apply_internet_protection(self, domains, provider=None):
         raise NotImplementedError('Domain protection is currently available on Linux only.')
 
+    def reset_cancellation(self):
+        """Start of a cancellable operation; forget earlier cancel requests."""
+
+    def cancel_authorization(self):
+        """Stop a privileged helper that is still waiting for the password; True if stopped."""
+        return False
+
     def internet_protection_keepalive(self):
         """Tell an app-bound protection service that LibreWard is still open."""
 

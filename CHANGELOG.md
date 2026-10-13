@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Internet protection: check the internet connection before asking for authorization,
+  explain unreachable websites after setup, offer Cancel while authorization is pending,
+  skip single damaged lines in downloaded lists and show the filter-recovered notice once.
+
 - Add Linux Internet protection. Where NetworkManager supports it, a local DNS filter
   checks website names against opt-in Block List Project lists (dangerous sites and
   phishing by default; tracking, ads and adult sites optional) and exact allowed/blocked

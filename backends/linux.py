@@ -62,6 +62,43 @@ class LinuxBackend(PlatformBackend):
         kwargs.setdefault("preexec_fn", os.setsid)
         return subprocess.Popen(cmd, **kwargs)
 
+    def start_privileged(self, cmd, **kwargs):
+        """pkexec process that cancel_authorization can stop until authorization succeeds."""
+        from core.authorization import AuthorizationError
+        if getattr(self, '_cancel_pending', False):
+            self._cancel_pending = False
+            raise AuthorizationError('cancelled', 'Cancelled before authorization. No changes were made.')
+        process = self.start_process(cmd, **kwargs)
+        self._privileged = process
+        return process
+
+    def reset_cancellation(self):
+        self._cancel_pending = False
+        self._cancelled = None
+
+    def cancel_authorization(self):
+        # Before authorization pkexec keeps the user's real UID, so the signal is
+        # allowed. Once authorized it runs the helper as root and the kernel
+        # refuses the signal, so a started DNS change is never interrupted.
+        process = getattr(self, '_privileged', None)
+        if process is None or process.poll() is not None:
+            # Not started yet (still checking the system): do not start it.
+            self._cancel_pending = True
+            return True
+        try:
+            os.kill(process.pid, signal.SIGTERM)
+        except (PermissionError, ProcessLookupError):
+            return False
+        self._cancelled = process
+        return True
+
+    def _privileged_finished(self, process):
+        from core.authorization import AuthorizationError
+        self._privileged = None
+        if getattr(self, '_cancelled', None) is process:
+            self._cancelled = None
+            raise AuthorizationError('cancelled', 'Cancelled before authorization. No changes were made.')
+
     def stop_process(self, process):
         if process.poll() is None:
             os.killpg(os.getpgid(process.pid), signal.SIGTERM)
@@ -859,8 +896,8 @@ class LinuxBackend(PlatformBackend):
         installer = self._trusted_firewall_executable(executable)
         if not installer:
             raise RuntimeError('The package installer is unavailable.')
-        process = self.start_process([self._require_authorizer(), '--disable-internal-agent', installer,
-                                     *options, *packages],
+        process = self.start_privileged([self._require_authorizer(), '--disable-internal-agent', installer,
+                                        *options, *packages],
                                     stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                     text=True, encoding='utf-8', errors='replace')
         # Drain output while waiting. Never terminate a package transaction on a timer.
@@ -868,6 +905,7 @@ class LinuxBackend(PlatformBackend):
         for line in process.stdout or ():
             output = (output + line)[-12000:]
         code = process.wait()
+        self._privileged_finished(process)
         self._check_authorization_exit(code)
         if code or not self._trusted_firewall_executable('dnsmasq'):
             raise RuntimeError('The local DNS component could not be installed. ' + output.strip())
@@ -1029,13 +1067,14 @@ class LinuxBackend(PlatformBackend):
             if prepared is None:
                 payload.write(b'{"version":1,"count":0}\n')
                 payload.seek(0)
-            process = self.start_process([authorizer, '--disable-internal-agent', executables['python3'], '-I', '-c', source,
-                                          *arguments],
+            process = self.start_privileged([authorizer, '--disable-internal-agent', executables['python3'], '-I', '-c', source,
+                                             *arguments],
                                          stdin=payload, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                          text=True, encoding='utf-8', errors='replace')
             # Building the root-owned database is disk work. Do not kill the
             # installer in the middle of its network configuration transaction.
             output, _ = process.communicate()
+        self._privileged_finished(process)
         self._check_authorization_exit(process.returncode)
         if process.returncode:
             raise RuntimeError('Internet protection could not be changed. ' + output.strip())

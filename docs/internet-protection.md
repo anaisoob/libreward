@@ -32,6 +32,12 @@ dnf or zypper. NetworkManager starts its own dnsmasq; the package's system
 service is not enabled. Package installation and service setup may each
 ask for authorization. Passwords go through the system dialog.
 
+Before asking for authorization, LibreWard checks that ordinary names resolve; without
+an internet connection it says so and changes nothing. While the password dialog is
+open, **Cancel** in the progress window stops the request. Once authorization is
+given, the change finishes or rolls back and cannot be cancelled: pkexec then runs
+as root, and the system refuses the stop signal.
+
 Protection works while LibreWard is open (see
 [Protection follows the open app](#protection-follows-the-open-app)). Turning
 protection off restores normal DNS. Setup may briefly interrupt name resolution.
@@ -169,7 +175,7 @@ other operation is running. Counts represent installed domains, not blocked visi
 ## Updates, pause and recovery
 
 **Update protection lists** updates the local cache. Apply protection afterwards
-to use the new lists. Downloads are manual; failed downloads leave the last cache
+to use the new lists. A single undecodable line in a downloaded list is skipped. Downloads are manual; failed downloads leave the last cache
 and active protection alone.
 
 **Pause protection** stops/disables the filter and removes LibreWard's
