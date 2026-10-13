@@ -11,7 +11,7 @@ from unittest.mock import patch
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 try:
     from PySide6.QtCore import QEvent
-    from PySide6.QtWidgets import QApplication, QDialog, QMessageBox, QTableWidgetItem
+    from PySide6.QtWidgets import QApplication, QDialog, QLabel, QMessageBox, QTableWidgetItem
     from ui.main_window import QtMainWindow
     from ui.dialogs import UpdateProgressDialog
     QT_AVAILABLE = True
@@ -975,7 +975,9 @@ class QtFrontendTests(unittest.TestCase):
         status = replace(self.ready, runtime_ok=False)
         dialog = AntivirusSetupDialog(self.window, status, instructions='Install using your package manager.')
         self.assertEqual(dialog.action, 'check')
-        self.assertIn('check again', dialog.action_button.text())
+        self.assertEqual(dialog.action_button.text(), 'Check again')
+        # Manual installation needs the command, so details start open.
+        self.assertFalse(dialog.details.isHidden())
         dialog.deleteLater()
 
     def test_linux_setup_offers_install_and_manual_recheck(self):
@@ -986,9 +988,45 @@ class QtFrontendTests(unittest.TestCase):
         plan = PackageInstallPlan('apt', 'sudo apt-get install clamav', ('clamav',), 'Install packages')
         dialog = AntivirusSetupDialog(self.window, status, instructions='Install using apt.', install_plan=plan)
         self.assertEqual(dialog.action, 'package-install')
+        self.assertEqual(dialog.action_button.text(), 'Install')
+        self.assertTrue(dialog.details.isHidden())
+        dialog.toggle_details()
+        self.assertFalse(dialog.details.isHidden())
         dialog.recheck()
         self.assertEqual(dialog.action, 'check')
         dialog.deleteLater()
+
+    def test_setup_dialog_states_are_short_and_optional_parts_are_optional(self):
+        from dataclasses import replace
+        from ui.dialogs import AntivirusSetupDialog
+        cases = {
+            'Download the virus database': replace(self.ready, db_found=False),
+            'Faster scanning (optional)': replace(self.ready, clamd_path=None, clamd_running=False),
+            'Virus protection is ready': replace(self.ready, clamd_path='/usr/sbin/clamd'),
+        }
+        for heading, status in cases.items():
+            dialog = AntivirusSetupDialog(self.window, status, instructions='Install using dnf.')
+            self.assertIn(heading, [label.text() for label in dialog.findChildren(QLabel)])
+            dialog.deleteLater()
+
+    def test_install_from_setup_dialog_does_not_ask_twice(self):
+        from unittest.mock import Mock
+        dialog = Mock()
+        dialog.exec.return_value = QDialog.DialogCode.Accepted
+        dialog.action = 'package-install'
+        dialog.suppress.isChecked.return_value = False
+        with patch('ui.main_window.AntivirusSetupDialog', return_value=dialog), \
+             patch.object(self.window, 'install_clamav_packages') as install:
+            self.window.open_antivirus_setup(self.ready)
+        install.assert_called_once_with(confirmed=True)
+        from core.authorization import PackageInstallPlan
+        self.patch('ui.main_window.backend.clamav_install_plan',
+                   return_value=PackageInstallPlan('dnf', 'sudo dnf install clamav', ('clamav',), 'Install'))
+        self.patch('ui.main_window.backend.install_clamav')
+        with patch.object(self.window, 'confirm') as confirm, patch.object(self.window, 'start_task') as start:
+            self.window.install_clamav_packages(confirmed=True)
+        confirm.assert_not_called()
+        start.assert_called_once()
 
     def test_package_authorization_failure_shows_help_after_report_close(self):
         from core.authorization import AuthorizationError, PackageInstallPlan

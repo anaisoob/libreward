@@ -1071,7 +1071,8 @@ class QtMainWindow(QMainWindow):
         if dialog.action == 'runtime':
             self.update_runtime()
         elif dialog.action == 'package-install':
-            self.install_clamav_packages()
+            # Choosing Install in the setup dialog is the consent; no second question.
+            self.install_clamav_packages(confirmed=True)
         elif dialog.action == 'database':
             self.update_database()
         elif dialog.action == 'check':
@@ -1189,7 +1190,7 @@ class QtMainWindow(QMainWindow):
             on_done=self.confirm_runtime_update, title="Check ClamAV runtime",
         )
 
-    def install_clamav_packages(self):
+    def install_clamav_packages(self, confirmed=False):
         if self.operation is not None:
             return
         plan = backend.clamav_install_plan()
@@ -1197,7 +1198,7 @@ class QtMainWindow(QMainWindow):
             QMessageBox.information(self, 'Install ClamAV', backend.runtime_install_instructions())
             return
         self.privileged_terminal_commands = plan.command
-        if not self.confirm('Install ClamAV packages', plan.explanation + '\n\n' + plan.command + '\n\nInstall these packages?'):
+        if not confirmed and not self.confirm('Install ClamAV packages', plan.explanation + '\n\n' + plan.command + '\n\nInstall these packages?'):
             return
         if not self.ensure_system_authorization():
             return

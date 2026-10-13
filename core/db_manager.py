@@ -94,15 +94,16 @@ def _try_privileged_freshclam(freshclam_path: str, log_callback=None) -> tuple[b
     Returns (success: bool, output: str, auth_failed: bool).
     auth_failed=True means the user cancelled or entered wrong password.
     """
+    command = backend.freshclam_privileged_command(freshclam_path)
     # 1 — already root, just run it
     if _is_root():
-        ok, out = _run_freshclam_cmd([freshclam_path], log_callback)
+        ok, out = _run_freshclam_cmd(command, log_callback)
         return ok, out, False
 
     # 2 — try pkexec
     pkexec = _find_pkexec()
     if pkexec:
-        ok, out = _run_freshclam_cmd([pkexec, freshclam_path], log_callback)
+        ok, out = _run_freshclam_cmd([pkexec, *command], log_callback)
         # pkexec returns 126/127 on auth cancel, 1 on auth failure
         auth_failed = "Authentication failed" in out or "dismissed" in out.lower()
         return ok, out, auth_failed
@@ -111,7 +112,7 @@ def _try_privileged_freshclam(freshclam_path: str, log_callback=None) -> tuple[b
     sudo = shutil.which("sudo")
     if sudo:
         # Attempt with sudo (likely fails without a tty, but try anyway)
-        ok, out = _run_freshclam_cmd([sudo, "-n", freshclam_path], log_callback)
+        ok, out = _run_freshclam_cmd([sudo, "-n", *command], log_callback)
         if ok:
             return ok, out, False
         # -n failed (no passwordless sudo), tell user

@@ -1,8 +1,8 @@
 """Qt dialogs shared by setup and background update flows."""
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QDialog, QDialogButtonBox, QLabel, QPlainTextEdit,
-    QProgressBar, QPushButton, QVBoxLayout,
+    QApplication, QCheckBox, QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QPlainTextEdit,
+    QProgressBar, QPushButton, QVBoxLayout, QWidget,
 )
 
 
@@ -33,50 +33,92 @@ class ClamAVConsentDialog(QDialog):
 
 
 class AntivirusSetupDialog(QDialog):
-    """Show installed components and one concrete next setup action."""
+    """One plain sentence and one next step; component details stay folded away."""
     def __init__(self, parent, status, *, instructions='', install_plan=None, suppressed=False):
         from core.runtime import setup_components, setup_next_action
         super().__init__(parent)
-        self.setWindowTitle('Enable antivirus protection')
-        self.resize(620, 470)
-        self.action, action_label = setup_next_action(status)
+        self.setWindowTitle('Virus protection')
+        self.setMinimumWidth(480)
+        self.action, _ = setup_next_action(status)
+        parallel_only = self.action == 'runtime' and status.runtime_ok and status.freshclam_ok
+        manual = self.action == 'runtime' and instructions and install_plan is None
+        if self.action == 'runtime' and install_plan is not None:
+            self.action = 'package-install'
+        elif manual:
+            self.action = 'check'
+        if parallel_only:
+            heading, text, label = ('Faster scanning (optional)',
+                                    'Virus protection is ready. Installing the ClamAV scan service makes '
+                                    'scanning many files faster.', 'Install')
+        elif self.action in ('runtime', 'package-install', 'check'):
+            heading = 'Install virus protection'
+            text = ('LibreWard scans files with ClamAV, a free antivirus program. '
+                    + ('It is installed from your system’s software sources, then LibreWard downloads its '
+                       'virus database. Your password may be requested.' if self.action != 'check' else
+                       'Install it with your system’s software manager or the command below, then check again.'))
+            label = 'Check again' if self.action == 'check' else 'Install'
+        elif self.action == 'database':
+            heading, text, label = ('Download the virus database',
+                                    'ClamAV is installed. LibreWard needs its virus database before it can scan. '
+                                    'The download can take a few minutes.', 'Download')
+        else:
+            heading, text, label = 'Virus protection is ready', 'Files can be scanned now.', 'OK'
         layout = QVBoxLayout(self)
-        title = QLabel('Antivirus setup')
+        title = QLabel(heading)
         title.setObjectName('pageTitle')
         layout.addWidget(title)
-        explanation = QLabel('LibreWard uses ClamAV to check files for threats. '
-                             'Parallel scanning is optional; standard scanning works without it.')
+        explanation = QLabel(text)
         explanation.setWordWrap(True)
         layout.addWidget(explanation)
+        # Details: component states, terminal command and a manual re-check.
+        self.details = QWidget()
+        details = QVBoxLayout(self.details)
+        details.setContentsMargins(0, 0, 0, 0)
         for name, state in setup_components(status):
-            label = QLabel(f'{name}: {state}')
-            label.setWordWrap(True)
-            layout.addWidget(label)
-        if instructions and self.action == 'runtime':
-            text = QPlainTextEdit()
-            text.setReadOnly(True)
-            text.setPlainText(instructions)
-            layout.addWidget(text)
-            if install_plan is not None:
-                action_label = 'Install ClamAV with system package manager'
-                self.action = 'package-install'
-            else:
-                action_label = 'I have installed it — check again'
-                self.action = 'check'
-        self.suppress = QCheckBox("Don't show setup automatically")
-        self.suppress.setChecked(suppressed)
-        layout.addWidget(self.suppress)
-        buttons = QDialogButtonBox()
-        self.action_button = buttons.addButton(action_label, QDialogButtonBox.ButtonRole.AcceptRole)
-        if self.action == 'package-install':
-            copy = buttons.addButton('Copy install command', QDialogButtonBox.ButtonRole.ActionRole)
+            label_widget = QLabel(f'{name}: {state}')
+            label_widget.setWordWrap(True)
+            details.addWidget(label_widget)
+        if instructions and self.action in ('package-install', 'check'):
+            commands = QPlainTextEdit()
+            commands.setReadOnly(True)
+            commands.setPlainText(install_plan.command if install_plan is not None else instructions)
+            commands.setMaximumHeight(140 if install_plan is None else 60)
+            details.addWidget(commands)
+        row = QHBoxLayout()
+        if install_plan is not None and self.action == 'package-install':
+            copy = QPushButton('Copy install command')
             copy.clicked.connect(lambda: QApplication.clipboard().setText(install_plan.command))
-            check = buttons.addButton('Check again', QDialogButtonBox.ButtonRole.ActionRole)
+            row.addWidget(copy)
+        if self.action != 'check':
+            check = QPushButton('Check again')
             check.clicked.connect(self.recheck)
-        buttons.addButton('Later', QDialogButtonBox.ButtonRole.RejectRole)
+            row.addWidget(check)
+        row.addStretch()
+        details.addLayout(row)
+        self.suppress = QCheckBox("Don't show this automatically")
+        self.suppress.setChecked(suppressed)
+        details.addWidget(self.suppress)
+        # Manual installation needs the command, so it starts unfolded.
+        self.details.setVisible(bool(manual))
+        self.details_button = QPushButton('Hide details' if manual else 'Show details')
+        self.details_button.setFlat(True)
+        self.details_button.clicked.connect(self.toggle_details)
+        layout.addWidget(self.details_button, 0, Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(self.details)
+        buttons = QDialogButtonBox()
+        self.action_button = buttons.addButton(label, QDialogButtonBox.ButtonRole.AcceptRole)
+        self.action_button.setDefault(True)
+        self.action_button.setObjectName('primaryButton')  # the app's green main-action style
+        if self.action != 'ready':
+            buttons.addButton('Not now', QDialogButtonBox.ButtonRole.RejectRole)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+    def toggle_details(self):
+        self.details.setVisible(not self.details.isVisible())
+        self.details_button.setText('Hide details' if self.details.isVisible() else 'Show details')
+        self.adjustSize()
 
     def recheck(self):
         self.action = 'check'

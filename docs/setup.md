@@ -58,6 +58,20 @@ update has not been confirmed. If the database is missing, close the report;
 LibreWard checks availability every ten seconds for up to ten minutes of checks.
 If it remains unavailable, inspect the system FreshClam service log.
 
+Fedora's `/etc/freshclam.conf` contains an active `Example` line until an
+administrator removes it, and freshclam refuses to run with it. LibreWard then
+runs freshclam with a temporary copy of the configuration without that line,
+keeping every other distribution setting (for example `DatabaseOwner clamupdate`)
+and leaving `/etc/freshclam.conf` unchanged. Fedora's own scheduled updater
+(`clamav-freshclam.service`) still needs the line removed. ClamAV tools in
+`/usr/sbin`, such as Fedora's `clamd`, are found even when the desktop's `PATH`
+lacks the sbin directories.
+
+The setup window names one next step (install, download the database, or the
+optional scan service). Component states and the terminal command are under
+**Show details**; they start open only when installation must be done manually.
+Choosing **Install** there is the consent, so no second confirmation follows.
+
 ## Windows
 
 LibreWard uses an existing ClamAV installation or a managed portable runtime.

@@ -179,6 +179,10 @@ class PlatformBackend(ABC):
         """Local daemon endpoints: ('unix', path) or ('tcp', (host, port))."""
         return [("tcp", ("127.0.0.1", 3310))]
 
+    def freshclam_privileged_command(self, freshclam_path):
+        """Command run as root to update a system virus database."""
+        return [freshclam_path]
+
     def find_clamd(self, clamscan_path):
         """Find a daemon in the detected runtime, without downloading anything."""
         import shutil

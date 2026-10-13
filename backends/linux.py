@@ -31,6 +31,51 @@ def _parse_version(raw: str | None) -> str | None:
     return m.group(1) if m else None
 
 
+FRESHCLAM_CONFIGS = ('/etc/freshclam.conf', '/etc/clamav/freshclam.conf')
+
+
+def freshclam_example_config(paths=FRESHCLAM_CONFIGS):
+    """Path of the system freshclam config if it still has an active `Example` line."""
+    for path in paths:
+        try:
+            with open(path, 'rb') as stream:
+                data = stream.read(1024 * 1024)
+        except OSError:
+            continue
+        return path if any(line.strip() == b'Example' for line in data.splitlines()) else None
+    return None
+
+
+# Runs as root through pkexec; standard library only.
+FRESHCLAM_HELPER = r'''
+import os, stat, subprocess, sys, tempfile
+
+def run(freshclam, configs=('/etc/freshclam.conf', '/etc/clamav/freshclam.conf'), require_root=True):
+    info = os.stat(freshclam)
+    if not os.path.isabs(freshclam) or not stat.S_ISREG(info.st_mode) or info.st_mode & 0o022 or (
+            require_root and info.st_uid != 0):
+        raise SystemExit('Untrusted freshclam executable.')
+    config = next((path for path in configs if os.path.isfile(path)), None)
+    if config is None:
+        return subprocess.call([freshclam])
+    with open(config, 'rb') as stream:
+        lines = stream.read(1024 * 1024).splitlines(keepends=True)
+    kept = [line for line in lines if line.strip() != b'Example']
+    if len(kept) == len(lines):
+        return subprocess.call([freshclam])
+    fd, copy = tempfile.mkstemp(prefix='libreward-freshclam-', suffix='.conf')
+    try:
+        with os.fdopen(fd, 'wb') as output:
+            output.writelines(kept)
+        return subprocess.call([freshclam, '--config-file', copy])
+    finally:
+        os.unlink(copy)
+
+if __name__ == '__main__':
+    sys.exit(run(sys.argv[1]))
+'''
+
+
 class LinuxBackend(PlatformBackend):
     """Platform backend for Linux."""
 
@@ -137,10 +182,33 @@ class LinuxBackend(PlatformBackend):
 
     # ── ClamAV runtime detection ────────────────────────────────────
 
+    @staticmethod
+    def _which_clamav(name):
+        # Apps started from a desktop menu often lack the sbin directories in PATH,
+        # where Fedora and openSUSE install some ClamAV tools (for example clamd).
+        return shutil.which(name) or shutil.which(name, path='/usr/sbin:/usr/local/sbin:/sbin:/usr/bin:/bin')
+
+    def find_clamd(self, clamscan_path):
+        sibling = Path(clamscan_path).parent / 'clamd'
+        return str(sibling) if sibling.is_file() else self._which_clamav('clamd')
+
+    def freshclam_privileged_command(self, freshclam_path):
+        """freshclam as root; distributions shipping an `Example` line get a fixed copy.
+
+        Fedora's /etc/freshclam.conf contains an active `Example` line until an
+        administrator removes it, and freshclam refuses to run with it. LibreWard
+        then runs freshclam with a temporary copy without that line, keeping every
+        other distribution setting and leaving /etc/freshclam.conf unchanged.
+        """
+        python = self._trusted_firewall_executable('python3')
+        if python and freshclam_example_config() is not None:
+            return [python, '-I', '-c', FRESHCLAM_HELPER, freshclam_path]
+        return [freshclam_path]
+
     def detect_clamav_runtime(self) -> RuntimeInfo:
-        """Find ClamAV via system PATH."""
-        cs = shutil.which("clamscan")
-        fc = shutil.which("freshclam")
+        """Find ClamAV via system PATH and the standard sbin directories."""
+        cs = self._which_clamav("clamscan")
+        fc = self._which_clamav("freshclam")
 
         if cs:
             version_raw = self.get_clamav_version(cs)

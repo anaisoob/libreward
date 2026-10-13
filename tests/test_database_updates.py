@@ -47,3 +47,92 @@ class DatabaseUpdateTests(unittest.TestCase):
         backend = LinuxBackend()
         with patch.object(backend, '_firewall_executable', return_value=None):
             self.assertIsNone(backend.freshclam_activity())
+
+
+class FedoraClamAVTests(unittest.TestCase):
+    """Fedora ships ClamAV tools in sbin and an `Example` line in freshclam.conf."""
+    def test_clamav_tools_are_found_in_sbin_without_it_in_path(self):
+        def which(name, path=None):
+            return f'/usr/sbin/{name}' if path and '/usr/sbin' in path else None
+        with patch('backends.linux.shutil.which', side_effect=which):
+            self.assertEqual(LinuxBackend.__new__(LinuxBackend).find_clamd('/usr/bin/clamscan'), '/usr/sbin/clamd')
+
+    def test_example_line_is_detected_only_when_active(self):
+        import tempfile
+        from pathlib import Path
+        from backends.linux import freshclam_example_config
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory, 'freshclam.conf')
+            config.write_text('# Comment out or remove the line below.\nExample\nDatabaseOwner clamupdate\n')
+            self.assertEqual(freshclam_example_config([str(config)]), str(config))
+            config.write_text('# Comment out or remove the line below.\n#Example\nDatabaseOwner clamupdate\n')
+            self.assertIsNone(freshclam_example_config([str(config)]))
+            self.assertIsNone(freshclam_example_config([str(Path(directory, 'missing.conf'))]))
+
+    def run_helper(self, config_text):
+        import json
+        import sys
+        import tempfile
+        from pathlib import Path
+        from backends.linux import FRESHCLAM_HELPER
+        directory = tempfile.mkdtemp()
+        self.addCleanup(__import__('shutil').rmtree, directory)
+        config = Path(directory, 'freshclam.conf')
+        config.write_text(config_text)
+        record = Path(directory, 'record.json')
+        fake = Path(directory, 'freshclam')
+        # Records its arguments and the config it was given, like a real freshclam reads it.
+        fake.write_text(f'#!{sys.executable}\nimport json, sys\nargs = sys.argv[1:]\n'
+                        'text = open(args[1]).read() if args[:1] == ["--config-file"] else None\n'
+                        f'json.dump({{"args": args, "config": text}}, open({str(record)!r}, "w"))\n')
+        fake.chmod(0o755)
+        namespace = {'__name__': 'test_freshclam_helper'}
+        exec(FRESHCLAM_HELPER, namespace)
+        code = namespace['run'](str(fake), configs=(str(config),), require_root=False)
+        return code, json.loads(record.read_text()), config
+
+    def test_helper_uses_a_copy_without_example_and_keeps_the_system_config(self):
+        import os
+        original = '# Comment out or remove the line below.\nExample\nDatabaseOwner clamupdate\nDatabaseMirror database.clamav.net\n'
+        code, record, config = self.run_helper(original)
+        self.assertEqual(code, 0)
+        self.assertEqual(record['args'][0], '--config-file')
+        self.assertNotIn('\nExample\n', record['config'])
+        self.assertIn('DatabaseOwner clamupdate\nDatabaseMirror database.clamav.net\n', record['config'])
+        self.assertFalse(os.path.exists(record['args'][1]))
+        self.assertEqual(config.read_text(), original)
+
+    def test_helper_runs_plain_freshclam_when_config_is_ready(self):
+        code, record, _ = self.run_helper('DatabaseOwner clamupdate\n')
+        self.assertEqual((code, record['args']), (0, []))
+
+    def test_helper_refuses_a_writable_executable(self):
+        import tempfile
+        from pathlib import Path
+        from backends.linux import FRESHCLAM_HELPER
+        with tempfile.TemporaryDirectory() as directory:
+            fake = Path(directory, 'freshclam')
+            fake.write_text('#!/bin/sh\n')
+            fake.chmod(0o777)
+            namespace = {'__name__': 'test_freshclam_helper'}
+            exec(FRESHCLAM_HELPER, namespace)
+            with self.assertRaises(SystemExit):
+                namespace['run'](str(fake), configs=(), require_root=False)
+
+    def test_privileged_update_uses_the_backend_command(self):
+        backend = Mock()
+        backend.freshclam_privileged_command.return_value = ['/usr/bin/python3', '-I', '-c', 'helper', '/usr/bin/freshclam']
+        with patch.object(db_manager, 'backend', backend), patch.object(db_manager, '_is_root', return_value=False), \
+                patch.object(db_manager, '_find_pkexec', return_value='/usr/bin/pkexec'), \
+                patch.object(db_manager, '_run_freshclam_cmd', return_value=(True, 'updated')) as run:
+            db_manager._try_privileged_freshclam('/usr/bin/freshclam')
+        self.assertEqual(run.call_args.args[0],
+                         ['/usr/bin/pkexec', '/usr/bin/python3', '-I', '-c', 'helper', '/usr/bin/freshclam'])
+
+    def test_helper_is_used_only_while_the_example_line_is_active(self):
+        backend = LinuxBackend.__new__(LinuxBackend)
+        with patch.object(backend, '_trusted_firewall_executable', return_value='/usr/bin/python3'), \
+                patch('backends.linux.freshclam_example_config', return_value='/etc/freshclam.conf'):
+            self.assertEqual(backend.freshclam_privileged_command('/usr/bin/freshclam')[:3], ['/usr/bin/python3', '-I', '-c'])
+        with patch('backends.linux.freshclam_example_config', return_value=None):
+            self.assertEqual(backend.freshclam_privileged_command('/usr/bin/freshclam'), ['/usr/bin/freshclam'])
