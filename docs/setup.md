@@ -47,25 +47,31 @@ authorization have separate explanations; LibreWard supplies distribution
 installation guidance for polkit/pkexec and copies sudo commands for a terminal.
 It does not ask for or store your password in its own widgets.
 
-The distribution manages engine updates and normally stores signatures in
-`/var/lib/clamav`. Database updates may request system authorization. LibreWard
-does not automatically download a separate Linux runtime.
+The distribution installs and updates the ClamAV programs. LibreWard does not
+download a separate Linux runtime.
 
-Package installation may start the system FreshClam updater. When it is already
-running, LibreWard leaves it in charge instead of starting a second process
-that could fail to lock `freshclam.log`. The report explains that the latest
-update has not been confirmed. If the database is missing, close the report;
-LibreWard checks availability every ten seconds for up to ten minutes of checks.
-If it remains unavailable, inspect the system FreshClam service log.
+For the virus database LibreWard combines two sources:
 
-Fedora's `/etc/freshclam.conf` contains an active `Example` line until an
-administrator removes it, and freshclam refuses to run with it, even for
-`freshclam --version`. LibreWard then checks and runs freshclam with a temporary copy of the configuration without that line,
-keeping every other distribution setting (for example `DatabaseOwner clamupdate`)
-and leaving `/etc/freshclam.conf` unchanged. Fedora's own scheduled updater
-(`clamav-freshclam.service`) still needs the line removed. ClamAV tools in
-`/usr/sbin`, such as Fedora's `clamd`, are found even when the desktop's `PATH`
-lacks the sbin directories.
+- A **system database** in `/var/lib/clamav` is used while its newest file is at
+  most three days old; the distribution's updater keeps it current and LibreWard
+  downloads nothing.
+- Otherwise LibreWard uses its **own database** in
+  `~/.local/share/libreward/clamav-db/`. **Update virus database** runs freshclam
+  as your user with a config LibreWard generates (`freshclam.conf` under
+  application data), so no password is needed and the distribution's
+  `/etc/freshclam.conf` does not matter. Fedora's, for example, is readable only
+  by root and keeps an `Example` line that makes freshclam refuse to run, even
+  for `freshclam --version`; LibreWard checks the version with an empty private
+  config.
+- A stale system database is still used when LibreWard has none of its own.
+
+Scans and LibreWard's parallel scan service name the chosen directory with
+`--database`. While the system updater is downloading a first database,
+LibreWard waits for it instead of downloading a second copy, and checks every
+ten seconds for up to ten minutes of checks. ClamAV tools in `/usr/sbin`, such as
+Fedora's `clamd`, are found even when the desktop's `PATH` lacks the sbin
+directories. dnf installs freshclam by file path, because Fedora renamed
+`clamav-update` to `clamav-freshclam`.
 
 The setup window names one next step (install, download the database, or the
 optional scan service). Component states and the terminal command are under
@@ -96,7 +102,7 @@ runtime folders or the bundled fallback.
 | Configuration | `%APPDATA%\LibreWard\config.json` | `$XDG_CONFIG_HOME/libreward/config.json`, default `~/.config/libreward/config.json` |
 | Application data | `%APPDATA%\LibreWard\` | `$XDG_DATA_HOME/libreward/`, default `~/.local/share/libreward/` |
 | Managed runtime | `clamav-runtime\current\` under application data | Distribution-managed |
-| Virus database | `clamav-db\` under application data, or detected runtime/system database | Normally `/var/lib/clamav` |
+| Virus database | `clamav-db\` under application data, or detected runtime/system database | Current `/var/lib/clamav`, otherwise `clamav-db/` under application data |
 | Logs | `logs\` under application data | `logs/` under application data |
 
 Windows managed database updates use a generated `freshclam.conf` under

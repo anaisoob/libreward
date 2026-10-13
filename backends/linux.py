@@ -17,7 +17,7 @@ import signal
 import subprocess
 from pathlib import Path
 
-from .base import PlatformBackend, RuntimeInfo
+from .base import PlatformBackend, RuntimeInfo, newest_database_time
 
 
 APP_NAME = "libreward"
@@ -31,55 +31,9 @@ def _parse_version(raw: str | None) -> str | None:
     return m.group(1) if m else None
 
 
-FRESHCLAM_CONFIGS = ('/etc/freshclam.conf', '/etc/clamav/freshclam.conf')
-
-
-def config_without_example(path):
-    """Lines of a ClamAV config file without its active `Example` line."""
-    with open(path, 'rb') as stream:
-        return [line for line in stream.read(1024 * 1024).splitlines(keepends=True) if line.strip() != b'Example']
-
-
-def freshclam_example_config(paths=FRESHCLAM_CONFIGS):
-    """Path of the system freshclam config if it still has an active `Example` line."""
-    for path in paths:
-        try:
-            with open(path, 'rb') as stream:
-                data = stream.read(1024 * 1024)
-        except OSError:
-            continue
-        return path if any(line.strip() == b'Example' for line in data.splitlines()) else None
-    return None
-
-
-# Runs as root through pkexec; standard library only.
-FRESHCLAM_HELPER = r'''
-import os, stat, subprocess, sys, tempfile
-
-def run(freshclam, configs=('/etc/freshclam.conf', '/etc/clamav/freshclam.conf'), require_root=True):
-    info = os.stat(freshclam)
-    if not os.path.isabs(freshclam) or not stat.S_ISREG(info.st_mode) or info.st_mode & 0o022 or (
-            require_root and info.st_uid != 0):
-        raise SystemExit('Untrusted freshclam executable.')
-    config = next((path for path in configs if os.path.isfile(path)), None)
-    if config is None:
-        return subprocess.call([freshclam])
-    with open(config, 'rb') as stream:
-        lines = stream.read(1024 * 1024).splitlines(keepends=True)
-    kept = [line for line in lines if line.strip() != b'Example']
-    if len(kept) == len(lines):
-        return subprocess.call([freshclam])
-    fd, copy = tempfile.mkstemp(prefix='libreward-freshclam-', suffix='.conf')
-    try:
-        with os.fdopen(fd, 'wb') as output:
-            output.writelines(kept)
-        return subprocess.call([freshclam, '--config-file', copy])
-    finally:
-        os.unlink(copy)
-
-if __name__ == '__main__':
-    sys.exit(run(sys.argv[1]))
-'''
+SYSTEM_DATABASE = Path('/var/lib/clamav')
+# The system database is used while its newest file is at most this old.
+SYSTEM_DATABASE_MAX_AGE = 3 * 24 * 3600
 
 
 class LinuxBackend(PlatformBackend):
@@ -167,15 +121,25 @@ class LinuxBackend(PlatformBackend):
         return Path(xdg_data) / APP_NAME
 
     def db_dir(self) -> Path | None:
-        """Linux does not manage its own database — ClamAV uses its
-        system-wide database directory (e.g. /var/lib/clamav)."""
-        return None
+        """LibreWard's own database, used when the system one is missing or stale."""
+        return self.data_dir() / "clamav-db"
 
     def manages_own_database(self) -> bool:
-        return False
+        return True
+
+    def system_database_current(self) -> bool:
+        """The distribution keeps /var/lib/clamav up to date; no own download needed."""
+        import time
+        newest = newest_database_time(SYSTEM_DATABASE)
+        return newest is not None and time.time() - newest <= SYSTEM_DATABASE_MAX_AGE
 
     def system_db_locations(self) -> list[Path]:
-        return [Path("/var/lib/clamav")]
+        # Preference order: a current system database, then LibreWard's own,
+        # then a stale system database rather than none.
+        own = self.db_dir()
+        if self.system_database_current() or newest_database_time(own) is None:
+            return [SYSTEM_DATABASE, own]
+        return [own, SYSTEM_DATABASE]
 
     def log_dir(self) -> Path:
         return self.data_dir() / "logs"
@@ -198,36 +162,22 @@ class LinuxBackend(PlatformBackend):
         sibling = Path(clamscan_path).parent / 'clamd'
         return str(sibling) if sibling.is_file() else self._which_clamav('clamd')
 
-    def freshclam_privileged_command(self, freshclam_path):
-        """freshclam as root; distributions shipping an `Example` line get a fixed copy.
-
-        Fedora's /etc/freshclam.conf contains an active `Example` line until an
-        administrator removes it, and freshclam refuses to run with it. LibreWard
-        then runs freshclam with a temporary copy without that line, keeping every
-        other distribution setting and leaving /etc/freshclam.conf unchanged.
-        """
-        python = self._trusted_firewall_executable('python3')
-        if python and freshclam_example_config() is not None:
-            return [python, '-I', '-c', FRESHCLAM_HELPER, freshclam_path]
-        return [freshclam_path]
-
     def get_freshclam_version(self, freshclam_path):
-        # freshclam parses its config even for --version, so Fedora's unedited
-        # /etc/freshclam.conf fails it. Check with a private copy, as updates do.
+        # freshclam parses its config even for --version. Fedora's /etc/freshclam.conf
+        # is readable only by root and keeps an `Example` line, so check with an empty
+        # private config; LibreWard's own updates use their own config anyway.
         version = self.get_clamav_version(freshclam_path)
-        config = None if version else freshclam_example_config()
-        if config is None:
+        if version:
             return version
         import tempfile
         try:
-            with tempfile.NamedTemporaryFile('wb', prefix='libreward-freshclam-', suffix='.conf') as copy:
-                copy.writelines(config_without_example(config))
-                copy.flush()
-                result = subprocess.run([freshclam_path, '--config-file', copy.name, '--version'],
+            with tempfile.NamedTemporaryFile('w', prefix='libreward-freshclam-', suffix='.conf') as config:
+                result = subprocess.run([freshclam_path, '--config-file', config.name, '--version'],
                                         capture_output=True, text=True, timeout=10)
         except (OSError, subprocess.SubprocessError):
             return None
-        return result.stdout.strip().split('\n')[0] if result.returncode == 0 and result.stdout.strip() else None
+        output = result.stdout.strip()
+        return output.split('\n')[0] if result.returncode == 0 and output else None
 
     def detect_clamav_runtime(self) -> RuntimeInfo:
         """Find ClamAV via system PATH and the standard sbin directories."""

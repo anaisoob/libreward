@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Linux virus database: use a current system database (`/var/lib/clamav`), otherwise
+  LibreWard's own database under `~/.local/share/libreward/clamav-db`, updated by
+  freshclam as the user without a password. Distribution freshclam configs (Fedora's
+  root-only file with its `Example` line) no longer matter, and freshclam is recognized
+  with an empty private config. Replaces the privileged system freshclam run.
+
 - Fedora: update the virus database and recognize freshclam although
   `/etc/freshclam.conf` still has its `Example` line (freshclam rejects it even for
   `--version`; a temporary copy without it is used and the system file is unchanged).

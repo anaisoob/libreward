@@ -29,6 +29,16 @@ class RuntimeInfo:
         return self.freshclam is not None
 
 
+def newest_database_time(directory):
+    """Modification time of the newest ClamAV database file, or None."""
+    try:
+        times = [path.stat().st_mtime for path in Path(directory).iterdir()
+                 if path.suffix.lower() in ('.cvd', '.cld', '.cud')]
+    except OSError:
+        return None
+    return max(times) if times else None
+
+
 class PlatformBackend(ABC):
     """Abstract interface for OS-specific operations."""
 
@@ -73,8 +83,8 @@ class PlatformBackend(ABC):
     def manages_own_database(self) -> bool:
         """True if this platform manages its own DB directory (Windows).
 
-        When False (Linux), the scanner must NOT pass --database and
-        freshclam runs using the system config without a custom conf file.
+        Windows always; Linux uses its own database when the system one is
+        missing or stale (see LinuxBackend.system_db_locations).
         """
         ...
 
@@ -182,9 +192,9 @@ class PlatformBackend(ABC):
     def get_freshclam_version(self, freshclam_path):
         return self.get_clamav_version(freshclam_path)
 
-    def freshclam_privileged_command(self, freshclam_path):
-        """Command run as root to update a system virus database."""
-        return [freshclam_path]
+    def system_database_current(self):
+        """True when a system-maintained virus database is up to date."""
+        return False
 
     def find_clamd(self, clamscan_path):
         """Find a daemon in the detected runtime, without downloading anything."""

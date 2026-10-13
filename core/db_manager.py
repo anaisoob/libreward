@@ -11,21 +11,20 @@ Platform differences:
 """
 
 import os
-import shutil
 import subprocess
-import sys
 
 from backends import backend
 from core.constants import CLAMAV_DB_MIRROR
 from core.database_update import DatabaseUpdateResult
 
 
-# ── freshclam.conf generation (Windows only) ────────────────────────
+# ── freshclam.conf generation ───────────────────────────────────────
 
 def generate_freshclam_conf(freshclam_path: str) -> str | None:
     """Generate (or overwrite) freshclam.conf in the app data directory.
 
-    Windows only — on Linux this returns None.
+    Used for LibreWard's own database (Windows, and Linux without a current
+    system database). Returns None when the platform has no own database.
     """
     if not backend.manages_own_database():
         return None
@@ -65,68 +64,6 @@ def generate_freshclam_conf(freshclam_path: str) -> str | None:
 
     conf_path.write_text("\n".join(content), encoding="utf-8")
     return str(conf_path)
-
-
-# ── privilege helpers (Linux) ───────────────────────────────────────
-
-def _is_root() -> bool:
-    """True if running as root (uid 0)."""
-    try:
-        return os.geteuid() == 0
-    except AttributeError:
-        # Windows — os.geteuid doesn't exist
-        return False
-
-
-def _find_pkexec() -> str | None:
-    """Return path to pkexec if available."""
-    return shutil.which("pkexec")
-
-
-def _try_privileged_freshclam(freshclam_path: str, log_callback=None) -> tuple[bool, str, bool]:
-    """Run freshclam with privilege escalation on Linux.
-
-    Tries:
-      1. Directly (if already root)
-      2. pkexec freshclam (PolicyKit GUI password prompt)
-      3. sudo -S freshclam (terminal password prompt — unlikely to work in GUI)
-
-    Returns (success: bool, output: str, auth_failed: bool).
-    auth_failed=True means the user cancelled or entered wrong password.
-    """
-    command = backend.freshclam_privileged_command(freshclam_path)
-    # 1 — already root, just run it
-    if _is_root():
-        ok, out = _run_freshclam_cmd(command, log_callback)
-        return ok, out, False
-
-    # 2 — try pkexec
-    pkexec = _find_pkexec()
-    if pkexec:
-        ok, out = _run_freshclam_cmd([pkexec, *command], log_callback)
-        # pkexec returns 126/127 on auth cancel, 1 on auth failure
-        auth_failed = "Authentication failed" in out or "dismissed" in out.lower()
-        return ok, out, auth_failed
-
-    # 3 — try sudo with askpass if available, otherwise fail gracefully
-    sudo = shutil.which("sudo")
-    if sudo:
-        # Attempt with sudo (likely fails without a tty, but try anyway)
-        ok, out = _run_freshclam_cmd([sudo, "-n", *command], log_callback)
-        if ok:
-            return ok, out, False
-        # -n failed (no passwordless sudo), tell user
-        return False, (
-            "freshclam requires root privileges to update the system database.\n"
-            "Please run this command in a terminal:\n"
-            f"  sudo {freshclam_path}\n"
-        ), True
-
-    return False, (
-        "Cannot obtain root privileges.\n"
-        "Please run this command in a terminal:\n"
-        f"  sudo {freshclam_path}\n"
-    ), True
 
 
 # ── run freshclam ───────────────────────────────────────────────────
@@ -177,49 +114,43 @@ def run_freshclam_update(
     conf_path: str | None = None,
     log_callback=None,
 ) -> tuple[bool, str] | DatabaseUpdateResult:
-    """Run freshclam to update the virus database.
+    """Update the virus database LibreWard scans with.
 
-    Returns (success, output), or a pending result when another updater owns the work.
-
-    Platform behaviour:
-      Windows: generates freshclam.conf → runs `freshclam --config-file <conf>`
-      Linux:   defers to an existing updater, otherwise runs privileged freshclam.
+    A current system database (Linux) needs no download. Otherwise freshclam runs
+    as the user with LibreWard's own config and database directory: no password,
+    and the distribution's freshclam.conf (permissions, `Example` line) does not
+    matter. While the system updater is still fetching a first database, LibreWard
+    waits for it instead of downloading a duplicate.
+    Returns (success, output), or a pending result when the system updater owns the work.
     """
-    if backend.manages_own_database():
-        # Windows — use custom config pointing to writable app-data dir
-        if conf_path is None:
-            conf_path = generate_freshclam_conf(freshclam_path)
-        if conf_path is None:
-            return False, "ERROR: Could not generate database config.\n"
-        return _run_freshclam_cmd(
-            [freshclam_path, "--config-file", conf_path], log_callback
+    from core.runtime import database_files
+    if backend.system_database_current():
+        message = 'The system virus database is up to date and kept current by your system. No download is needed.\n'
+        if log_callback:
+            log_callback(message)
+        return True, message
+    activity = backend.freshclam_activity()
+    if activity and not database_files():
+        message = (
+            f'The system updater is downloading the virus database ({activity}).\n'
+            'LibreWard waits for it instead of downloading a second copy, and checks '
+            'when the database becomes available.\n'
         )
-    else:
-        activity = backend.freshclam_activity()
-        if activity:
-            message = (
-                f'The system updater is already running ({activity}).\n'
-                'LibreWard will not start a competing FreshClam process or stop the existing updater.\n'
-                'Database downloads and scheduled update checks are handled in the background.\n'
-                'This does not confirm that the latest update has finished. '
-                'If the database is missing, LibreWard will check when it becomes available.\n'
-            )
-            if log_callback:
-                log_callback(message)
-            return DatabaseUpdateResult(False, message, pending=True)
-        # Linux — needs root to write to /var/lib/clamav
-        ok, out, auth_failed = _try_privileged_freshclam(
-            freshclam_path, log_callback
-        )
-        if not ok and ('failed to lock the log file' in out.lower() or
-                       'database is locked by another process' in out.lower()):
-            message = ('FreshClam could not obtain its log/database lock. Another updater may have started.\n'
-                       'LibreWard will not remove locks or launch another competing process. '
-                       'Check the system updater and its log if the database remains unavailable.\n')
-            if log_callback:
-                log_callback(message)
-            return DatabaseUpdateResult(False, message, pending=True)
-        return ok, out
+        if log_callback:
+            log_callback(message)
+        return DatabaseUpdateResult(False, message, pending=True)
+    if conf_path is None:
+        conf_path = generate_freshclam_conf(freshclam_path)
+    if conf_path is None:
+        return False, "ERROR: Could not generate database config.\n"
+    ok, out = _run_freshclam_cmd([freshclam_path, "--config-file", conf_path], log_callback)
+    if not ok and ('failed to lock the log file' in out.lower() or
+                   'database is locked by another process' in out.lower()):
+        message = ('Another LibreWard update is already running. Wait for it to finish, then check again.\n')
+        if log_callback:
+            log_callback(message)
+        return DatabaseUpdateResult(False, message, pending=True)
+    return ok, out
 
 
 # ── database summary ────────────────────────────────────────────────

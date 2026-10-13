@@ -1131,7 +1131,7 @@ class QtMainWindow(QMainWindow):
     def update_database(self, *, confirm=True):
         if self.operation is not None:
             return
-        if confirm and not self.confirm("Update virus database", "Download the latest ClamAV virus database? On Linux this may request system authorization."):
+        if confirm and not self.confirm("Update virus database", "Download the latest ClamAV virus database?"):
             return
 
         def run_update():
