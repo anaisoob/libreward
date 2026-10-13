@@ -2,8 +2,7 @@
 
 LibreWard is a security and privacy desktop application for Linux and Windows,
 built with Python and PySide6 / Qt. It provides antivirus scanning through
-ClamAV and Linux firewall management. Internet monitoring and
-DNS/privacy tools are planned for future releases.
+ClamAV, Linux firewall management and Linux domain blocking.
 
 ![LibreWard Virus scan page in the dark theme](assets/libreward.png)
 
@@ -11,6 +10,8 @@ DNS/privacy tools are planned for future releases.
 
 - Linux firewall detection, rule inspection and UFW installation guidance.
 - Confirmed UFW/firewalld activation, automatic status refresh and LAN or all-address rules.
+- Linux Internet protection: dangerous-domain, tracking and ad lists, exact-domain
+  exceptions, optional adult-site blocking, and disk-backed local DNS filtering on supported NetworkManager/systemd setups. Small custom lists can use reversible hosts-file blocking.
 - Folder scans and Quick system scans with configurable exclusions.
 - Parallel scanning with `clamd` and standard scanning with `clamscan`.
 - Live progress, current-file information, cancellation and scan reports.
@@ -57,6 +58,7 @@ parallel scanning. See the [setup guide](docs/setup.md) for details.
 - [Documentation index](docs/README.md)
 - [Setup, updates and data locations](docs/setup.md)
 - [Linux firewall setup and rules](docs/firewall.md)
+- [Internet protection and domain lists](docs/internet-protection.md)
 - [Scanning, exclusions and results](docs/scanning.md)
 - [Development, tests and release checks](docs/development.md)
 
@@ -70,3 +72,8 @@ under GNU GPL version 2.
 PySide6 / Qt is used under its open-source **LGPLv3** option.
 See [Qt licensing](https://doc.qt.io/qt-6/licensing.html)
 and [Qt for Python licensing](https://doc.qt.io/qtforpython-6/licenses.html).
+
+Optional domain blocklists are downloaded from
+[The Block List Project](https://github.com/blocklistproject/Lists) under its
+upstream license terms. Source URLs and list headers are retained in the cache.
+They are community lists and may contain false positives.

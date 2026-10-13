@@ -101,16 +101,20 @@ class AuthorizationHelpDialog(QDialog):
             copy_install = QPushButton('Copy authorization install command')
             copy_install.clicked.connect(lambda: QApplication.clipboard().setText(status.install_command))
             layout.addWidget(copy_install)
-        hint = QLabel('Alternatively, run the commands below using sudo in a terminal. '
+        hint = QLabel(('Alternatively, run the commands below using sudo in a terminal. ' if commands else
+                       'Set up system authorization, then retry the requested action. ')
+                      +
                       'Your password stays with the system tools. Afterward, check component status or use Check protection status in the Firewall page to reload the relevant information.')
         hint.setWordWrap(True)
         layout.addWidget(hint)
         self.commands = QPlainTextEdit()
         self.commands.setReadOnly(True)
         self.commands.setPlainText(commands)
+        self.commands.setVisible(bool(commands))
         layout.addWidget(self.commands, 1)
         copy = QPushButton('Copy sudo commands')
         copy.setEnabled(bool(commands))
+        copy.setVisible(bool(commands))
         copy.clicked.connect(lambda: QApplication.clipboard().setText(commands))
         layout.addWidget(copy)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)

@@ -12,10 +12,16 @@ class LauncherTests(unittest.TestCase):
         run = Mock(return_value=0)
         with patch.object(sys, 'argv', ['main.py']), patch.dict(sys.modules, {'ui.main_window': SimpleNamespace(run=run)}):
             self.assertEqual(main.main(), 0)
-        run.assert_called_once_with()
+        run.assert_called_once_with(minimized=False)
 
     def test_preview_flag_still_launches_qt(self):
         run = Mock(return_value=0)
         with patch.object(sys, 'argv', ['main.py', '--qt']), patch.dict(sys.modules, {'ui.main_window': SimpleNamespace(run=run)}):
             self.assertEqual(main.main(), 0)
-        run.assert_called_once_with()
+        run.assert_called_once_with(minimized=False)
+
+    def test_login_autostart_opens_minimized(self):
+        run = Mock(return_value=0)
+        with patch.object(sys, 'argv', ['main.py', '--autostart']), patch.dict(sys.modules, {'ui.main_window': SimpleNamespace(run=run)}):
+            self.assertEqual(main.main(), 0)
+        run.assert_called_once_with(minimized=True)

@@ -202,7 +202,7 @@ class PlatformBackend(ABC):
     def firewall_change_preview(self, tool_name, *, rule=None, enabled=True):
         raise NotImplementedError('Firewall changes are not available on this platform.')
 
-    def change_firewall(self, tool_name, *, rule=None, enabled=True):
+    def change_firewall(self, tool_name, *, rule=None, enabled=True, removal=None):
         raise NotImplementedError('Firewall changes are not available on this platform.')
 
     def firewall_networks(self):
@@ -223,3 +223,18 @@ class PlatformBackend(ABC):
     def freshclam_activity(self):
         """Existing system updater description, or None when not detected."""
         return None
+
+    def inspect_internet_protection(self):
+        return {'supported': False, 'active': False, 'count': 0,
+                'message': 'Domain protection is currently available on Linux only.'}
+
+    def apply_internet_protection(self, domains):
+        raise NotImplementedError('Domain protection is currently available on Linux only.')
+
+    def internet_protection_keepalive(self):
+        """Tell an app-bound protection service that LibreWard is still open."""
+
+    def set_autostart(self, enabled):
+        """Start LibreWard at login while Internet protection is on."""
+        if enabled:
+            raise NotImplementedError('Starting LibreWard at login is currently available on Linux only.')

@@ -37,6 +37,10 @@ class QtFrontendTests(unittest.TestCase):
         self.patch('ui.main_window.check_startup', return_value=self.ready)
         self.patch('ui.main_window.load_config', return_value={'unrelated_setting': 'preserved'})
         self.patch('ui.main_window.save_config')
+        self.patch('ui.internet_page.save_config')
+        # Never touch the developer's login autostart or send DNS heartbeats.
+        self.autostart = self.patch('ui.internet_page.backend.set_autostart')
+        self.keepalive = self.patch('ui.internet_page.backend.internet_protection_keepalive')
         from core.authorization import AuthorizationStatus
         self.patch('ui.main_window.backend.authorization_status', return_value=AuthorizationStatus(True, 'System dialog available'))
         self.patch('ui.main_window.database_summary', return_value='Database ready')
@@ -55,6 +59,7 @@ class QtFrontendTests(unittest.TestCase):
         if self.window.worker:
             self.window.worker.join(timeout=3)
         self.window.poll_events()
+        self.window._exit_verified = True
         self.window.close()
         self.window.deleteLater()
         self.app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
@@ -82,6 +87,128 @@ class QtFrontendTests(unittest.TestCase):
         self.assertTrue(self.window.database_button.isEnabled())
         self.assertIn('Database ready', self.window.runtime_info.toPlainText())
 
+    def test_internet_page_has_safe_defaults_and_read_only_detection(self):
+        page = self.window.internet_page
+        self.assertTrue(page.categories['dangerous'].isChecked())
+        self.assertFalse(page.categories['tracking'].isChecked())
+        self.assertFalse(page.categories['ads'].isChecked())
+        inspect = self.patch('ui.internet_page.backend.inspect_internet_protection', return_value={
+            'supported': True, 'active': False, 'count': 0, 'message': 'Ready'})
+        apply = self.patch('ui.internet_page.backend.apply_internet_protection')
+        self.window.switch_page('internet')
+        self.wait_idle()
+        inspect.assert_called_once()
+        apply.assert_not_called()
+        self.assertTrue(page.apply_button.isEnabled())
+        self.assertFalse(page.pause_button.isEnabled())
+
+    def test_internet_status_check_keeps_scroll_position(self):
+        self.patch('ui.internet_page.backend.inspect_internet_protection', return_value={
+            'supported': True, 'active': False, 'count': 0, 'message': 'Ready'})
+        self.window.resize(980, 740)
+        self.window.show()
+        self.window.switch_page('internet')
+        self.wait_idle()
+        page = self.window.internet_page
+        self.app.processEvents()
+        page.scroll.verticalScrollBar().setValue(0)
+        page.status_button.setFocus()
+        page.status_button.click()
+        self.wait_idle()
+        self.app.processEvents()
+        self.assertEqual(page.scroll.verticalScrollBar().value(), 0)
+
+    def test_internet_exceptions_are_exact_and_can_move_between_lists(self):
+        page = self.window.internet_page
+        field = page.domain_fields[1]
+        field.setText('Example.org')
+        page.add_domain('blocked', field)
+        field.setText('example.org')
+        page.add_domain('allowed', field)
+        self.assertEqual(page.settings()['allowed'], ['example.org'])
+        self.assertEqual(page.settings()['blocked'], [])
+        field.setText('https://example.org/path')
+        page.add_domain('blocked', field)
+        self.warning.assert_called_once()
+        self.assertEqual(page.settings()['blocked'], [])
+
+    def test_internet_apply_requires_confirmation_and_retains_report(self):
+        page = self.window.internet_page
+        page.show_state({'supported': True, 'active': False, 'count': 0})
+        apply = self.patch('ui.internet_page.backend.apply_internet_protection', return_value={
+            'supported': True, 'active': True, 'count': 1, 'skipped': 0})
+        with patch.object(self.window, 'confirm', return_value=False):
+            page.apply()
+        apply.assert_not_called()
+        with patch.object(self.window, 'confirm', return_value=True), patch.object(
+                page.store, 'load', return_value={'lists': {'dangerous': ['blocked.org']}}):
+            page.apply()
+            dialog = self.window.update_dialog
+            self.wait_idle()
+        apply.assert_called_once_with(['blocked.org'])
+        self.assertFalse(page.state['active'])
+        dialog.accept()
+        self.app.processEvents()
+        self.assertTrue(page.state['active'])
+        self.assertTrue(page.pause_button.isEnabled())
+        self.assertEqual(self.window.config['internet_protection']['categories'], ['dangerous'])
+
+    def test_debian_dns_setup_is_offered_with_installation_consent(self):
+        page = self.window.internet_page
+        page.show_state({'supported': True, 'active': False, 'count': 0,
+                         'engine': 'dnsmasq-setup', 'setup_available': True, 'needs_dns_install': True})
+        apply = self.patch('ui.internet_page.backend.apply_internet_protection')
+        with patch.object(self.window, 'confirm', return_value=False) as confirm:
+            page.apply()
+        self.assertIn('dnsmasq-base', confirm.call_args.args[1])
+        self.assertIn('restores the previous DNS mode', confirm.call_args.args[1])
+        apply.assert_not_called()
+        self.assertTrue(page.apply_button.isEnabled())
+
+    def test_database_filter_uses_a_disk_payload_and_cleans_it_after_application(self):
+        from core.internet import DiskDomainLists, PreparedDomains
+        page = self.window.internet_page
+        with tempfile.TemporaryDirectory() as directory:
+            page.store = DiskDomainLists(directory)
+            for checkbox in page.categories.values():
+                checkbox.setChecked(False)
+            page.domain_lists['blocked'].addItem('blocked.example.org')
+            page.show_state({'supported': True, 'active': False, 'count': 0, 'engine': 'sqlite-setup',
+                             'setup_available': True, 'needs_dns_install': False})
+            payloads = []
+            def apply(prepared):
+                self.assertIsInstance(prepared, PreparedDomains)
+                self.assertTrue(prepared.path.exists())
+                payloads.append(prepared.path)
+                return {'supported': True, 'active': True, 'count': 1, 'engine': 'sqlite-dns'}
+            with patch('ui.internet_page.backend.apply_internet_protection', side_effect=apply), \
+                 patch.object(page.store, 'compile', side_effect=AssertionError('RAM list used')), \
+                 patch.object(self.window, 'confirm', return_value=True):
+                page.apply()
+                dialog = self.window.update_dialog
+                self.wait_idle()
+            self.assertEqual(len(payloads), 1)
+            self.assertFalse(payloads[0].exists())
+            dialog.accept()
+            self.app.processEvents()
+            self.assertTrue(page.state['active'])
+            self.assertIn('Local DNS filter', page.info.text())
+
+    def test_internet_pause_only_removes_libreward_blocks(self):
+        page = self.window.internet_page
+        page.show_state({'supported': True, 'active': True, 'count': 1})
+        apply = self.patch('ui.internet_page.backend.apply_internet_protection', return_value={
+            'supported': True, 'active': False, 'count': 0})
+        with patch.object(self.window, 'confirm', return_value=True):
+            page.pause()
+            dialog = self.window.update_dialog
+            self.wait_idle()
+        apply.assert_called_once_with([])
+        dialog.accept()
+        self.app.processEvents()
+        self.assertFalse(page.state['active'])
+        self.assertIn('paused', page.notice.text())
+
     def test_firewall_refresh_prefers_active_tool_and_switches_rules(self):
         from core.firewall import FirewallSnapshot, FirewallTool
         snapshot = FirewallSnapshot(True, [
@@ -99,6 +226,20 @@ class QtFrontendTests(unittest.TestCase):
         self.assertEqual(self.window.firewall_status.property('severity'), 'danger')
         self.assertIn('saved UFW rules', self.window.firewall_rules.toPlainText())
         self.assertIn('before turning protection on', self.window.firewall_management_hint.text())
+
+    def test_firewall_rules_visible_and_deletion_requires_confirmation(self):
+        from core.firewall import FirewallSnapshot, FirewallTool
+        snapshot = FirewallSnapshot(True, [FirewallTool('UFW', 'Inactive', 'ufw allow 22/tcp', '')])
+        self.window.apply_firewall_snapshot(snapshot)
+        self.assertFalse(self.window.firewall_details_toggle.isChecked())
+        self.assertEqual(self.window.firewall_rule_list.rowCount(), 1)
+        self.assertEqual(self.window.firewall_rule_list.item(0, 0).text(), 'Allow')
+        self.window.firewall_rule_list.selectRow(0)
+        self.assertTrue(self.window.firewall_delete_button.isEnabled())
+        with patch('ui.main_window.QMessageBox.question', return_value=QMessageBox.StandardButton.No), \
+             patch('ui.main_window.backend.change_firewall') as change:
+            self.window.delete_firewall_rule()
+        change.assert_not_called()
 
     def test_firewall_auto_check_is_cached_and_refresh_button_is_removed(self):
         from core.firewall import FirewallSnapshot
@@ -342,6 +483,108 @@ class QtFrontendTests(unittest.TestCase):
         self.assertFalse(event.isAccepted())
         release.set()
         self.wait_idle()
+
+    def test_exit_checks_live_protection_before_closing(self):
+        from PySide6.QtGui import QCloseEvent
+        with patch.object(self.window, 'start_task', return_value=True) as task:
+            event = QCloseEvent()
+            self.window.closeEvent(event)
+            self.assertFalse(event.isAccepted())
+            self.assertEqual(task.call_args.args[0], 'internet-exit-check')
+            self.assertFalse(getattr(self.window, '_exit_verified', False))
+
+    def test_exit_with_active_protection_waits_for_successful_pause(self):
+        with patch('ui.main_window.QMessageBox') as message, \
+                patch.object(self.window, 'ensure_system_authorization', return_value=True), \
+                patch.object(self.window, 'start_task', return_value=True) as task:
+            box = message.return_value
+            quit_button = object()
+            box.addButton.return_value = quit_button
+            box.clickedButton.return_value = quit_button
+            self.window.choose_close_action({'active': True, 'supported': True})
+            self.assertEqual(task.call_args.args[0], 'internet-exit')
+            self.assertFalse(getattr(self.window, '_exit_verified', False))
+        self.window.config['internet_protection_on'] = True
+        with patch.object(self.window, 'close') as close:
+            self.window.protection_stopped_for_exit({'active': True})
+            close.assert_not_called()
+            self.window.protection_stopped_for_exit({'active': False})
+            close.assert_called_once()
+            self.assertTrue(self.window._exit_verified)
+        # A deliberate close is remembered as off: no autostart after a restart.
+        self.assertFalse(self.window.config['internet_protection_on'])
+        self.autostart.assert_called_with(False)
+
+    def test_cancelled_close_keeps_app_and_protection(self):
+        with patch('ui.main_window.QMessageBox') as message, \
+                patch.object(self.window, 'stop_protection_and_quit') as stop, \
+                patch.object(self.window, 'close') as close:
+            message.return_value.clickedButton.return_value = None
+            self.window.choose_close_action({'active': True, 'supported': True})
+            stop.assert_not_called()
+            close.assert_not_called()
+
+    def test_exit_without_protection_skips_prompt(self):
+        with patch.object(self.window, 'close') as close, patch('ui.main_window.QMessageBox') as message:
+            self.window.choose_close_action({'active': False})
+            close.assert_called_once()
+            message.assert_not_called()
+
+    def test_failed_exit_check_offers_to_close_anyway(self):
+        self.patch('ui.main_window.backend.inspect_internet_protection', side_effect=ValueError('status unreadable'))
+        question = self.patch('ui.main_window.QMessageBox.question', return_value=QMessageBox.StandardButton.Yes)
+        with patch.object(self.window, 'close', wraps=self.window.close) as close:
+            self.window.close()
+            self.wait_idle()
+            self.window.poll_events()
+            self.assertIn('status unreadable', question.call_args.args[2])
+            self.assertTrue(self.window._exit_verified)
+            self.assertEqual(close.call_count, 2)
+
+    def test_session_end_closes_without_turning_protection_off(self):
+        from PySide6.QtGui import QCloseEvent
+        with patch.object(QApplication.instance(), 'isSavingSession', return_value=True), \
+                patch.object(self.window, 'start_task') as task:
+            event = QCloseEvent()
+            self.window.closeEvent(event)
+            self.assertTrue(event.isAccepted())
+            task.assert_not_called()
+
+    def test_protection_is_remembered_with_autostart_and_keepalive(self):
+        page = self.window.internet_page
+        self.keepalive.reset_mock()
+        page.keepalive()
+        self.keepalive.assert_not_called()
+        page.applied({'active': True, 'supported': True, 'count': 1})
+        self.assertTrue(self.window.config['internet_protection_on'])
+        self.autostart.assert_called_with(True)
+        self.keepalive.assert_called_once()
+        page.paused({'active': False, 'supported': True, 'count': 0})
+        self.assertFalse(self.window.config['internet_protection_on'])
+        self.autostart.assert_called_with(False)
+
+    def test_start_after_restart_offers_to_restore_protection(self):
+        page = self.window.internet_page
+        self.window.config['internet_protection_on'] = True
+        page.startup_pending = True
+        self.patch('ui.internet_page.backend.inspect_internet_protection', return_value={
+            'active': False, 'supported': True, 'count': 0, 'engine': 'sqlite-setup'})
+        question = self.patch('ui.internet_page.QMessageBox.question', return_value=QMessageBox.StandardButton.Yes)
+        with patch.object(page, 'apply') as apply:
+            page.maybe_refresh()
+            self.wait_idle()
+            self.window.poll_events()
+            question.assert_called_once()
+            apply.assert_called_once_with(confirmed=True)
+        question.return_value = QMessageBox.StandardButton.No
+        page.startup_state({'active': False, 'supported': True})
+        self.assertFalse(self.window.config['internet_protection_on'])
+
+    def test_start_with_active_protection_does_not_prompt(self):
+        page = self.window.internet_page
+        question = self.patch('ui.internet_page.QMessageBox.question')
+        page.startup_state({'active': True, 'supported': True, 'count': 5})
+        question.assert_not_called()
 
     def test_settings_preserve_unknown_keys_and_update_excludes(self):
         save = self.patch('ui.main_window.save_config')

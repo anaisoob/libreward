@@ -1,0 +1,380 @@
+"""Plain-language domain protection UI; system work belongs to backends."""
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtWidgets import (
+    QApplication, QCheckBox, QHBoxLayout, QLineEdit, QListWidget, QMessageBox,
+    QScrollArea, QVBoxLayout, QWidget,
+)
+from backends import backend
+from config import save_config
+from core.internet import CATEGORIES, DiskDomainLists as DomainLists, normalize_domain, preferences
+
+
+class InternetProtectionPage:
+    def __init__(self, window):
+        self.window = window
+        self.state = None
+        self.pending = False
+        self.store = DomainLists(backend.data_dir())
+        self.page, outer = window.page('Internet protection', 'Block connections to unwanted website domains.')
+        self.page.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.health_timer = QTimer(self.page)
+        self.health_timer.setInterval(30000)
+        self.health_timer.timeout.connect(self.check_health)
+        self.health_timer.start()
+        # Protection follows the open app: while it is on, tell the local filter
+        # LibreWard is still running. On the next start, offer to restore it.
+        self.keepalive_timer = QTimer(self.page)
+        self.keepalive_timer.setInterval(20000)
+        self.keepalive_timer.timeout.connect(self.keepalive)
+        self.keepalive_timer.start()
+        self.keepalive()
+        self.startup_pending = self.protection_remembered()
+        scroll = QScrollArea()
+        self.scroll = scroll
+        self.scroll_position = None
+        self.scroll_restore_timer = QTimer(self.page)
+        self.scroll_restore_timer.setSingleShot(True)
+        self.scroll_restore_timer.timeout.connect(self.restore_scroll)
+        scroll.setWidgetResizable(True)
+        content = QWidget()
+        content.setObjectName('settingsContent')
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(0, 0, 0, 0)
+        scroll.setWidget(content)
+        outer.addWidget(scroll)
+        card, box = window.card()
+        self.status = window.label('Protection has not been checked', 'statusValue')
+        box.addWidget(self.status)
+        self.info = window.label('Lists are downloaded only when you choose to enable or update protection.', 'muted')
+        self.info.setWordWrap(True)
+        box.addWidget(self.info)
+        row = QHBoxLayout()
+        self.apply_button = window.button('Enable / apply protection', self.apply, variant='primary')
+        self.pause_button = window.button('Pause protection', self.pause)
+        self.pause_button.setEnabled(False)
+        row.addWidget(self.apply_button)
+        row.addWidget(self.pause_button)
+        self.status_button = window.button('Check status', self.refresh)
+        row.addWidget(self.status_button)
+        box.addLayout(row)
+        self.notice = window.label('', 'muted')
+        self.notice.setWordWrap(True)
+        box.addWidget(self.notice)
+        layout.addWidget(card)
+        try:
+            saved = preferences(window.config)
+        except (ValueError, TypeError):
+            saved = {'categories': ['dangerous'], 'allowed': [], 'blocked': []}
+            self.notice.setText('Saved website settings could not be read. Review them before applying protection.')
+        card, box = window.card()
+        box.addWidget(window.label('WHAT TO BLOCK', 'eyebrow'))
+        self.categories = {}
+        for key, (title, _) in CATEGORIES.items():
+            checkbox = QCheckBox(title + (' (recommended)' if key == 'dangerous' else ' (optional)'))
+            checkbox.setChecked(key in saved['categories'])
+            checkbox.toggled.connect(self.changed)
+            self.categories[key] = checkbox
+            box.addWidget(checkbox)
+        note = window.label('Ads and tracking lists can stop parts of a website from working. '
+                            'Add its exact domain to Allowed websites if needed.', 'muted')
+        note.setWordWrap(True)
+        box.addWidget(note)
+        box.addWidget(window.button('Update protection lists', self.download))
+        layout.addWidget(card)
+        lists_row = QHBoxLayout()
+        self.domain_lists = {}
+        self.domain_fields = []
+        for key, title in (('allowed', 'Allowed websites'), ('blocked', 'Blocked websites')):
+            card, box = window.card()
+            box.addWidget(window.label(title, 'sectionTitle'))
+            note = window.label('Allow overrides LibreWard blocklists.' if key == 'allowed' else
+                                'Always block these domains unless allowed.', 'muted')
+            note.setWordWrap(True)
+            box.addWidget(note)
+            listing = QListWidget()
+            listing.addItems(saved[key])
+            listing.setMaximumHeight(150)
+            self.domain_lists[key] = listing
+            box.addWidget(listing)
+            field = QLineEdit()
+            self.domain_fields.append(field)
+            field.setPlaceholderText('example.org (exact domain)')
+            box.addWidget(field)
+            add = window.button('Add website', lambda checked=False, k=key, f=field: self.add_domain(k, f))
+            box.addWidget(add)
+            field.returnPressed.connect(lambda k=key, f=field: self.add_domain(k, f))
+            box.addWidget(window.button('Remove selected', lambda checked=False, k=key: self.remove_domain(k)))
+            lists_row.addWidget(card)
+        layout.addLayout(lists_row)
+        note = window.label('This protection blocks exact domain names, not page contents. '
+                            'Subdomains need their own entries. It cannot remove every ad. '
+                            'Apps using their own DNS and already-open connections may bypass it. '
+                            'No browsing history or blocked-request history is recorded. '
+                            'Allowed websites only removes LibreWard blocks; it cannot override other security tools.', 'muted')
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        self.advanced_toggle = QCheckBox('Show how protection works')
+        layout.addWidget(self.advanced_toggle)
+        self.advanced = window.label('Linux: a local service checks an indexed database on disk. NetworkManager forwards allowed requests, including VPN domains. Other supported setups use a marked /etc/hosts section. '
+                                    'Existing entries are kept. DNS server and VPN settings are unchanged. '
+                                    'Protection works while LibreWard is open. If the computer restarts with protection on, '
+                                    'LibreWard starts with it and protection continues. Closing LibreWard or pausing '
+                                    'removes LibreWard’s blocks until you enable protection again.\n\n'
+                                    'Sources: The Block List Project, downloaded over HTTPS from GitHub. '
+                                    'Upstream source URLs and license headers are preserved in the local list cache. '
+                                    'Lists can contain mistakes and are refreshed only when you choose to update. '
+                                    'Downloading lists contacts GitHub; your website exceptions are not uploaded.', 'muted')
+        self.advanced.setWordWrap(True)
+        self.advanced.hide()
+        layout.addWidget(self.advanced)
+        self.advanced_toggle.toggled.connect(self.advanced.setVisible)
+        layout.addStretch()
+
+    def protection_remembered(self):
+        return self.window.config.get('internet_protection_on') is True
+
+    def keepalive(self):
+        if self.protection_remembered():
+            backend.internet_protection_keepalive()
+
+    def remember_protection(self, enabled):
+        """Remember whether protection is on and start LibreWard at login accordingly."""
+        try:
+            backend.set_autostart(enabled)
+            if self.protection_remembered() != enabled:
+                config = dict(self.window.config, internet_protection_on=enabled)
+                save_config(config)
+                self.window.config = config
+        except (OSError, ValueError, NotImplementedError) as exc:
+            self.window.log.appendPlainText(f'Cannot update starting LibreWard with the computer: {exc}')
+        self.keepalive()
+
+    def startup_state(self, state):
+        self.show_state(state)
+        if state.get('active') or not state.get('supported'):
+            return
+        self.window.showNormal()
+        self.window.raise_()
+        self.window.switch_page('internet')
+        if QMessageBox.question(self.window, 'Internet protection',
+                'Internet protection was on when LibreWard was last running, but it is off now. Turn it on again?',
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes) == QMessageBox.StandardButton.Yes:
+            self.apply(confirmed=True)
+        else:
+            self.remember_protection(False)
+
+    def changed(self):
+        self.notice.setText('Changes are not applied yet. Choose “Enable / apply protection” to use these settings.')
+
+    def settings(self):
+        return {'categories': [key for key, check in self.categories.items() if check.isChecked()],
+                **{key: [listing.item(i).text() for i in range(listing.count())]
+                   for key, listing in self.domain_lists.items()}}
+
+    def persist(self, settings):
+        config = dict(self.window.config)
+        config['internet_protection'] = settings
+        save_config(config)
+        self.window.config = config
+
+    def add_domain(self, key, field):
+        if self.window.operation:
+            return
+        try:
+            domain = normalize_domain(field.text())
+        except ValueError as exc:
+            QMessageBox.warning(self.window, 'Website domain', str(exc))
+            return
+        listing = self.domain_lists[key]
+        if not listing.findItems(domain, Qt.MatchFlag.MatchExactly):
+            listing.addItem(domain)
+            listing.sortItems()
+        # Moving a domain between lists resolves the contradiction immediately.
+        other = self.domain_lists['blocked' if key == 'allowed' else 'allowed']
+        for item in other.findItems(domain, Qt.MatchFlag.MatchExactly):
+            other.takeItem(other.row(item))
+        field.clear()
+        self.changed()
+
+    def remove_domain(self, key):
+        if self.window.operation:
+            return
+        listing = self.domain_lists[key]
+        for item in listing.selectedItems():
+            listing.takeItem(listing.row(item))
+        self.changed()
+
+    def request_refresh(self):
+        self.pending = True
+        self.maybe_refresh()
+
+    def maybe_refresh(self):
+        if self.startup_pending and self.window.operation is None and QApplication.activeModalWidget() is None:
+            if self.window.start_task('internet-status', backend.inspect_internet_protection, on_done=self.startup_state):
+                self.startup_pending = False
+                self.status.setText('Checking domain protection…')
+            return
+        if (self.pending and self.window.operation is None
+                and QApplication.activeModalWidget() is None
+                and self.window.pages.currentIndex() == self.window.page_indices['internet']):
+            self.refresh()
+
+    def refresh(self):
+        if self.window.start_task('internet-status', backend.inspect_internet_protection, on_done=self.show_state):
+            self.pending = False
+            self.status.setText('Checking domain protection…')
+
+    def check_health(self):
+        if self.state and self.state.get('active') and self.window.pages.currentIndex() == self.window.page_indices['internet']:
+            self.request_refresh()
+
+    def prepare_operation(self):
+        if self.window.pages.currentIndex() == self.window.page_indices['internet']:
+            self.scroll_position = self.scroll.verticalScrollBar().value()
+            # Disabling the focused status button otherwise transfers focus to
+            # widgets lower down, and QScrollArea scrolls those into view.
+            self.page.setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def restore_scroll(self):
+        if self.scroll_position is not None:
+            self.scroll.verticalScrollBar().setValue(self.scroll_position)
+            self.scroll_position = None
+
+    def show_state(self, state):
+        self.state = state
+        if state.get('recovered'):
+            self.notice.setText('The filter stopped. Normal internet access was restored automatically. You can enable protection again.')
+        active = state.get('active', False)
+        supported = state.get('supported', False)
+        self.status.setText('Domain blocking is on' if active and supported else
+                            'Domain entries are installed — protection needs checking' if active else
+                            'Protection is off' if supported else 'Protection is unavailable on this setup')
+        self.status.setProperty('severity', 'success' if active and supported else 'warning')
+        self.status.style().unpolish(self.status)
+        self.status.style().polish(self.status)
+        self.info.setText(f"{state.get('count', 0):,} domains in the active blocklist.\n" +
+                          ('Method: Local DNS filter.\n' if state.get('engine') in ('dnsmasq', 'dnsmasq-setup', 'sqlite-dns', 'sqlite-setup') else 'Method: System hosts file (small lists only).\n') +
+                          state.get('message', ''))
+        self.update_controls()
+
+    def update_controls(self):
+        idle = self.window.operation is None
+        self.apply_button.setEnabled(idle and bool(self.state and self.state.get('supported')))
+        self.pause_button.setEnabled(idle and bool(self.state and self.state.get('active')))
+        for widget in [*self.categories.values(), *self.domain_lists.values(), *self.domain_fields]:
+            widget.setEnabled(idle)
+        if idle and self.scroll_position is not None:
+            self.scroll_restore_timer.start(0)
+
+    def unknown(self):
+        self.state = None
+        self.status.setText('Protection status needs checking')
+        self.status.setProperty('severity', 'warning')
+        self.status.style().unpolish(self.status)
+        self.status.style().polish(self.status)
+        self.notice.setText('The operation was not confirmed. Check status before relying on protection.')
+        self.update_controls()
+
+    def download(self):
+        if self.window.operation:
+            return
+        settings = self.settings()
+        if not settings['categories']:
+            QMessageBox.information(self.window, 'Protection lists', 'Choose at least one protection category to download.')
+            return
+        if not self.window.confirm('Update protection lists',
+                'Download the selected lists from The Block List Project on GitHub? '
+                'Lists can contain mistakes. This download does not change active protection; apply the lists afterwards.'):
+            return
+        def work():
+            bundle = self.store.update(settings['categories'], self.window.events.put)
+            count = bundle.get('count', 0)
+            self.window.events.put(f'Downloaded {count:,} unique domains. Apply protection to use the updated lists.\n')
+            return {'updated': bundle['updated']}
+        self.window.start_task('internet-download', work,
+                               title='Update protection lists', on_done=lambda bundle: self.notice.setText(
+                                   f"Lists downloaded: {bundle['updated']}. Apply protection to use them."))
+
+    def apply(self, confirmed=False):
+        if self.window.operation or not self.state or not self.state.get('supported'):
+            return
+        settings = self.settings()
+        if not settings['categories'] and not settings['blocked']:
+            QMessageBox.information(self.window, 'Internet protection', 'Choose a category or add a blocked website first.')
+            return
+        if settings['categories'] and self.state.get('engine') == 'hosts':
+            QMessageBox.information(self.window, 'Local DNS setup needed',
+                'Automatic setup is unavailable for your current network settings. '
+                'You can still block individual websites by clearing the categories. ')
+            return
+        setup_text = ''
+        if self.state.get('setup_available'):
+            setup_text = ('LibreWard will set up a local website filter using your existing network manager. '
+                          'Turning protection off restores the previous DNS mode. The internet may briefly reconnect. ')
+            if self.state.get('needs_dns_install'):
+                setup_text += ('The required dnsmasq-base package and its dependencies will be installed from your system repositories. '
+                               'Installation and setup may each ask for system authorization. ')
+        if not confirmed and not self.window.confirm('Enable domain protection',
+                setup_text +
+                'Apply these domain-blocking settings to this computer? Missing lists will be downloaded from '
+                'The Block List Project on GitHub. This may stop some websites or apps from working. '
+                'Protection works while LibreWard is open, including after restarting the computer. '
+                'Closing LibreWard turns it off. You can pause it or add allowed websites. '
+                'The detected blocking method is shown in the status above. Existing network and VPN connection settings will be kept. System authorization is required.'):
+            return
+        self.window.privileged_terminal_commands = ''
+        if not self.window.ensure_system_authorization():
+            return
+        try:
+            self.persist(settings)
+        except OSError as exc:
+            QMessageBox.warning(self.window, 'Settings', str(exc))
+            return
+        def work():
+            available = set(self.store.load()['lists'])
+            if any(key not in available for key in settings['categories']):
+                self.store.update(settings['categories'], self.window.events.put)
+            if self.state.get('engine') in ('sqlite-dns', 'sqlite-setup'):
+                self.window.events.put('Preparing the domain database on disk…\n')
+                with self.store.prepare(settings) as domains:
+                    if not len(domains):
+                        raise ValueError('No domains remain to block after your allowed websites were applied.')
+                    self.window.events.put(f'Applying {len(domains):,} blocked domains. Waiting for system authorization…\n')
+                    state = backend.apply_internet_protection(domains)
+            else:
+                domains = self.store.compile(settings)
+                if not domains:
+                    raise ValueError('No domains remain to block after your allowed websites were applied.')
+                self.window.events.put(f'Applying {len(domains):,} blocked domains. Waiting for system authorization…\n')
+                state = backend.apply_internet_protection(domains)
+            self.window.events.put(f"Applied {state['count']:,} exact-domain blocks. Blocking method: {'Local database filter' if state.get('engine') == 'sqlite-dns' else state.get('engine', 'hosts')}.\n")
+            return state
+        self.window.start_task('internet-apply', work, title='Apply domain protection', on_done=self.applied)
+
+    def applied(self, state):
+        self.show_state(state)
+        self.remember_protection(bool(state.get('active')))
+        skipped = state.get('skipped', 0)
+        self.notice.setText('Protection settings were applied. Restart an affected app if it is still using cached addresses.'
+                            + (f' {skipped:,} domains were kept under existing system hosts entries.' if skipped else ''))
+
+    def pause(self):
+        if self.window.operation or not self.state or not self.state.get('active'):
+            return
+        if not self.window.confirm('Pause domain protection',
+                'Remove LibreWard’s active domain blocks? Your choices and downloaded lists will be kept. '
+                'Protection stays paused until you enable it again. '
+                'Other security tools and existing hosts entries are kept. System authorization is required.'):
+            return
+        self.window.privileged_terminal_commands = ''
+        if not self.window.ensure_system_authorization():
+            return
+        self.window.start_task('internet-pause', lambda: backend.apply_internet_protection([]),
+                               title='Pause domain protection', on_done=self.paused)
+
+    def paused(self, state):
+        self.show_state(state)
+        if not state.get('active'):
+            self.remember_protection(False)
+        self.notice.setText('Protection is paused. Choose “Enable / apply protection” when you want to resume.')

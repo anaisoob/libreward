@@ -4,8 +4,11 @@ Open **Firewall**. On the first visit, LibreWard automatically checks installed 
 firewalld, nftables and IPv4/IPv6 iptables tools in a background worker.
 If another operation is running, detection waits until it finishes while this
 page is open. Results are retained when switching pages; revisiting does not
-repeat a completed check. Choose a detected tool to see whether its protection is on. Select **Show technical
-rule details** to see its rules. Several tools may expose
+repeat a completed check. Choose a detected tool to see whether its protection is on.
+Rules appear in a table showing action, connection direction, app/port, network
+and whether the rule is active or saved. Technical output is available separately
+under **Show technical rule details**. Custom conditions remain explicitly marked
+and their original definition is available in the row tooltip. Several tools may expose
 the same underlying Linux netfilter configuration.
 
 ## Reading status and rules
@@ -18,8 +21,8 @@ iptables show rulesets; rules being present does not establish complete
 network protection.
 
 Select a tool and click **Check protection status** if permission is required.
-The system polkit dialog authorizes one fixed read query using pkexec.
-UFW shows status and active rules; firewalld shows runtime zones. Reading
+The system polkit dialog authorizes the read operation using pkexec.
+UFW shows status and configured user rules; firewalld shows runtime zones. Reading
 permanent firewalld configuration is part of initial detection and may require
 permissions. The GUI remains unprivileged and never receives or stores passwords.
 Cancelling authorization stops the request. If pkexec is missing, an explanation
@@ -27,6 +30,18 @@ dialog provides a distribution-specific installation command and copy buttons
 for terminal sudo commands. If authorization fails, it explains that the
 desktop polkit agent/service or system policy may need attention.
 Passwords are entered only into system tools, never into LibreWard widgets.
+
+## Deleting a rule
+
+Select a rule in the list and choose **Delete selected rule**. Review the rule
+and confirm before system authorization. Status and rules refresh automatically.
+UFW deletes the saved rule by its definition, including both IP versions if the
+rule covers both. For firewalld, the list distinguishes current-session entries
+from saved configuration; removing a saved entry takes effect after reload.
+Services, ports and rich rules can be removed. Other firewalld settings and raw
+nftables/iptables rules remain available for inspection only.
+Deleting an allow rule can interrupt access; deleting a block rule can allow
+access. Other rules and default policies still apply.
 
 ## Enabling protection
 

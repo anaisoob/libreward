@@ -2,6 +2,42 @@
 
 ## Unreleased
 
+- Keep the DNS filter running when one socket receive/accept fails, and restart it
+  after a crash before falling back to normal DNS. Wait for the previous resolver to
+  release the local DNS port before starting the filter, so enabling protection no
+  longer fails intermittently after the NetworkManager reload.
+
+- Internet protection now works only while LibreWard is open. Closing asks once and turns
+  protection off; a restart with protection on keeps it and opens LibreWard minimized at
+  login; if the app stops unexpectedly, the filter restores normal DNS after about two
+  minutes and the next start offers to turn it on again. Remove the tray icon and the
+  remembered close choice.
+
+- Replace large dnsmasq hosts lists with a standalone SQLite-backed DNS filter: stream installation, bounded request/cache memory, UDP/TCP forwarding through NetworkManager, systemd lifecycle and failure recovery.
+- Widen the left navigation so Internet protection is fully visible.
+
+- Stream community-list downloads into a SQLite cache, read protection status in constant space, write helper payloads through temporary files and reject unsafe memory requirements before enabling DNS protection.
+
+- Use a flag-free full NetworkManager reload for DNS setup and rollback; include
+  the actual NetworkManager error and recovery instructions if reloading fails.
+
+- Offer local DNS setup on default NetworkManager-based Debian/Ubuntu systems, including consented dnsmasq-base installation, reversible DNS mode configuration and Debian mdns lookup support. Replace the technical setup dead end with a short explanation.
+
+- Add optional adult-site lists and a local DNS backend for existing NetworkManager/dnsmasq setups, with health checks, rollback and migration from LibreWard hosts entries. Limit the hosts fallback to small custom lists.
+
+- Recognize systemd-resolved hosts lookup, accommodate larger community domain
+  lists and preserve the Internet protection page position during status checks.
+
+- Add Linux Internet protection with opt-in community domain lists, dangerous-site,
+  tracking and ad categories, exact-domain exceptions, confirmed hosts-file
+  application and pause. Keep DNS/VPN settings and existing hosts entries intact.
+
+- Present editable firewall rules in a readable table with action, connection,
+  app/port, network and configuration scope; keep raw output in optional details.
+
+- Show firewall rules by default and offer confirmed deletion of saved UFW
+  rules and firewalld zone services, ports and rich rules, with automatic refresh.
+
 - Simplify the firewall page with plain-language protection status and optional
   technical rule details; remove its Copy sudo commands button. Firewall hints
   match whether protection is on, off or unconfirmed.

@@ -262,7 +262,7 @@ class FirewallChangeTests(unittest.TestCase):
         backend = LinuxBackend()
         with tempfile.TemporaryDirectory(prefix='libreward firewall ') as folder:
             tool = Path(folder, 'fake ufw')
-            tool.write_text('#!/bin/sh\ncase "$1" in\nallow) printf "Rule added\\n" ;;\nstatus) printf "Status: active\\n22/tcp ALLOW Anywhere\\n" ;;\n*) exit 3 ;;\nesac\n')
+            tool.write_text('#!/bin/sh\ncase "$1" in\nallow) printf "Rule added\\n" ;;\nstatus) printf "Status: active\\n22/tcp ALLOW Anywhere\\n" ;;\nshow) printf "ufw allow 22/tcp\\n" ;;\n*) exit 3 ;;\nesac\n')
             tool.chmod(0o700)
             def trusted(name):
                 return str(tool) if name == 'ufw' else '/bin/sh' if name == 'sh' else '/not/executed/pkexec'

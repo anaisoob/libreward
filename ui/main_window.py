@@ -2,8 +2,10 @@
 import os
 import queue
 import threading
+from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, QSize, QByteArray
+from PySide6.QtGui import QColor, QIcon
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog,
     QFileDialog, QHBoxLayout, QLabel, QLineEdit, QListWidget, QMainWindow,
@@ -53,6 +55,7 @@ class QtMainWindow(QMainWindow):
         self.scan_actions = []
         self.last_result = None
         self.build_shell()
+        self.setup_window_icon()
         self.apply_theme(self.config.get("qt_theme", "dark"))
         geometry = self.config.get('window_geometry')
         if isinstance(geometry, str) and len(geometry) <= 8192:
@@ -71,6 +74,58 @@ class QtMainWindow(QMainWindow):
         self.database_watch_timer.timeout.connect(self.poll_system_database)
         self.start_task("check", self.check_runtime, on_done=self.offer_setup)
 
+    def setup_window_icon(self):
+        self.setWindowIcon(QIcon(str(Path(__file__).resolve().parent.parent / 'assets' / 'libreward.png')))
+
+    def choose_close_action(self, state):
+        """Protection runs only while LibreWard is open; closing turns it off."""
+        self.internet_page.show_state(state)
+        if not state.get('active'):
+            self._exit_verified = True
+            self.close()
+            return
+        box = QMessageBox(self)
+        box.setWindowTitle('Internet protection is on')
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setText('Closing LibreWard turns off Internet protection.')
+        box.setInformativeText('Websites will no longer be blocked until you open LibreWard and turn protection on again. '
+                               'System authorization may be required.')
+        quit_button = box.addButton('Turn off and close', QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(quit_button)
+        box.exec()
+        if box.clickedButton() == quit_button:
+            self.stop_protection_and_quit()
+
+    def exit_check_failed(self, error):
+        """Never trap the user in the app when protection cannot be checked."""
+        if isinstance(error, AuthorizationError) and error.kind == 'cancelled':
+            return
+        if QMessageBox.question(self, 'Close LibreWard?',
+                'LibreWard could not turn off Internet protection.\n\n' + str(error) +
+                '\n\nClose anyway? If websites are still blocked, open LibreWard again to turn protection off.',
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
+            self._exit_verified = True
+            self.close()
+
+    def stop_protection_and_quit(self):
+        self.privileged_terminal_commands = ''
+        if not self.ensure_system_authorization():
+            return
+        self.start_task('internet-exit', lambda: backend.apply_internet_protection([]),
+                        on_done=self.protection_stopped_for_exit)
+
+    def protection_stopped_for_exit(self, state):
+        self.internet_page.show_state(state)
+        if state.get('active'):
+            QMessageBox.warning(self, 'LibreWard is still open',
+                'Internet protection could not be turned off. LibreWard will stay open so you can try again.')
+            return
+        self.internet_page.remember_protection(False)
+        self._exit_verified = True
+        self.close()
+
     def build_shell(self):
         shell = QWidget()
         shell.setObjectName("appShell")
@@ -79,7 +134,7 @@ class QtMainWindow(QMainWindow):
         layout.setSpacing(0)
         sidebar = QFrame()
         sidebar.setObjectName("sidebar")
-        sidebar.setFixedWidth(224)
+        sidebar.setFixedWidth(264)
         side = QVBoxLayout(sidebar)
         side.setContentsMargins(18, 26, 18, 22)
         side.setSpacing(8)
@@ -101,7 +156,7 @@ class QtMainWindow(QMainWindow):
             ("scan", "Virus scan", self.build_scan_page),
             ("quarantine", "Quarantine", self.build_quarantine_page),
             ("firewall", "Firewall", self.build_firewall_page),
-            ("internet", "Internet Watcher", lambda: self.build_planned_page("Internet Watcher", "Understand your network activity", "Internet traffic monitoring is planned for a future release.")),
+            ("internet", "Internet protection", self.build_internet_page),
             ("settings", "Settings", self.build_settings_page),
             ("about", "About", self.build_about_page),
         ]
@@ -132,6 +187,8 @@ class QtMainWindow(QMainWindow):
         for name, button in self.nav_buttons.items():
             button.setChecked(name == key)
         self.update_scan_indicator()
+        if key == 'internet':
+            self.internet_page.request_refresh()
         if key == 'firewall' and self.firewall_snapshot is None:
             self.firewall_refresh_pending = True
             if self.operation:
@@ -215,6 +272,7 @@ class QtMainWindow(QMainWindow):
         actions = QHBoxLayout()
         self.firewall_enable_button = self.button("Enable firewall", self.enable_firewall, variant="primary")
         self.firewall_add_button = self.button("Add rule", self.add_firewall_rule)
+        self.firewall_delete_button = self.button('Delete selected rule', self.delete_firewall_rule, variant='danger')
         actions.addWidget(self.firewall_enable_button)
         actions.addWidget(self.firewall_add_button)
         actions.addStretch()
@@ -232,6 +290,11 @@ class QtMainWindow(QMainWindow):
         self.firewall_rules_help = self.label('Rules decide which connections are allowed or blocked. Checking status does not change your settings.', 'muted')
         self.firewall_rules_help.setWordWrap(True)
         box.addWidget(self.firewall_rules_help)
+        rule_actions = QHBoxLayout()
+        rule_actions.addWidget(self.label('Select a row to delete that rule.', 'muted'))
+        rule_actions.addStretch()
+        rule_actions.addWidget(self.firewall_delete_button)
+        box.addLayout(rule_actions)
         self.firewall_details_toggle = QCheckBox('Show technical rule details')
         box.addWidget(self.firewall_details_toggle)
         self.firewall_rules = QPlainTextEdit()
@@ -239,10 +302,22 @@ class QtMainWindow(QMainWindow):
         self.firewall_rules.setPlaceholderText("Existing rules and installation instructions will appear here.")
         self.firewall_rules.hide()
         self.firewall_details_toggle.toggled.connect(self.firewall_rules.setVisible)
+        self.firewall_rule_list = self.table(['Action', 'Connection', 'App / port', 'Network', 'Applies to'])
+        self.firewall_rule_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.firewall_rule_list.setMinimumHeight(120)
+        self.firewall_rule_list.itemSelectionChanged.connect(self.update_firewall_controls)
+        box.addWidget(self.firewall_rule_list, 1)
+        self.firewall_empty = self.label('No rules to show yet. Check protection status to load your rules.', 'muted')
+        self.firewall_empty.setWordWrap(True)
+        box.addWidget(self.firewall_empty)
         box.addWidget(self.firewall_rules, 1)
-        box.addStretch()  # keep text at the top while rule details are hidden
         layout.addWidget(rules, 1)
         return page
+
+    def build_internet_page(self):
+        from .internet_page import InternetProtectionPage
+        self.internet_page = InternetProtectionPage(self)
+        return self.internet_page.page
 
     def maybe_refresh_firewall(self):
         if (self.firewall_refresh_pending and self.operation is None
@@ -305,6 +380,8 @@ class QtMainWindow(QMainWindow):
         self.show_firewall_tool(self.firewall_tools.currentIndex())
 
     def show_firewall_tool(self, index):
+        self.firewall_rule_list.setRowCount(0)
+        self.firewall_removals = []
         self.update_firewall_controls()
         snapshot = self.firewall_snapshot
         if snapshot is None:
@@ -315,6 +392,27 @@ class QtMainWindow(QMainWindow):
             self.firewall_rules_help.setText(snapshot.instructions)
             return
         tool = snapshot.tools[index]
+        from core.firewall import removable_firewall_rules, firewall_rule_columns
+        self.firewall_removals = removable_firewall_rules(tool)
+        self.firewall_rule_list.setRowCount(len(self.firewall_removals))
+        for row, removal in enumerate(self.firewall_removals):
+            try:
+                columns = firewall_rule_columns(removal, tool)
+            except (ValueError, IndexError):
+                columns = ('Custom rule', 'See details', 'Custom conditions', 'See details', 'Saved rule')
+            for column, value in enumerate(columns):
+                item = QTableWidgetItem(value)
+                item.setToolTip(removal.description(tool.name))
+                if column == 0:
+                    if value == 'Allow':
+                        item.setForeground(QColor('#22a06b'))
+                    elif value.startswith('Block'):
+                        item.setForeground(QColor('#e35d6a'))
+                self.firewall_rule_list.setItem(row, column, item)
+        self.firewall_empty.setVisible(not self.firewall_removals)
+        self.firewall_empty.setText('No individual rules could be loaded. This does not mean all connections are allowed. '
+                                    'Check protection status or open technical details to see default settings and other rules.')
+        self.update_firewall_controls()
         self.firewall_status.setProperty('severity',
             'danger' if tool.state in ('Inactive', 'Not running') else
             'success' if tool.state in ('Active', 'Running') else 'unknown')
@@ -344,6 +442,8 @@ class QtMainWindow(QMainWindow):
         self.firewall_enable_button.setEnabled(idle and managed and tool.state in ('Inactive', 'Not running', 'Active', 'Running'))
         self.firewall_enable_button.setText('Disable firewall' if tool and tool.state in ('Active', 'Running') else 'Enable firewall')
         self.firewall_add_button.setEnabled(idle and managed and (tool.name == 'UFW' or tool.state == 'Running'))
+        self.firewall_delete_button.setEnabled(idle and managed and self.firewall_rule_list.currentRow() >= 0
+                                               if hasattr(self, 'firewall_rule_list') else False)
         self.firewall_tools.setEnabled(idle)
         if not tool:
             hint = 'Firewall detection starts automatically when this page is opened.'
@@ -426,6 +526,26 @@ class QtMainWindow(QMainWindow):
         if self.start_task('firewall-change', lambda: backend.change_firewall(name, rule=rule, enabled=enabled),
                            on_done=self.firewall_change_finished):
             self.firewall_change_result.setText('Waiting for system authorization…')
+
+    def delete_firewall_rule(self):
+        tool = self.selected_firewall_tool()
+        index = self.firewall_rule_list.currentRow()
+        if self.operation or not tool or not 0 <= index < len(self.firewall_removals):
+            return
+        removal = self.firewall_removals[index]
+        text = ('Delete this connection rule?\n\n' + removal.description(tool.name)
+                + '\n\nRemoving an allow rule may stop an app from connecting. Removing a block rule may allow access. '
+                  'Other rules and the firewall’s default settings still apply.')
+        if QMessageBox.question(self, 'Delete firewall rule', text,
+                                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+            return
+        self.privileged_terminal_commands = ''
+        if not self.ensure_system_authorization():
+            return
+        if self.start_task('firewall-change', lambda: backend.change_firewall(tool.name, removal=removal),
+                           on_done=self.firewall_change_finished):
+            self.firewall_change_result.setText('Waiting for system authorization to delete the selected rule…')
 
     def firewall_change_finished(self, result):
         self.apply_privileged_firewall_snapshot(result.snapshot)
@@ -689,6 +809,8 @@ class QtMainWindow(QMainWindow):
             "by the ClamAV project/Cisco Talos and licensed separately under "
             "the GNU General Public License version 2.\n\n"
             "PySide6 / Qt is used under the applicable open-source LGPLv3 license.\n\n"
+            "Optional Internet protection domain lists come from The Block List Project under its upstream license terms. "
+            "Lists are downloaded only after confirmation and may contain mistakes.\n\n"
             f"ClamAV homepage: {CLAMAV_HOMEPAGE}\nClamAV source: {CLAMAV_SOURCE}\n\n"
             "LibreWard and ClamAV are provided with no warranty, to the extent permitted by law."
         )
@@ -761,6 +883,8 @@ class QtMainWindow(QMainWindow):
         return True
 
     def set_busy(self, operation):
+        if operation is not None:
+            self.internet_page.prepare_operation()
         self.operation = operation
         if operation == 'scan':
             self.summary.setText('Preparing scan — checking the antivirus engine and database…')
@@ -770,6 +894,7 @@ class QtMainWindow(QMainWindow):
         for button in self.scan_actions:
             button.setEnabled(operation is None and self.startup_status is not None and self.startup_status.can_scan)
         self.update_firewall_controls()
+        self.internet_page.update_controls()
         self.stop_button.setEnabled(operation == "scan")
         self.activity.setVisible(operation is not None)
         if operation:
@@ -1226,6 +1351,12 @@ class QtMainWindow(QMainWindow):
                     callback(payload)
             else:
                 self.set_status("Operation failed", "danger")
+                if completed_operation.startswith('internet-'):
+                    self.internet_page.unknown()
+                if completed_operation in ('internet-exit-check', 'internet-exit'):
+                    self.log.appendPlainText(str(payload))
+                    self.exit_check_failed(payload)
+                    return
                 if completed_operation == 'firewall-change':
                     tool = self.selected_firewall_tool()
                     if tool:
@@ -1244,6 +1375,7 @@ class QtMainWindow(QMainWindow):
                         QMessageBox.warning(self, "LibreWard", str(payload))
 
         self.maybe_refresh_firewall()
+        self.internet_page.maybe_refresh()
 
     def closeEvent(self, event):
         if self.operation is not None or (self.worker and self.worker.is_alive()):
@@ -1253,6 +1385,13 @@ class QtMainWindow(QMainWindow):
             else:
                 self.set_status("Wait for the current operation before closing.")
             event.ignore()
+            return
+        # Logging out or shutting down keeps protection as it is; it returns with
+        # the computer and the app's autostart entry.
+        if not getattr(self, '_exit_verified', False) and not QApplication.instance().isSavingSession():
+            event.ignore()
+            self.start_task('internet-exit-check', backend.inspect_internet_protection,
+                            on_done=self.choose_close_action)
             return
         self.timer.stop()
         self.database_watch_timer.stop()
@@ -1266,11 +1405,11 @@ class QtMainWindow(QMainWindow):
         event.accept()
 
 
-def run():
+def run(minimized=False):
     app = QApplication([])
     app.setApplicationName(APP_NAME)
     app.setOrganizationName(APP_NAME)
     app.setStyle("Fusion")
     window = QtMainWindow()
-    window.show()
+    window.showMinimized() if minimized else window.show()
     return app.exec()

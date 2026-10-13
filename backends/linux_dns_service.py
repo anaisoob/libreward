@@ -1,0 +1,452 @@
+"""Linux installation/lifecycle for the disk-backed DNS filter.
+
+NetworkManager's dnsmasq continues forwarding normal and VPN queries on a
+private loopback port. LibreWard owns only the local filtering front end.
+"""
+import json
+from pathlib import Path
+
+from core.dns_proxy import SERVICE_SOURCE
+from .linux_dns import helper as legacy_helper, filter_responds
+
+DIRECTORY = '/etc/libreward'
+STATE = DIRECTORY + '/dns-state.json'
+PROXY_CONFIG = 'port=5354\n'
+# Seconds without a heartbeat from the open app before normal DNS is restored.
+IDLE_LIMIT = 120
+
+
+def inspect_service():
+    path = Path(STATE)
+    if not path.exists():
+        return None
+    with path.open('rb') as stream:
+        raw = stream.read(4097)
+    if len(raw) > 4096:
+        raise ValueError('Invalid DNS service status.')
+    state = json.loads(raw)
+    active = state.get('active') is True
+    healthy = filter_responds() if active else True
+    return {'active': active, 'supported': healthy, 'count': state.get('count', 0) if active else 0,
+            'engine': 'sqlite-dns', 'digest': state.get('digest'),
+            'message': ('Local filtering checks domains from disk with a small memory cache. Network and VPN DNS routing is kept.'
+                        if healthy else 'The local filter needs attention. Pause protection to restore normal DNS.'),
+            'recovered': state.get('phase') == 'recovered'}
+
+
+def helper(nmcli, network_manager, systemctl, python):
+    # Share fixed-file helpers and resolver checks, but not the old list writer.
+    prefix = legacy_helper(nmcli, network_manager, setup=True).split('def apply_dns(', 1)[0]
+    recovery = RECOVERY_SOURCE.replace('__NMCLI__', repr(nmcli)).replace('__SYSTEMCTL__', repr(systemctl))
+    # Protection follows the open app. The filter starts at boot so a computer
+    # restarted with protection on keeps it; once LibreWard has sent heartbeats,
+    # their absence (app crashed or the user logged out) makes the filter exit
+    # as failed and the recovery unit restores normal DNS.
+    service_unit = ('# Managed by LibreWard\n[Unit]\nDescription=LibreWard local DNS filter\n'
+                    'After=NetworkManager.service\nOnFailure=libreward-dns-recover.service\n'
+                    'StartLimitIntervalSec=60\nStartLimitBurst=3\n'
+                    '[Service]\nType=simple\nDynamicUser=yes\n'
+                    # Restart after a crash; exit status 3 (no app heartbeat) and
+                    # repeated crashes go to the recovery unit instead.
+                    'Restart=on-failure\nRestartSec=1\nRestartPreventExitStatus=3\n'
+                    f'ExecStart={python} -I /etc/libreward/dns-service.py --database /etc/libreward/domains.sqlite3 '
+                    f'--idle-limit {IDLE_LIMIT}\n'
+                    'AmbientCapabilities=CAP_NET_BIND_SERVICE\nCapabilityBoundingSet=CAP_NET_BIND_SERVICE\n'
+                    'NoNewPrivileges=yes\nProtectSystem=strict\nProtectHome=yes\nPrivateTmp=yes\n'
+                    'RestrictAddressFamilies=AF_INET AF_UNIX\nMemoryMax=128M\nTasksMax=32\n'
+                    'TimeoutStopSec=8\n[Install]\nWantedBy=multi-user.target\n')
+    recovery_unit = ('# Managed by LibreWard\n[Unit]\nDescription=Restore DNS after a LibreWard filter failure\n'
+                     'After=NetworkManager.service\n[Service]\nType=oneshot\n'
+                     f'ExecStart={python} -I /etc/libreward/dns-recovery.py\n')
+    return prefix + '\n' + INSTALLER_SOURCE.replace('__SYSTEMCTL__', repr(systemctl)).replace(
+        '__SERVICE_SOURCE__', repr(SERVICE_SOURCE)).replace('__RECOVERY_SOURCE__', repr(recovery)).replace(
+        '__SERVICE_UNIT__', repr(service_unit)).replace('__RECOVERY_UNIT__', repr(recovery_unit))
+
+
+RECOVERY_SOURCE = r'''
+# Managed by LibreWard
+import fcntl, json, os, stat, subprocess, tempfile
+NMCLI = __NMCLI__
+SYSTEMCTL = __SYSTEMCTL__
+ROOT = '/etc/libreward'
+STATE = ROOT + '/dns-state.json'
+CONF = '/etc/NetworkManager/dnsmasq.d/90-libreward.conf'
+SETUP = '/etc/NetworkManager/conf.d/90-libreward-dns.conf'
+
+def recover():
+    lock = os.open(ROOT + '/.dns-lock', os.O_RDWR | os.O_NOFOLLOW)
+    with os.fdopen(lock, 'wb') as stream:
+        info = os.fstat(stream.fileno())
+        if info.st_uid != os.geteuid() or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise ValueError('Unsafe recovery lock')
+        fcntl.flock(stream, fcntl.LOCK_EX)
+        try:
+            with open(STATE) as state_file:
+                state = json.load(state_file)
+        except FileNotFoundError:
+            return
+        if not state.get('active'):
+            return
+        if subprocess.run([SYSTEMCTL, 'is-active', '--quiet', 'libreward-dns.service'],
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10).returncode == 0:
+            return
+        for path, expected in ((CONF, 'port=5354\n'), (SETUP, '[main]\ndns=dnsmasq\n')):
+            try:
+                fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            except FileNotFoundError:
+                continue
+            with os.fdopen(fd) as config:
+                st = os.fstat(config.fileno())
+                if st.st_uid != os.geteuid() or not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or config.read(4097) != expected:
+                    raise ValueError('DNS configuration changed outside LibreWard')
+            os.unlink(path)
+        try:
+            subprocess.run([NMCLI, 'general', 'reload'], check=True, timeout=30)
+        except (OSError, subprocess.SubprocessError):
+            # Early at boot NetworkManager may not run yet; it then starts
+            # without the removed files. A running NetworkManager must reload.
+            if subprocess.run([SYSTEMCTL, 'is-active', '--quiet', 'NetworkManager.service'],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10).returncode == 0:
+                raise
+        subprocess.run([SYSTEMCTL, 'disable', 'libreward-dns.service'], check=True, timeout=30)
+        fd, name = tempfile.mkstemp(dir=ROOT, prefix='.dns-state-')
+        try:
+            with os.fdopen(fd, 'w') as output:
+                os.fchmod(output.fileno(), 0o644)
+                json.dump({'active': False, 'count': 0, 'phase': 'recovered'}, output)
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(name, STATE)
+        finally:
+            if os.path.exists(name): os.unlink(name)
+
+if __name__ == '__main__':
+    recover()
+'''
+
+
+INSTALLER_SOURCE = r'''
+import contextlib
+import shutil
+import sqlite3
+import hashlib
+import signal
+SYSTEMCTL = __SYSTEMCTL__
+SERVICE_SOURCE = __SERVICE_SOURCE__
+RECOVERY_SOURCE = __RECOVERY_SOURCE__
+SERVICE_UNIT = __SERVICE_UNIT__
+RECOVERY_UNIT = __RECOVERY_UNIT__
+ROOT = '/etc/libreward'
+DATABASE = ROOT + '/domains.sqlite3'
+STATE = ROOT + '/dns-state.json'
+SERVICE = ROOT + '/dns-service.py'
+RECOVERY = ROOT + '/dns-recovery.py'
+UNIT = '/etc/systemd/system/libreward-dns.service'
+RECOVERY_UNIT_PATH = '/etc/systemd/system/libreward-dns-recover.service'
+PROXY_CONFIG = b'port=5354\n'
+
+
+def systemctl(*args, required=True):
+    result = subprocess.run([SYSTEMCTL, *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, encoding='utf-8', errors='replace', timeout=30)
+    if required and result.returncode:
+        raise RuntimeError('DNS service operation failed: ' + (result.stderr or result.stdout).strip())
+    return result.returncode == 0
+
+
+def secure_directory(path):
+    os.makedirs(path, mode=0o755, exist_ok=True)
+    st = os.lstat(path)
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.geteuid() or st.st_mode & 0o022:
+        raise ValueError('Unsafe DNS service directory.')
+
+
+def build_database(stream, expected):
+    fd, path = tempfile.mkstemp(dir=ROOT, prefix='.domains-', suffix='.sqlite3')
+    os.close(fd)
+    connection = None
+    digest, previous, count = hashlib.sha256(), None, 0
+    valid = re.compile(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?')
+    try:
+        connection = sqlite3.connect(path)
+        connection.execute('PRAGMA cache_size=-2048')
+        connection.execute('PRAGMA temp_store=FILE')
+        connection.execute('CREATE TABLE blocked(domain TEXT PRIMARY KEY) WITHOUT ROWID')
+        while True:
+            raw = stream.readline(256)
+            if not raw:
+                break
+            if not raw.endswith(b'\n') or len(raw) > 254:
+                raise ValueError('Invalid domain record.')
+            value = raw[:-1].decode('ascii')
+            if (len(value) > 253 or '.' not in value or not all(valid.fullmatch(part) for part in value.split('.'))
+                    or value == 'localhost.localdomain' or value.endswith(('.local', '.localhost', '.arpa'))
+                    or re.fullmatch(r'[0-9.]+', value) or previous is not None and value <= previous):
+                raise ValueError('Invalid domain record.')
+            count += 1
+            if count > expected:
+                raise ValueError('Domain count does not match.')
+            connection.execute('INSERT INTO blocked VALUES (?)', (value,))
+            digest.update(raw)
+            previous = value
+        if count != expected:
+            raise ValueError('Domain list is incomplete.')
+        connection.execute('INSERT OR IGNORE INTO blocked VALUES (?)', (SENTINEL,))
+        connection.commit()
+        connection.close()
+        connection = None
+        os.chmod(path, 0o644)
+        with open(path, 'rb') as source: os.fsync(source.fileno())
+        return path, count, digest.hexdigest()
+    except BaseException:
+        if connection is not None: connection.close()
+        for item in (path, path + '-journal'):
+            if os.path.exists(item): os.unlink(item)
+        raise
+
+
+def owned_small(path):
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return None
+    with os.fdopen(fd, 'rb') as stream:
+        st = os.fstat(stream.fileno())
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid() or st.st_nlink != 1 or st.st_mode & 0o022:
+            raise ValueError('Unsafe DNS configuration file.')
+        data = stream.read(256 * 1024 + 1)
+    if len(data) > 256 * 1024:
+        raise ValueError('Unexpected DNS configuration size.')
+    return data
+
+
+def check_owned_files():
+    if owned_small(CONF) not in (None, CONTENT.encode(), PROXY_CONFIG):
+        raise ValueError('DNS configuration changed outside LibreWard.')
+    if owned_small(SETUP_CONF) not in (None, SETUP_CONTENT):
+        raise ValueError('DNS setup changed outside LibreWard.')
+    for path in (SERVICE, RECOVERY, UNIT, RECOVERY_UNIT_PATH):
+        data = owned_small(path)
+        if data is not None and not data.lstrip().startswith(b'# Managed by LibreWard'):
+            raise ValueError('DNS service file belongs to another configuration.')
+
+
+def query_health(count):
+    for attempt in range(20):
+        try:
+            if not systemctl('is-active', '--quiet', 'libreward-dns.service', required=False):
+                raise RuntimeError('Local DNS service is not running.')
+            effective = subprocess.run([NETWORK_MANAGER, '--print-config'], check=True, capture_output=True,
+                                       text=True, timeout=10).stdout
+            if not compatible(effective, Path('/etc/nsswitch.conf').read_text(), Path('/etc/resolv.conf').read_text()):
+                raise RuntimeError('The system did not activate local DNS filtering.')
+            probe(SENTINEL, True)
+            return
+        except (OSError, RuntimeError):
+            if attempt == 19: raise
+            time.sleep(0.2)
+
+
+def remove_legacy_hosts(path='/etc/hosts'):
+    # Remove old managed blocks without ever reading the whole hosts file.
+    lockfd = os.open(path + '.libreward-lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(lockfd, 'wb') as lock:
+        st = os.fstat(lock.fileno())
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid() or st.st_nlink != 1:
+            raise ValueError('Unsafe hosts lock.')
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        tempfd, name = tempfile.mkstemp(dir=os.path.dirname(path), prefix='.libreward-hosts-')
+        try:
+            with os.fdopen(fd, 'rb') as original, os.fdopen(tempfd, 'w+b') as target:
+                info = os.fstat(original.fileno())
+                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_nlink != 1:
+                    raise ValueError('Unsafe hosts file.')
+                inside = seen = ended = separator = False
+                digest, last, prefix_hash, expected, prefix_size = hashlib.sha256(), b'', None, None, 0
+                total = 0
+                while True:
+                    line = original.readline(65537)
+                    if not line: break
+                    total += len(line)
+                    if len(line) > 65536 or total > 512 * 1024 * 1024:
+                        raise ValueError('Hosts file is too large or has invalid lines.')
+                    if line == BEGIN:
+                        if seen: raise ValueError('Damaged LibreWard hosts section.')
+                        inside = seen = True
+                        prefix_size, prefix_hash = target.tell(), digest.hexdigest()
+                    elif line == END:
+                        if not inside: raise ValueError('Damaged LibreWard hosts section.')
+                        inside, ended = False, True
+                        if separator and last == b'\n' and expected == prefix_hash:
+                            target.seek(prefix_size - 1)
+                            target.truncate()
+                    elif inside:
+                        if line == b'# separator-added=yes\n': separator = True
+                        if line.startswith(b'# prefix-sha256='):
+                            expected = line.partition(b'=')[2].strip().decode('ascii')
+                    else:
+                        target.write(line)
+                        if not seen:
+                            digest.update(last + line[:-1])
+                            last = line[-1:]
+                if inside or seen != ended: raise ValueError('Damaged LibreWard hosts section.')
+                if not seen: return
+                os.fchown(target.fileno(), info.st_uid, info.st_gid)
+                os.fchmod(target.fileno(), stat.S_IMODE(info.st_mode))
+                for attr in os.listxattr(path, follow_symlinks=False):
+                    os.setxattr(name, attr, os.getxattr(path, attr, follow_symlinks=False))
+                target.flush()
+                os.fsync(target.fileno())
+            current = os.lstat(path)
+            if (current.st_ino, current.st_dev, current.st_mtime_ns, current.st_size) != (info.st_ino, info.st_dev, info.st_mtime_ns, info.st_size):
+                raise ValueError('Hosts file changed during setup.')
+            os.replace(name, path)
+        finally:
+            if os.path.exists(name): os.unlink(name)
+
+
+def check_upstream_port():
+    for kind in (socket.SOCK_DGRAM, socket.SOCK_STREAM):
+        with socket.socket(socket.AF_INET, kind) as check:
+            try:
+                check.bind(('127.0.0.1', 5354))
+            except OSError as exc:
+                raise RuntimeError('The private DNS port is already in use. No DNS settings were changed.') from exc
+
+
+def wait_for_dns_port(attempts=50):
+    # nmcli reload returns before NetworkManager has restarted dnsmasq on the
+    # private port. Starting the filter earlier fails with "address in use".
+    for attempt in range(attempts):
+        try:
+            for kind in (socket.SOCK_DGRAM, socket.SOCK_STREAM):
+                with socket.socket(socket.AF_INET, kind) as check:
+                    if kind == socket.SOCK_STREAM:
+                        check.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    check.bind(('127.0.0.1', 53))
+            return
+        except OSError:
+            if attempt == attempts - 1:
+                raise RuntimeError('The previous DNS resolver did not release the local DNS port. '
+                                   'No protection was enabled.')
+            time.sleep(0.2)
+
+
+def apply_database(stream, count):
+    secure_directory(ROOT)
+    secure_directory(os.path.dirname(os.path.dirname(CONF)))
+    secure_directory(os.path.dirname(UNIT))
+    secure_directory(os.path.dirname(CONF))
+    secure_directory(os.path.dirname(SETUP_CONF))
+    lockfd = os.open(ROOT + '/.dns-lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(lockfd, 'wb') as lock:
+        st = os.fstat(lock.fileno())
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid() or st.st_nlink != 1:
+            raise ValueError('Unsafe DNS service lock.')
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        check_owned_files()
+        staged = None
+        if count and owned_small(CONF) != PROXY_CONFIG:
+            check_upstream_port()
+        if count:
+            config = subprocess.run([NETWORK_MANAGER, '--print-config'], check=True, capture_output=True,
+                                    text=True, timeout=10).stdout
+            nss = Path('/etc/nsswitch.conf').read_text()
+            if not (compatible(config, nss, Path('/etc/resolv.conf').read_text()) or setup_supported(config, nss, '/etc/resolv.conf')):
+                raise RuntimeError('Network settings changed. Check protection status before retrying.')
+            staged, actual, digest = build_database(stream, count)
+        else:
+            if stream.read(1): raise ValueError('Unexpected pause payload.')
+            actual, digest = 0, None
+        paths = (CONF, SETUP_CONF, STATE, SERVICE, RECOVERY, UNIT, RECOVERY_UNIT_PATH)
+        try:
+            snapshot = {path: owned_small(path) for path in paths}
+            was_active = systemctl('is-active', '--quiet', 'libreward-dns.service', required=False)
+            was_enabled = systemctl('is-enabled', '--quiet', 'libreward-dns.service', required=False)
+        except BaseException:
+            if staged is not None and os.path.exists(staged): os.unlink(staged)
+            raise
+        backup = None
+        try:
+            if snapshot[UNIT] is not None and was_active:
+                systemctl('stop', 'libreward-dns.service')
+            if count:
+                if os.path.lexists(DATABASE):
+                    info = os.lstat(DATABASE)
+                    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_nlink != 1:
+                        raise ValueError('Unsafe DNS database.')
+                    fd, backup = tempfile.mkstemp(dir=ROOT, prefix='.previous-db-')
+                    os.close(fd)
+                    os.replace(DATABASE, backup)
+                os.replace(staged, DATABASE)
+                staged = None
+                write(SERVICE, b'# Managed by LibreWard\n' + SERVICE_SOURCE.encode())
+                write(RECOVERY, RECOVERY_SOURCE.encode())
+                write(UNIT, SERVICE_UNIT.encode())
+                write(RECOVERY_UNIT_PATH, RECOVERY_UNIT.encode())
+                write(STATE, json.dumps({'active': True, 'count': actual, 'digest': digest, 'phase': 'installing'}).encode())
+                write(CONF, PROXY_CONFIG)
+                write(SETUP_CONF, SETUP_CONTENT)
+                systemctl('daemon-reload')
+                reload_dns()
+                wait_for_dns_port()
+                systemctl('start', 'libreward-dns.service')
+                query_health(count)
+                with contextlib.closing(sqlite3.connect('file:' + DATABASE + '?mode=ro', uri=True)) as database:
+                    allowed = next((name for name in ('example.org', 'example.net', 'example.com', 'www.iana.org')
+                                    if database.execute('SELECT 1 FROM blocked WHERE domain=?', (name,)).fetchone() is None), None)
+                if allowed is None: raise RuntimeError('An example domain must be allowed for the connectivity check.')
+                probe(allowed, False)
+                systemctl('enable', 'libreward-dns.service')
+                write(STATE, json.dumps({'active': True, 'count': actual, 'digest': digest, 'phase': 'enabled'}).encode())
+                # Old managed hosts blocks are removed only after successful DNS tests.
+                remove_legacy_hosts()
+            else:
+                write(CONF, None)
+                write(SETUP_CONF, None)
+                reload_dns()
+                if snapshot[UNIT] is not None:
+                    systemctl('disable', 'libreward-dns.service')
+                write(STATE, json.dumps({'active': False, 'count': 0, 'phase': 'paused'}).encode())
+                remove_legacy_hosts()
+        except BaseException as original:
+            try:
+                # Release a new database before restoring small config files,
+                # so rollback can still work if staging exhausted free space.
+                if owned_small(UNIT) is not None:
+                    systemctl('stop', 'libreward-dns.service', required=False)
+                if backup is not None:
+                    os.replace(backup, DATABASE)
+                    backup = None
+                elif count and snapshot[STATE] is None and os.path.exists(DATABASE):
+                    os.unlink(DATABASE)
+                for path, data in snapshot.items(): write(path, data)
+                systemctl('daemon-reload')
+                reload_dns()
+                if was_enabled: systemctl('enable', 'libreward-dns.service')
+                else: systemctl('disable', 'libreward-dns.service', required=False)
+                if was_active: systemctl('start', 'libreward-dns.service')
+            except Exception as rollback:
+                raise RuntimeError('The filter could not be applied and DNS recovery needs attention. '
+                                   'Original error: ' + str(original) + ' Recovery error: ' + str(rollback)) from rollback
+            raise
+        finally:
+            for path in (staged, backup):
+                if path is not None and os.path.exists(path): os.unlink(path)
+        return {'count': actual, 'digest': digest, 'skipped': 0}
+
+if __name__ == '__main__':
+    try:
+        signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(RuntimeError('DNS setup interrupted.')))
+        header = sys.stdin.buffer.readline(4097)
+        if len(header) > 4096: raise ValueError('Invalid DNS setup header.')
+        request = json.loads(header)
+        count = request.get('count')
+        if request.get('version') != 1 or type(count) is not int or not 0 <= count <= 5000000:
+            raise ValueError('Invalid DNS setup request.')
+        print(json.dumps(apply_database(sys.stdin.buffer, count)))
+    except Exception as exc:
+        print(str(exc), file=sys.stderr)
+        sys.exit(1)
+'''

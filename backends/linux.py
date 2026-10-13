@@ -461,6 +461,11 @@ class LinuxBackend(PlatformBackend):
         def query(command):
             if not privileged:
                 return self._firewall_query(command)
+            if tool_name == 'UFW':
+                shell = self._trusted_firewall_executable('sh')
+                if not shell:
+                    raise RuntimeError('System shell is unavailable.')
+                command = [shell, '-c', shlex.join(command) + ' && ' + shlex.join([command[0], 'show', 'added'])]
             code, output = self._firewall_query([authorizer, '--disable-internal-agent', *command], timeout=120)
             self._check_authorization_exit(code)
             return code, output
@@ -500,9 +505,7 @@ class LinuxBackend(PlatformBackend):
                          ('Permanent zones and rules (may differ from runtime)', ['--permanent', '--list-all-zones'])]
             if privileged:
                 extra = []  # One authorization and one read query per button click.
-                if executable == 'ufw':
-                    sections.append('This view shows current status and active rules. Initial automatic detection also checks configured rules.')
-                elif executable == 'firewall-cmd':
+                if executable == 'firewall-cmd':
                     sections.insert(0, 'Runtime zones and rules (permanent configuration is not queried in this authorized view).')
             for heading, args in extra:
                 _, details = query([path, *args])
@@ -603,12 +606,18 @@ class LinuxBackend(PlatformBackend):
         return '\n'.join(shlex.join([executable, *args]) for executable, args in
                          self._firewall_change_commands(tool_name, rule=rule, enabled=enabled))
 
-    def change_firewall(self, tool_name, *, rule=None, enabled=True):
+    def change_firewall(self, tool_name, *, rule=None, enabled=True, removal=None):
         """One authorization for a validated change batch and verified refresh."""
         import shlex
         import uuid
         from core.firewall import FirewallChangeResult, FirewallSnapshot, FirewallTool
-        commands = self._firewall_change_commands(tool_name, rule=rule, enabled=enabled)
+        if removal is not None:
+            from core.firewall import FirewallRemoval
+            if not isinstance(removal, FirewallRemoval) or rule is not None:
+                raise ValueError('Select one rule to remove.')
+            commands = [removal.arguments(tool_name)]
+        else:
+            commands = self._firewall_change_commands(tool_name, rule=rule, enabled=enabled)
         authorizer = self._require_authorizer()
         shell = self._trusted_firewall_executable('sh')
         resolved = []
@@ -620,7 +629,7 @@ class LinuxBackend(PlatformBackend):
         reader = self._trusted_firewall_executable('ufw' if tool_name == 'UFW' else 'firewall-cmd')
         if not authorizer or not shell or not reader:
             raise RuntimeError('System authorization or firewall commands are unavailable in trusted system locations.')
-        if rule is None and enabled:
+        if rule is None and removal is None and enabled:
             other = 'firewall-cmd' if tool_name == 'UFW' else 'ufw'
             other_path = self._firewall_executable(other)
             if other_path:
@@ -630,12 +639,17 @@ class LinuxBackend(PlatformBackend):
                 if active or not inactive:
                     raise RuntimeError('Another firewall manager is active or its state could not be verified. Keep only one manager active.')
         read_command = [reader, 'status', 'verbose'] if tool_name == 'UFW' else [reader, '--list-all-zones']
+        read_script = shlex.join(read_command)
+        if tool_name == 'UFW':
+            read_script += ' && ' + shlex.join([reader, 'show', 'added'])
+        else:
+            read_script += ' && printf "\\nPermanent zones and rules\\n" && ' + shlex.join([reader, '--permanent', '--list-all-zones'])
         marker = 'LIBREWARD_' + uuid.uuid4().hex
         # All commands are generated from validated fields and individually shell-quoted.
         # No caller-supplied script, executable, option or shell fragment is accepted.
         script = ('LC_ALL=C; export LC_ALL; ' + ' && '.join(shlex.join(command) for command in resolved)
                   + '; change_status=$?; printf "\n' + marker + ':CHANGE:%s\n" "$change_status"; '
-                  + shlex.join(read_command)
+                  + read_script
                   + '; read_status=$?; printf "\n' + marker + ':READ:%s\n" "$read_status"')
         code, output = self._firewall_query([authorizer, '--disable-internal-agent', shell, '-c', script], timeout=120)
         self._check_authorization_exit(code)
@@ -792,3 +806,278 @@ class LinuxBackend(PlatformBackend):
             if code == 0 and any(line.isdigit() for line in output.splitlines()):
                 return 'an existing FreshClam process'
         return None
+
+    def _local_dns_available(self):
+        from .linux_dns import compatible
+        nm = self._trusted_firewall_executable('NetworkManager')
+        nmcli = self._trusted_firewall_executable('nmcli')
+        if not nm or not nmcli:
+            return False
+        try:
+            code, config = self._firewall_query([nm, '--print-config'], timeout=10)
+            return code == 0 and compatible(config, Path('/etc/nsswitch.conf').read_text(),
+                                             Path('/etc/resolv.conf').read_text())
+        except (OSError, ValueError):
+            return False
+
+    def _dns_setup_available(self):
+        from .linux_dns import setup_supported
+        nm = self._trusted_firewall_executable('NetworkManager')
+        nmcli = self._trusted_firewall_executable('nmcli')
+        if not nm or not nmcli:
+            return False
+        try:
+            code, running = self._firewall_query([nmcli, '-t', '-f', 'RUNNING', 'general'], timeout=5)
+            if code or running.strip() != 'running':
+                return False
+            code, config = self._firewall_query([nm, '--print-config'], timeout=10)
+            if code or not setup_supported(config, Path('/etc/nsswitch.conf').read_text(), '/etc/resolv.conf'):
+                return False
+            return bool(self._trusted_firewall_executable('dnsmasq') or
+                        (self.distro_info().get('pkg_manager') == 'apt' and self._trusted_firewall_executable('apt-get')))
+        except (OSError, ValueError):
+            return False
+
+    def _install_dns_runtime(self):
+        if self._trusted_firewall_executable('dnsmasq'):
+            return
+        if self.distro_info().get('pkg_manager') != 'apt':
+            raise RuntimeError('The local DNS component is missing.')
+        apt = self._trusted_firewall_executable('apt-get')
+        if not apt:
+            raise RuntimeError('The package installer is unavailable.')
+        process = self.start_process([self._require_authorizer(), '--disable-internal-agent', apt,
+                                     'install', '--assume-yes', '--no-remove', 'dnsmasq-base'],
+                                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                    text=True, encoding='utf-8', errors='replace')
+        # Drain output while waiting. Never terminate a package transaction on a timer.
+        output = ''
+        for line in process.stdout or ():
+            output = (output + line)[-12000:]
+        code = process.wait()
+        self._check_authorization_exit(code)
+        if code or not self._trusted_firewall_executable('dnsmasq'):
+            raise RuntimeError('The local DNS component could not be installed. ' + output.strip())
+
+    def inspect_internet_protection(self):
+        from .linux_hosts import inspect_hosts
+        from .linux_resolver import nss_hosts_source, resolved_reads_hosts
+        from .linux_dns_service import inspect_service
+        service_state = inspect_service()
+        if service_state is not None and service_state['active']:
+            manager = self._trusted_firewall_executable('systemctl')
+            running = bool(manager and self._firewall_query([manager, 'is-active', '--quiet', 'libreward-dns.service'], timeout=5)[0] == 0)
+            service_state['supported'] = service_state['supported'] and running and self._local_dns_available()
+            if not service_state['supported']:
+                service_state['message'] = 'The local filter needs attention. Pause protection to restore normal DNS.'
+            return service_state
+        from .linux_dns import inspect as inspect_dns
+        dns_state = inspect_dns()
+        local_dns = self._local_dns_available()
+        can_run_service = bool(self._trusted_firewall_executable('systemctl') and Path('/run/systemd/system').is_dir())
+        if dns_state is not None:
+            if can_run_service and local_dns:
+                dns_state.update(engine='sqlite-setup', setup_available=True, needs_dns_install=False,
+                                 message='Ready to upgrade protection to the disk-backed local filter.')
+            dns_state['supported'] = dns_state['supported'] and local_dns
+            if not local_dns:
+                dns_state['message'] = 'Network DNS settings changed. Pause protection before changing the resolver.'
+            return dns_state
+        result = inspect_hosts('/etc/hosts')
+        result['engine'] = 'dnsmasq' if local_dns else 'hosts'
+        if local_dns and can_run_service:
+            result.update(engine='sqlite-setup', setup_available=True, needs_dns_install=False)
+            result['message'] = ('The filter stopped and normal DNS was restored. You can enable protection again.'
+                                 if service_state and service_state.get('recovered') else
+                                 'Ready for the disk-backed local filter. Network and VPN connection settings are kept.')
+            return result
+        if can_run_service and self._dns_setup_available():
+            result.update(supported=True, engine='sqlite-setup', setup_available=True,
+                          needs_dns_install=not bool(self._trusted_firewall_executable('dnsmasq')),
+                          recovered=bool(service_state and service_state.get('recovered')),
+                          message=('The filter stopped and normal DNS was restored. You can enable protection again.'
+                                   if service_state and service_state.get('recovered') else
+                                   'Ready to set up Internet protection. LibreWard will prepare the local filter when you enable protection.'))
+            return result
+        result['message'] = 'Automatic Internet protection setup is unavailable for these network settings. Individual website blocking is available where supported.'
+        try:
+            nss = Path('/etc/nsswitch.conf').read_text()
+            source = nss_hosts_source(nss)
+            if source is None and re.search(r'\bresolve\b', nss):
+                analyze = self._firewall_executable('systemd-analyze')
+                if analyze:
+                    code, config = self._firewall_query([analyze, 'cat-config', 'systemd/resolved.conf'], timeout=5)
+                    if code == 0:
+                        source = nss_hosts_source(nss, resolved_hosts=resolved_reads_hosts(config))
+            if source is None:
+                result['supported'] = False
+                result['message'] = ('Your system resolver could not be confirmed to use local domain blocks. '
+                                     'LibreWard supports hosts-file lookup and systemd-resolved with ReadEtcHosts enabled. '
+                                     'Your DNS settings have not been changed.')
+            elif source == 'resolve':
+                result['message'] = ('Your system uses systemd-resolved, configured to read local domain blocks. '
+                                     'DNS server and VPN settings are kept. Apps using their own DNS may bypass this protection.')
+        except (OSError, StopIteration, ValueError):
+            result['supported'] = False
+            result['message'] = 'System name-resolution settings could not be verified.'
+        if not self._trusted_firewall_executable('python3'):
+            result['supported'] = False
+            result['message'] = 'System Python 3 is required for domain protection setup.'
+        return result
+
+    def internet_protection_keepalive(self):
+        # Fire-and-forget UDP query; the GUI thread never waits for a reply.
+        import os
+        import socket
+        import struct
+        from core.dns_proxy import HEARTBEAT
+        name = b''.join(bytes([len(part)]) + part.encode('ascii') for part in HEARTBEAT.split('.')) + b'\0'
+        packet = os.urandom(2) + struct.pack('!5H', 0x0100, 1, 0, 0, 0) + name + struct.pack('!HH', 1, 1)
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                sock.setblocking(False)
+                sock.sendto(packet, ('127.0.0.1', 53))
+        except OSError:
+            pass
+
+    def autostart_path(self):
+        return Path(os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.config') / 'autostart' / 'libreward.desktop'
+
+    def set_autostart(self, enabled):
+        """XDG autostart entry, owned by LibreWard and written atomically."""
+        import sys
+        import tempfile
+        path = self.autostart_path()
+        if not enabled:
+            path.unlink(missing_ok=True)
+            return
+        root = Path(__file__).resolve().parent.parent
+        command = [sys.executable] if getattr(sys, 'frozen', False) else [sys.executable, str(root / 'main.py')]
+
+        def quoted(argument):
+            if any(char in argument for char in '\n\r'):
+                raise ValueError('The LibreWard location cannot be used for autostart.')
+            # Desktop Entry quoting, then the general string escape, then field codes.
+            inner = ''.join('\\' + char if char in '"`$\\' else char for char in argument)
+            return ('"' + inner + '"').replace('\\', '\\\\').replace('%', '%%')
+
+        content = ('[Desktop Entry]\nType=Application\nName=LibreWard\n'
+                   'Comment=Keeps Internet protection on after restarting the computer\n'
+                   'Exec=' + ' '.join(quoted(part) for part in [*command, '--autostart']) + '\n'
+                   'Icon=' + str(root / 'assets' / 'libreward.png') + '\n'
+                   'Terminal=false\nX-GNOME-Autostart-enabled=true\n')
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, name = tempfile.mkstemp(dir=path.parent, prefix='.libreward-', suffix='.desktop')
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+                stream.write(content)
+            os.replace(name, path)
+        finally:
+            if os.path.exists(name):
+                os.unlink(name)
+
+    def apply_internet_protection(self, domains):
+        from core.internet import PreparedDomains
+        if isinstance(domains, PreparedDomains):
+            return self._apply_database_protection(domains)
+        if domains == []:
+            state = self.inspect_internet_protection()
+            if state.get('engine') in ('sqlite-dns', 'sqlite-setup'):
+                return self._apply_database_protection(None)
+        import json
+        from core.internet import normalize_domain, MAX_DOMAINS
+        from .linux_hosts import HOSTS_HELPER
+        if not isinstance(domains, list) or len(domains) > MAX_DOMAINS:
+            raise ValueError('Invalid domain list.')
+        from core.memory_budget import require_domain_memory
+        require_domain_memory(len(domains))
+        # Production compilation already yields canonical, sorted unique names.
+        # Validate without building another million-entry set/list.
+        previous = None
+        for value in domains:
+            if normalize_domain(value) != value or (previous is not None and value <= previous):
+                domains = sorted({normalize_domain(item) for item in domains})
+                break
+            previous = value
+        status = self.inspect_internet_protection()
+        if domains and not status['supported']:
+            raise RuntimeError(status['message'])
+        if domains and status.get('engine') == 'hosts' and len(domains) > 50000:
+            raise RuntimeError('This computer is using hosts-file blocking. Large protection lists require the local DNS backend. '
+                               'This version supports NetworkManager with its dnsmasq resolver. See the Internet protection guide; '
+                               'no system changes were made.')
+        helper_source = HOSTS_HELPER
+        if status.get('engine') in ('dnsmasq', 'dnsmasq-setup'):
+            from .linux_dns import helper
+            nmcli = self._trusted_firewall_executable('nmcli')
+            nm = self._trusted_firewall_executable('NetworkManager')
+            if not nmcli or not nm:
+                raise RuntimeError('NetworkManager tools are required to change local DNS protection.')
+            setup = bool(domains and status.get('setup_available'))
+            if setup:
+                self._install_dns_runtime()
+            helper_source = helper(nmcli, nm, setup=setup)
+        authorizer = self._require_authorizer()
+        python = self._trusted_firewall_executable('python3')
+        if not python:
+            raise RuntimeError('System Python 3 is unavailable.')
+        import tempfile
+        with tempfile.TemporaryFile(mode='w+', encoding='utf-8') as payload:
+            json.dump(domains, payload, separators=(',', ':'))
+            payload.flush()
+            payload.seek(0)
+            process = self.start_process([authorizer, '--disable-internal-agent', python, '-I', '-c', helper_source],
+                                         stdin=payload, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                         text=True, encoding='utf-8', errors='replace')
+            try:
+                output, _ = process.communicate(timeout=180)
+            except subprocess.TimeoutExpired:
+                self.stop_process(process)
+                process.communicate()
+                raise RuntimeError('Setup timed out. Check protection status before retrying.')
+        self._check_authorization_exit(process.returncode)
+        if process.returncode:
+            raise RuntimeError('Domain protection could not be changed. ' + output.strip())
+        changes = json.loads(output)
+        status = self.inspect_internet_protection()
+        status['skipped'] = changes['skipped']
+        if status['count'] != changes['count']:
+            raise RuntimeError('The result could not be verified. Check protection status.')
+        return status
+
+    def _apply_database_protection(self, prepared):
+        import json
+        import tempfile
+        from .linux_dns_service import helper
+        state = self.inspect_internet_protection()
+        if prepared is not None and (not state.get('supported') or state.get('engine') not in ('sqlite-dns', 'sqlite-setup')):
+            raise RuntimeError(state.get('message', 'Local DNS setup is unavailable.'))
+        executables = {name: self._trusted_firewall_executable(name)
+                       for name in ('nmcli', 'NetworkManager', 'systemctl', 'python3')}
+        if not all(executables.values()):
+            raise RuntimeError('System network and service tools are required for Internet protection.')
+        if prepared is not None:
+            self._install_dns_runtime()
+        source = helper(executables['nmcli'], executables['NetworkManager'], executables['systemctl'], executables['python3'])
+        authorizer = self._require_authorizer()
+        with (open(prepared.path, 'rb') if prepared is not None else tempfile.TemporaryFile(mode='w+b')) as payload:
+            if prepared is None:
+                payload.write(b'{"version":1,"count":0}\n')
+                payload.seek(0)
+            process = self.start_process([authorizer, '--disable-internal-agent', executables['python3'], '-I', '-c', source],
+                                         stdin=payload, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                         text=True, encoding='utf-8', errors='replace')
+            # Building the root-owned database is disk work. Do not kill the
+            # installer in the middle of its network configuration transaction.
+            output, _ = process.communicate()
+        self._check_authorization_exit(process.returncode)
+        if process.returncode:
+            raise RuntimeError('Internet protection could not be changed. ' + output.strip())
+        changes = json.loads(output)
+        if prepared is not None and (changes['count'] != prepared.count or changes['digest'] != prepared.digest):
+            raise RuntimeError('The installed domain database could not be verified. Check protection status.')
+        state = self.inspect_internet_protection()
+        state['skipped'] = 0
+        if state['count'] != changes['count'] or (prepared is not None and not state.get('supported')):
+            raise RuntimeError('The local DNS service could not be verified. Check protection status.')
+        return state
