@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Removing the package turns Internet protection off and deletes LibreWard's system
+  files (RPM `%preun`, Debian `prerm`, Arch `pre_remove`, `make uninstall`). Pausing
+  no longer creates NetworkManager or resolved directories on systems without them.
+  The login autostart entry is skipped once LibreWard is uninstalled.
+
 - Prepare Linux packages: `make install` into a private `/usr/share/libreward`
   directory with a `/usr/bin/libreward` launcher, desktop entry and icon, plus AUR,
   RPM (Fedora/openSUSE via OBS) and Debian packaging. Login autostart uses the

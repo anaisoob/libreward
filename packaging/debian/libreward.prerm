@@ -1,0 +1,10 @@
+#!/bin/sh
+# Removal only (not upgrades): turn Internet protection off and remove
+# LibreWard's files under /etc. Never fails the removal.
+set -e
+
+if [ "$1" = "remove" ]; then
+    python3 -I /usr/share/libreward/system_cleanup.py || true
+fi
+
+#DEBHELPER#

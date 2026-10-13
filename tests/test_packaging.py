@@ -42,6 +42,23 @@ class InstallLayoutTests(unittest.TestCase):
             for icon in ('scalable/apps/libreward.svg', '256x256/apps/libreward.png'):
                 self.assertTrue((root / 'usr/share/icons/hicolor' / icon).is_file(), icon)
 
+    def test_cleanup_script_is_installed_and_run_only_on_removal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.install(directory)
+            self.assertTrue((root / 'usr/share/libreward/system_cleanup.py').is_file())
+        command = 'python3 -I /usr/share/libreward/system_cleanup.py || '
+        spec = (ROOT / 'packaging/rpm/libreward.spec').read_text()
+        self.assertIn('%preun\n', spec)
+        self.assertIn('if [ $1 -eq 0 ]; then\n    %{__python3} -I %{_datadir}/libreward/system_cleanup.py || :', spec)
+        prerm = (ROOT / 'packaging/debian/libreward.prerm').read_text()
+        self.assertIn('if [ "$1" = "remove" ]; then\n    ' + command + 'true', prerm)
+        self.assertIn('#DEBHELPER#', prerm)
+        self.assertTrue(os.access(ROOT / 'packaging/debian/libreward.prerm', os.X_OK))
+        self.assertIn('\ninstall=libreward.install\n', (ROOT / 'packaging/arch/PKGBUILD').read_text())
+        arch = (ROOT / 'packaging/arch/libreward.install').read_text()
+        self.assertIn('pre_remove() {\n  /usr/bin/' + command + 'true', arch)
+        self.assertNotIn('post_upgrade', arch)
+
     def test_package_versions_match(self):
         import re
         versions = {
@@ -66,3 +83,4 @@ class InstalledAutostartTests(unittest.TestCase):
             text = Path(directory, 'autostart', 'libreward.desktop').read_text()
             self.assertIn(f'Exec="{launcher}" "--autostart"\n', text)
             self.assertIn('\nIcon=libreward\n', text)
+            self.assertIn(f'\nTryExec={launcher}\n', text)

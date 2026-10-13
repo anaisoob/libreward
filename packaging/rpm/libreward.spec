@@ -32,6 +32,13 @@ domains with a local DNS filter in front of NetworkManager or systemd-resolved.
 %install
 %make_install PREFIX=%{_prefix} PYTHON=%{__python3}
 
+%preun
+# Removal only ($1 is 0), not upgrades: turn Internet protection off and remove
+# LibreWard's files under /etc. Never fails the removal.
+if [ $1 -eq 0 ]; then
+    %{__python3} -I %{_datadir}/libreward/system_cleanup.py || :
+fi
+
 %files
 %license LICENSE
 %doc README.md CHANGELOG.md

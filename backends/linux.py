@@ -1015,6 +1015,8 @@ class LinuxBackend(PlatformBackend):
                    'Comment=Keeps Internet protection on after restarting the computer\n'
                    'Exec=' + ' '.join(quoted(part) for part in [*command, '--autostart']) + '\n'
                    'Icon=' + icon + '\n'
+                   # Desktops skip the entry once the program is uninstalled.
+                   'TryExec=' + command[0] + '\n'
                    'Terminal=false\nX-GNOME-Autostart-enabled=true\n')
         path.parent.mkdir(parents=True, exist_ok=True)
         fd, name = tempfile.mkstemp(dir=path.parent, prefix='.libreward-', suffix='.desktop')

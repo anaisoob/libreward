@@ -349,8 +349,11 @@ class AutostartTests(unittest.TestCase):
             self.assertIn('[Desktop Entry]\nType=Application\n', text)
             self.assertIn('Exec="/opt/Lib Ward/py\\\\$thon \\\\"3\\\\"%%" ', text)
             self.assertIn('main.py" "--autostart"\n', text)
+            self.assertIn('\nTryExec=/opt/Lib Ward/py$thon "3"%\n', text)
             linux.set_autostart(True)
-            self.assertEqual(path.read_text(), text.replace('/opt/Lib Ward/py\\\\$thon \\\\"3\\\\"%%', __import__('sys').executable))
+            executable = __import__('sys').executable
+            self.assertIn(f'Exec="{executable}" ', path.read_text())
+            self.assertIn(f'\nTryExec={executable}\n', path.read_text())
             self.assertEqual([item.name for item in path.parent.iterdir()], ['libreward.desktop'])
             linux.set_autostart(False)
             self.assertFalse(path.exists())

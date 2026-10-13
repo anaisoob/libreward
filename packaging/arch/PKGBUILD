@@ -13,6 +13,7 @@ optdepends=('clamav: virus scanning (LibreWard can also offer to install it)'
             'ufw: firewall management'
             'firewalld: firewall management')
 makedepends=('make')
+install=libreward.install
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
 # Run `updpkgsums` after the v$pkgver tag is published.
 sha256sums=('SKIP')

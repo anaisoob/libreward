@@ -24,6 +24,22 @@ sets `LIBREWARD_LAUNCHER`; the login autostart entry then runs
 Run `make test` for the test suite. `tests/test_packaging.py` checks that every
 module is installed and that package versions match.
 
+## Removal
+
+Removing the package turns Internet protection off and deletes LibreWard's system
+files: `/etc/libreward/`, the `libreward-dns` systemd units and its NetworkManager
+or systemd-resolved snippets. The package scripts run
+`/usr/bin/python3 -I /usr/share/libreward/system_cleanup.py` as root, only on removal,
+not on upgrades: RPM `%preun` when `$1` is 0, Debian `prerm remove`, Arch
+`pre_remove`. `make uninstall` does the same for a direct installation.
+
+The cleanup uses the same transaction as **Pause protection**, removes only files
+LibreWard wrote, keeps anything else in `/etc/libreward`, and never fails the
+removal; on errors it prints the manual steps. User data (settings, lists,
+quarantine) stays in the home directory. The login autostart entry has
+`TryExec=/usr/bin/libreward`, so desktops skip it once LibreWard is removed.
+Firewall rules belong to UFW or firewalld and are kept.
+
 ## Distribution support
 
 | Distribution | Package | PySide6 from the distribution |

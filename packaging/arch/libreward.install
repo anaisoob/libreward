@@ -1,0 +1,5 @@
+# Removal only (not upgrades): turn Internet protection off and remove
+# LibreWard's files under /etc. Never fails the removal.
+pre_remove() {
+  /usr/bin/python3 -I /usr/share/libreward/system_cleanup.py || true
+}

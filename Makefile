@@ -22,7 +22,7 @@ all:
 
 install:
 	install -d $(DESTDIR)$(APPDIR)
-	install -m 644 $(MODULES) $(DESTDIR)$(APPDIR)/
+	install -m 644 $(MODULES) packaging/system_cleanup.py $(DESTDIR)$(APPDIR)/
 	for package in $(PACKAGES); do \
 		install -d $(DESTDIR)$(APPDIR)/$$package; \
 		install -m 644 $$package/*.py $(DESTDIR)$(APPDIR)/$$package/; \
@@ -39,7 +39,10 @@ install:
 	install -Dm 644 assets/icons/libreward-256.png $(DESTDIR)$(DATADIR)/icons/hicolor/256x256/apps/libreward.png
 	$(PYTHON) -m compileall -q -d $(APPDIR) $(DESTDIR)$(APPDIR)
 
+# Package scripts run system_cleanup.py on removal; `make uninstall` does the same
+# for a direct installation (as root, without DESTDIR).
 uninstall:
+	if [ -z "$(DESTDIR)" ] && [ -f $(APPDIR)/system_cleanup.py ]; then $(PYTHON) -I $(APPDIR)/system_cleanup.py; fi
 	rm -rf $(DESTDIR)$(APPDIR)
 	rm -f $(DESTDIR)$(BINDIR)/libreward $(DESTDIR)$(DATADIR)/applications/libreward.desktop \
 		$(DESTDIR)$(DATADIR)/icons/hicolor/scalable/apps/libreward.svg \

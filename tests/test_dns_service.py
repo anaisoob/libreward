@@ -92,6 +92,37 @@ class InstallerTests(unittest.TestCase):
         self.ns['reload_dns'].assert_not_called()
         self.assertFalse(json.loads(Path(self.mapping['STATE']).read_text())['active'])
 
+    def test_resolved_pause_never_creates_networkmanager_directories(self):
+        self.resolved()
+        self.apply(b'', 0)
+        self.assertFalse(Path(self.mapping['CONF']).parent.exists())
+        self.assertFalse(Path(self.mapping['SETUP_CONF']).parent.exists())
+
+    def test_uninstall_turns_protection_off_and_removes_only_owned_files(self):
+        self.resolved()
+        root = Path(self.mapping['ROOT'])
+        (root / '.domains-staging.sqlite3').write_bytes(b'')
+        self.ns['systemctl'].reset_mock()
+        self.ns['uninstall']()
+        calls = [call.args for call in self.ns['systemctl'].call_args_list]
+        self.assertIn(('disable', 'libreward-dns.service'), calls)
+        self.assertIn(('daemon-reload',), calls)
+        for name in ('RESOLVED_CONF', 'UNIT', 'RECOVERY_UNIT_PATH', 'DATABASE', 'STATE', 'SERVICE', 'RECOVERY'):
+            self.assertFalse(Path(self.mapping[name]).exists(), name)
+        self.assertFalse(root.exists())
+        self.ns['reload_resolved'].assert_called()
+        # Nothing installed: a second run is a no-op.
+        self.ns['uninstall']()
+
+    def test_uninstall_keeps_files_it_did_not_create(self):
+        self.apply()
+        root = Path(self.mapping['ROOT'])
+        (root / 'notes.txt').write_text('mine')
+        self.ns['uninstall']()
+        self.assertEqual(sorted(path.name for path in root.iterdir()), ['notes.txt'])
+        self.assertFalse(Path(self.mapping['CONF']).exists())
+        self.assertFalse(Path(self.mapping['UNIT']).exists())
+
     def test_foreign_resolved_dropin_is_never_replaced(self):
         resolved_conf = Path(self.mapping['RESOLVED_CONF'])
         resolved_conf.parent.mkdir()
@@ -182,6 +213,34 @@ class InstallerTests(unittest.TestCase):
             self.apply()
         self.assertEqual(conf.read_text(), 'addn-hosts=/etc/other.hosts\n')
         self.ns['reload_dns'].assert_not_called()
+
+class SystemCleanupTests(unittest.TestCase):
+    def test_cleanup_never_fails_package_removal(self):
+        import contextlib
+        import backends.linux_dns_service as service
+        output = io.StringIO()
+        with patch('os.geteuid', return_value=1000), contextlib.redirect_stderr(output):
+            self.assertEqual(service.system_cleanup(), 0)
+        self.assertIn('must run as root', output.getvalue())
+        self.assertIn('systemctl disable --now libreward-dns.service', output.getvalue())
+        output = io.StringIO()
+        with patch('os.geteuid', return_value=0), \
+                patch.object(service, 'helper', return_value='def uninstall():\n    raise RuntimeError("reload failed")\n'), \
+                patch('shutil.which', side_effect=lambda name, path=None: '/usr/bin/' + name), \
+                contextlib.redirect_stderr(output):
+            self.assertEqual(service.system_cleanup(), 0)
+        self.assertIn('reload failed', output.getvalue())
+
+    def test_cleanup_runs_the_installer_uninstall_as_root(self):
+        import builtins
+        import backends.linux_dns_service as service
+        self.addCleanup(lambda: hasattr(builtins, '_libreward_cleanup_ran') and delattr(builtins, '_libreward_cleanup_ran'))
+        source = 'def uninstall():\n    import builtins\n    builtins._libreward_cleanup_ran = True\n'
+        with patch('os.geteuid', return_value=0), patch.object(service, 'helper', return_value=source), \
+                patch('shutil.which', side_effect=lambda name, path=None: '/usr/bin/' + name):
+            self.assertEqual(service.system_cleanup(), 0)
+        self.assertTrue(getattr(builtins, '_libreward_cleanup_ran', False))
+
 
 @unittest.skipUnless(os.name == 'posix', 'Linux installer uses POSIX locks')
 class PreparedDatabaseTests(unittest.TestCase):

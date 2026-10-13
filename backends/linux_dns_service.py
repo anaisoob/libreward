@@ -47,6 +47,34 @@ def inspect_service():
             'recovered': state.get('phase') == 'recovered'}
 
 
+def system_cleanup():
+    """Run as root by package removal (no pkexec). Never fails the removal."""
+    import os
+    import shutil
+    import sys
+    path = '/usr/sbin:/usr/bin:/sbin:/bin'
+    tools = {name: shutil.which(name, path=path) for name in
+             ('nmcli', 'NetworkManager', 'systemctl', 'python3', 'resolvectl')}
+    try:
+        if os.geteuid() != 0:
+            raise PermissionError('LibreWard system cleanup must run as root.')
+        if not tools['systemctl']:
+            return 0
+        namespace = {'__name__': 'libreward_cleanup'}
+        exec(helper(tools['nmcli'], tools['NetworkManager'], tools['systemctl'],
+                    tools['python3'] or sys.executable, tools['resolvectl']), namespace)
+        namespace['uninstall']()
+    except Exception as exc:
+        print('LibreWard could not remove its Internet protection files: ' + str(exc) + '\n'
+              'Normal DNS returns within a few minutes. To finish manually: '
+              'sudo systemctl disable --now libreward-dns.service; '
+              'sudo rm -f /etc/NetworkManager/dnsmasq.d/90-libreward.conf '
+              '/etc/NetworkManager/conf.d/90-libreward-dns.conf '
+              '/etc/systemd/resolved.conf.d/90-libreward-filter.conf; '
+              'then restart NetworkManager or systemd-resolved.', file=sys.stderr)
+    return 0
+
+
 def upstream_table():
     """IPv4 DNS-over-TLS servers per provider; the service is limited to AF_INET."""
     return {key: [[address, provider.tls_name] for address in provider.addresses if ':' not in address]
@@ -159,6 +187,7 @@ if __name__ == '__main__':
 
 INSTALLER_SOURCE = r'''
 import contextlib
+import io
 import shutil
 import sqlite3
 import hashlib
@@ -188,8 +217,11 @@ def systemctl(*args, required=True):
     return result.returncode == 0
 
 
-def secure_directory(path):
-    os.makedirs(path, mode=0o755, exist_ok=True)
+def secure_directory(path, create=True):
+    if create:
+        os.makedirs(path, mode=0o755, exist_ok=True)
+    elif not os.path.lexists(path):
+        return
     st = os.lstat(path)
     if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.geteuid() or st.st_mode & 0o022:
         raise ValueError('Unsafe DNS service directory.')
@@ -375,12 +407,12 @@ def allowed_example():
 def apply_database(stream, count, mode='networkmanager', provider=None):
     secure_directory(ROOT)
     secure_directory(os.path.dirname(UNIT))
-    if mode == 'resolved':
-        secure_directory(os.path.dirname(RESOLVED_CONF))
-    else:
-        secure_directory(os.path.dirname(os.path.dirname(CONF)))
-        secure_directory(os.path.dirname(CONF))
-        secure_directory(os.path.dirname(SETUP_CONF))
+    # Installing creates the target mode's directories; pausing only checks the
+    # existing ones, so it never adds NetworkManager or resolved directories.
+    resolved_dirs = [os.path.dirname(RESOLVED_CONF)]
+    nm_dirs = [os.path.dirname(os.path.dirname(CONF)), os.path.dirname(CONF), os.path.dirname(SETUP_CONF)]
+    for path in resolved_dirs + nm_dirs:
+        secure_directory(path, create=bool(count) and path in (resolved_dirs if mode == 'resolved' else nm_dirs))
     lockfd = os.open(ROOT + '/.dns-lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     with os.fdopen(lockfd, 'wb') as lock:
         st = os.fstat(lock.fileno())
@@ -498,6 +530,40 @@ def apply_database(stream, count, mode='networkmanager', provider=None):
             for path in (staged, backup):
                 if path is not None and os.path.exists(path): os.unlink(path)
         return {'count': actual, 'digest': digest, 'skipped': 0}
+
+MANAGED_FILES = ('domains.sqlite3', 'dns-state.json', 'dns-service.py', 'dns-recovery.py',
+                 '.dns-lock', '.public-dns-lock')
+STAGING_PREFIXES = ('.domains-', '.previous-db-', '.libreward-dns-', '.dns-state-')
+
+
+def uninstall():
+    """Package removal: turn protection off, then remove LibreWard's system files."""
+    if not os.path.isdir(ROOT):
+        return
+    owned_dns = any(owned_small(path) is not None for path in (CONF, SETUP_CONF, RESOLVED_CONF))
+    unit_present = owned_small(UNIT) is not None
+    if owned_dns or unit_present:
+        # Same transaction as Pause: removes DNS routing and reloads the resolver.
+        apply_database(io.BytesIO(b''), 0)
+    if unit_present:
+        systemctl('stop', 'libreward-dns.service', required=False)
+        systemctl('disable', 'libreward-dns.service', required=False)
+    for path in (UNIT, RECOVERY_UNIT_PATH):
+        data = owned_small(path)
+        if data is not None and data.lstrip().startswith(b'# Managed by LibreWard'):
+            os.unlink(path)
+    systemctl('daemon-reload', required=False)
+    for name in os.listdir(ROOT):
+        path = os.path.join(ROOT, name)
+        if name in MANAGED_FILES or name.startswith(STAGING_PREFIXES):
+            info = os.lstat(path)
+            if stat.S_ISREG(info.st_mode) and info.st_uid == os.geteuid():
+                os.unlink(path)
+    try:
+        os.rmdir(ROOT)
+    except OSError:
+        pass  # keeps anything LibreWard did not create
+
 
 if __name__ == '__main__':
     try:
