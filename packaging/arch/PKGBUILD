@@ -1,0 +1,30 @@
+# Maintainer: anaisoob <anaisoob@tutamail.com>
+pkgname=libreward
+pkgver=0.3.0
+pkgrel=1
+pkgdesc='Simple virus scanning, firewall and Internet protection for Linux desktops'
+arch=('any')
+url='https://github.com/anaisoob/libreward'
+license=('GPL-2.0-or-later')
+depends=('python' 'pyside6' 'polkit' 'systemd')
+optdepends=('clamav: virus scanning (LibreWard can also offer to install it)'
+            'networkmanager: Internet protection'
+            'dnsmasq: Internet protection with NetworkManager (LibreWard can also offer to install it)'
+            'ufw: firewall management'
+            'firewalld: firewall management')
+makedepends=('make')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+# Run `updpkgsums` after the v$pkgver tag is published.
+sha256sums=('SKIP')
+
+check() {
+  cd "$pkgname-$pkgver"
+  QT_QPA_PLATFORM=offscreen python -m unittest discover -s tests
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+  make DESTDIR="$pkgdir" PREFIX=/usr PYTHON=/usr/bin/python3 install
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 README.md CHANGELOG.md -t "$pkgdir/usr/share/doc/$pkgname/"
+}

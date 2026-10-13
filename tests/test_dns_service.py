@@ -41,7 +41,6 @@ class InstallerTests(unittest.TestCase):
         namespace['query_health'] = Mock()
         namespace['probe'] = Mock()
         namespace['reload_dns'] = Mock()
-        namespace['remove_legacy_hosts'] = Mock()
         namespace['wait_for_dns_port'] = Mock()
         namespace['reload_resolved'] = Mock()
         namespace['filter_health'] = Mock()

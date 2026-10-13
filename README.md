@@ -23,7 +23,9 @@ ClamAV, Linux firewall management and Linux domain blocking.
 
 ## Run from source
 
-Clone or download the project and run these commands from its directory.
+Linux packages are prepared for Arch (AUR), Fedora, openSUSE, Debian 13 and
+Ubuntu 25.10 or newer; see [Packaging](docs/packaging.md). To run from source,
+clone or download the project and run these commands from its directory.
 Python 3.10 or newer with virtual-environment support is required. Python
 dependencies are listed in [requirements.txt](requirements.txt).
 

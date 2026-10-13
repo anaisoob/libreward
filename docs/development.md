@@ -12,8 +12,8 @@ LibreWard uses one GUI, one shared core layer and separate platform backends.
 | `scanner.py` | File collection, commands and ClamAV output parsing |
 | `excludes.py` | Shared matching and ClamAV regex arguments |
 | `tests/` | Core, socket-protocol, launcher and Qt workflow regressions |
-| `assets/` | Images, including the README screenshot |
-| `legacy/tk_ui/` | Archived Tk reference sources, not an active frontend |
+| `assets/` | Images, including the README screenshot, and the app icon in `assets/icons/` |
+| `packaging/` | Launcher, desktop entry, AUR, RPM, Debian and OBS files; see [Packaging](packaging.md) |
 
 Long operations run in workers. The GUI consumes queued events with a Qt timer.
 Only one app operation runs at a time; parallel file checks use a bounded pool.
@@ -21,8 +21,7 @@ OS-specific behavior belongs in backends. ClamAV is an external runtime;
 LibreWard does not link to `libclamav`.
 
 Launch with `python main.py`. The earlier `--qt` argument and
-`requirements-qt.txt` remain compatibility aliases. CustomTkinter is no longer
-a runtime dependency. Local contributor instructions may also be provided in
+`requirements-qt.txt` remain compatibility aliases. Local contributor instructions may also be provided in
 an `AGENTS.md` file; that file is excluded from the distribution repository.
 
 ## Automated checks

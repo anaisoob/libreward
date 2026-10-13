@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=LibreWard
+GenericName=Security and privacy
+Comment=Virus scanning, firewall and Internet protection
+Exec=libreward
+Icon=libreward
+Terminal=false
+Categories=System;Security;Qt;
+Keywords=antivirus;virus;scan;clamav;firewall;dns;privacy;ads;
+StartupWMClass=libreward

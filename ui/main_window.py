@@ -2,10 +2,9 @@
 import os
 import queue
 import threading
-from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, QSize, QByteArray
-from PySide6.QtGui import QColor, QIcon
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog,
     QFileDialog, QHBoxLayout, QLabel, QLineEdit, QListWidget, QMainWindow,
@@ -78,7 +77,7 @@ class QtMainWindow(QMainWindow):
         self.tray = None
         self.quit_requested = False
         self.tray_hint_shown = False
-        self.setWindowIcon(QIcon(str(Path(__file__).resolve().parent.parent / 'assets' / 'libreward.png')))
+        self.setWindowIcon(tray_icon())
         if not QSystemTrayIcon.isSystemTrayAvailable():
             return
         self.tray = QSystemTrayIcon(tray_icon(), self)
@@ -1528,6 +1527,8 @@ def run(minimized=False):
     app = QApplication([])
     app.setApplicationName(APP_NAME)
     app.setOrganizationName(APP_NAME)
+    # Lets Wayland compositors match the window to libreward.desktop and its icon.
+    app.setDesktopFileName('libreward')
     app.setStyle("Fusion")
     window = QtMainWindow()
     # Started at login, LibreWard protects from the tray (or minimized without one).

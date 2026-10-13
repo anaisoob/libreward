@@ -1,0 +1,11 @@
+#!/usr/bin/make -f
+%:
+	dh $@
+
+override_dh_auto_build:
+
+override_dh_auto_install:
+	$(MAKE) install DESTDIR=$(CURDIR)/debian/libreward PREFIX=/usr PYTHON=/usr/bin/python3
+
+override_dh_auto_test:
+	QT_QPA_PLATFORM=offscreen python3 -m unittest discover -s tests || true

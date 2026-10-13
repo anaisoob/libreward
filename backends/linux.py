@@ -996,7 +996,13 @@ class LinuxBackend(PlatformBackend):
             path.unlink(missing_ok=True)
             return
         root = Path(__file__).resolve().parent.parent
-        command = [sys.executable] if getattr(sys, 'frozen', False) else [sys.executable, str(root / 'main.py')]
+        # Installed packages start through their launcher, which survives upgrades.
+        launcher = os.environ.get('LIBREWARD_LAUNCHER', '')
+        if launcher and os.path.isabs(launcher) and os.access(launcher, os.X_OK):
+            command, icon = [launcher], 'libreward'
+        else:
+            command = [sys.executable] if getattr(sys, 'frozen', False) else [sys.executable, str(root / 'main.py')]
+            icon = str(root / 'assets' / 'icons' / 'libreward.svg')
 
         def quoted(argument):
             if any(char in argument for char in '\n\r'):
@@ -1008,7 +1014,7 @@ class LinuxBackend(PlatformBackend):
         content = ('[Desktop Entry]\nType=Application\nName=LibreWard\n'
                    'Comment=Keeps Internet protection on after restarting the computer\n'
                    'Exec=' + ' '.join(quoted(part) for part in [*command, '--autostart']) + '\n'
-                   'Icon=' + str(root / 'assets' / 'libreward.png') + '\n'
+                   'Icon=' + icon + '\n'
                    'Terminal=false\nX-GNOME-Autostart-enabled=true\n')
         path.parent.mkdir(parents=True, exist_ok=True)
         fd, name = tempfile.mkstemp(dir=path.parent, prefix='.libreward-', suffix='.desktop')

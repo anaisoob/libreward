@@ -10,6 +10,7 @@ commands to run the app.
 | [Internet protection](internet-protection.md) | Linux domain blocking, lists, exceptions and pause |
 | [Scanning](scanning.md) | Quick scans, parallelism, exclusions, progress and results |
 | [Development](development.md) | Architecture, tests and release checks |
+| [Packaging](packaging.md) | Linux packages, install layout and releases |
 
 Antivirus scanning, Linux firewall management and Linux domain blocking are available.
 Traffic monitoring and browsing-history recording are not implemented.

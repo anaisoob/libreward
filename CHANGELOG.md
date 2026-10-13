@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Prepare Linux packages: `make install` into a private `/usr/share/libreward`
+  directory with a `/usr/bin/libreward` launcher, desktop entry and icon, plus AUR,
+  RPM (Fedora/openSUSE via OBS) and Debian packaging. Login autostart uses the
+  installed launcher. Replace the window icon, which was an old screenshot, with
+  the LibreWard badge. Remove the archived Tk interface.
+
 - Internet protection: check the internet connection before asking for authorization,
   explain unreachable websites after setup, offer Cancel while authorization is pending,
   skip single damaged lines in downloaded lists and show the filter-recovered notice once.
