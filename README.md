@@ -11,7 +11,8 @@ ClamAV, Linux firewall management and Linux domain blocking.
 - Linux firewall detection, rule inspection and UFW installation guidance.
 - Confirmed UFW/firewalld activation, automatic status refresh and LAN or all-address rules.
 - Linux Internet protection: dangerous-domain, tracking and ad lists, exact-domain
-  exceptions, optional adult-site blocking, and disk-backed local DNS filtering on supported NetworkManager/systemd setups. Small custom lists can use reversible hosts-file blocking.
+  exceptions, optional adult-site blocking, and disk-backed local DNS filtering on supported NetworkManager/systemd setups.
+  systemd-resolved systems can use a public filtering DNS service (AdGuard DNS, Quad9, Cloudflare for Families).
 - Folder scans and Quick system scans with configurable exclusions.
 - Parallel scanning with `clamd` and standard scanning with `clamscan`.
 - Live progress, current-file information, cancellation and scan reports.

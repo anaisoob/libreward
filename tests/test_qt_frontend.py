@@ -132,31 +132,44 @@ class QtFrontendTests(unittest.TestCase):
         self.warning.assert_called_once()
         self.assertEqual(page.settings()['blocked'], [])
 
-    def test_internet_apply_requires_confirmation_and_retains_report(self):
+    def test_public_dns_apply_requires_consent_and_retains_report(self):
         page = self.window.internet_page
-        page.show_state({'supported': True, 'active': False, 'count': 0})
-        apply = self.patch('ui.internet_page.backend.apply_internet_protection', return_value={
-            'supported': True, 'active': True, 'count': 1, 'skipped': 0})
-        with patch.object(self.window, 'confirm', return_value=False):
+        page.show_state({'supported': True, 'active': False, 'count': 0, 'engine': 'public-dns-setup'})
+        self.assertFalse(page.public_card.isHidden())
+        self.assertTrue(all(card.isHidden() for card in page.filter_cards))
+        page.provider.setCurrentIndex(page.provider.findData('adguard-family'))
+        apply = self.patch('ui.internet_page.backend.apply_public_dns', return_value={
+            'supported': True, 'active': True, 'count': 0, 'engine': 'public-dns', 'provider': 'adguard-family'})
+        with patch.object(self.window, 'confirm', return_value=False) as confirm:
             page.apply()
         apply.assert_not_called()
-        with patch.object(self.window, 'confirm', return_value=True), patch.object(
-                page.store, 'load', return_value={'lists': {'dangerous': ['blocked.org']}}):
+        consent = confirm.call_args.args[1]
+        for text in ('AdGuard DNS Family', 'third-party service', 'no warranty', 'Closing LibreWard turns it off'):
+            self.assertIn(text, consent)
+        with patch.object(self.window, 'confirm', return_value=True):
             page.apply()
             dialog = self.window.update_dialog
             self.wait_idle()
-        apply.assert_called_once_with(['blocked.org'])
+        apply.assert_called_once_with('adguard-family')
         self.assertFalse(page.state['active'])
         dialog.accept()
         self.app.processEvents()
         self.assertTrue(page.state['active'])
         self.assertTrue(page.pause_button.isEnabled())
-        self.assertEqual(self.window.config['internet_protection']['categories'], ['dangerous'])
+        self.assertIn('Public filtering DNS', page.info.text())
+        self.assertEqual(self.window.config['internet_protection']['provider'], 'adguard-family')
+        self.assertTrue(self.window.config['internet_protection_on'])
+
+    def test_local_filter_hides_public_dns_choice(self):
+        page = self.window.internet_page
+        page.show_state({'supported': True, 'active': False, 'count': 0, 'engine': 'sqlite-setup'})
+        self.assertTrue(page.public_card.isHidden())
+        self.assertFalse(any(card.isHidden() for card in page.filter_cards))
 
     def test_debian_dns_setup_is_offered_with_installation_consent(self):
         page = self.window.internet_page
         page.show_state({'supported': True, 'active': False, 'count': 0,
-                         'engine': 'dnsmasq-setup', 'setup_available': True, 'needs_dns_install': True})
+                         'engine': 'sqlite-setup', 'setup_available': True, 'needs_dns_install': True})
         apply = self.patch('ui.internet_page.backend.apply_internet_protection')
         with patch.object(self.window, 'confirm', return_value=False) as confirm:
             page.apply()
@@ -182,7 +195,6 @@ class QtFrontendTests(unittest.TestCase):
                 payloads.append(prepared.path)
                 return {'supported': True, 'active': True, 'count': 1, 'engine': 'sqlite-dns'}
             with patch('ui.internet_page.backend.apply_internet_protection', side_effect=apply), \
-                 patch.object(page.store, 'compile', side_effect=AssertionError('RAM list used')), \
                  patch.object(self.window, 'confirm', return_value=True):
                 page.apply()
                 dialog = self.window.update_dialog

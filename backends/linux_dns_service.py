@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 
 from core.dns_proxy import SERVICE_SOURCE
-from .linux_dns import helper as legacy_helper, filter_responds
+from .linux_dns import helper as shared_helper, filter_responds
 
 DIRECTORY = '/etc/libreward'
 STATE = DIRECTORY + '/dns-state.json'
@@ -35,8 +35,8 @@ def inspect_service():
 
 
 def helper(nmcli, network_manager, systemctl, python):
-    # Share fixed-file helpers and resolver checks, but not the old list writer.
-    prefix = legacy_helper(nmcli, network_manager, setup=True).split('def apply_dns(', 1)[0]
+    # Share fixed-file helpers and resolver checks.
+    prefix = shared_helper(nmcli, network_manager)
     recovery = RECOVERY_SOURCE.replace('__NMCLI__', repr(nmcli)).replace('__SYSTEMCTL__', repr(systemctl))
     # Protection follows the open app. The filter starts at boot so a computer
     # restarted with protection on keeps it; once LibreWard has sent heartbeats,
@@ -221,7 +221,7 @@ def owned_small(path):
 
 
 def check_owned_files():
-    if owned_small(CONF) not in (None, CONTENT.encode(), PROXY_CONFIG):
+    if owned_small(CONF) not in (None, PROXY_CONFIG):
         raise ValueError('DNS configuration changed outside LibreWard.')
     if owned_small(SETUP_CONF) not in (None, SETUP_CONTENT):
         raise ValueError('DNS setup changed outside LibreWard.')
@@ -245,65 +245,6 @@ def query_health(count):
         except (OSError, RuntimeError):
             if attempt == 19: raise
             time.sleep(0.2)
-
-
-def remove_legacy_hosts(path='/etc/hosts'):
-    # Remove old managed blocks without ever reading the whole hosts file.
-    lockfd = os.open(path + '.libreward-lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(lockfd, 'wb') as lock:
-        st = os.fstat(lock.fileno())
-        if not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid() or st.st_nlink != 1:
-            raise ValueError('Unsafe hosts lock.')
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-        tempfd, name = tempfile.mkstemp(dir=os.path.dirname(path), prefix='.libreward-hosts-')
-        try:
-            with os.fdopen(fd, 'rb') as original, os.fdopen(tempfd, 'w+b') as target:
-                info = os.fstat(original.fileno())
-                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_nlink != 1:
-                    raise ValueError('Unsafe hosts file.')
-                inside = seen = ended = separator = False
-                digest, last, prefix_hash, expected, prefix_size = hashlib.sha256(), b'', None, None, 0
-                total = 0
-                while True:
-                    line = original.readline(65537)
-                    if not line: break
-                    total += len(line)
-                    if len(line) > 65536 or total > 512 * 1024 * 1024:
-                        raise ValueError('Hosts file is too large or has invalid lines.')
-                    if line == BEGIN:
-                        if seen: raise ValueError('Damaged LibreWard hosts section.')
-                        inside = seen = True
-                        prefix_size, prefix_hash = target.tell(), digest.hexdigest()
-                    elif line == END:
-                        if not inside: raise ValueError('Damaged LibreWard hosts section.')
-                        inside, ended = False, True
-                        if separator and last == b'\n' and expected == prefix_hash:
-                            target.seek(prefix_size - 1)
-                            target.truncate()
-                    elif inside:
-                        if line == b'# separator-added=yes\n': separator = True
-                        if line.startswith(b'# prefix-sha256='):
-                            expected = line.partition(b'=')[2].strip().decode('ascii')
-                    else:
-                        target.write(line)
-                        if not seen:
-                            digest.update(last + line[:-1])
-                            last = line[-1:]
-                if inside or seen != ended: raise ValueError('Damaged LibreWard hosts section.')
-                if not seen: return
-                os.fchown(target.fileno(), info.st_uid, info.st_gid)
-                os.fchmod(target.fileno(), stat.S_IMODE(info.st_mode))
-                for attr in os.listxattr(path, follow_symlinks=False):
-                    os.setxattr(name, attr, os.getxattr(path, attr, follow_symlinks=False))
-                target.flush()
-                os.fsync(target.fileno())
-            current = os.lstat(path)
-            if (current.st_ino, current.st_dev, current.st_mtime_ns, current.st_size) != (info.st_ino, info.st_dev, info.st_mtime_ns, info.st_size):
-                raise ValueError('Hosts file changed during setup.')
-            os.replace(name, path)
-        finally:
-            if os.path.exists(name): os.unlink(name)
 
 
 def check_upstream_port():
@@ -400,8 +341,6 @@ def apply_database(stream, count):
                 probe(allowed, False)
                 systemctl('enable', 'libreward-dns.service')
                 write(STATE, json.dumps({'active': True, 'count': actual, 'digest': digest, 'phase': 'enabled'}).encode())
-                # Old managed hosts blocks are removed only after successful DNS tests.
-                remove_legacy_hosts()
             else:
                 write(CONF, None)
                 write(SETUP_CONF, None)
@@ -409,7 +348,6 @@ def apply_database(stream, count):
                 if snapshot[UNIT] is not None:
                     systemctl('disable', 'libreward-dns.service')
                 write(STATE, json.dumps({'active': False, 'count': 0, 'phase': 'paused'}).encode())
-                remove_legacy_hosts()
         except BaseException as original:
             try:
                 # Release a new database before restoring small config files,

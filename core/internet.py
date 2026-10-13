@@ -1,5 +1,4 @@
 """Domain lists, validation and user preferences; no platform mutations."""
-import gzip
 from contextlib import closing
 import hashlib
 import ipaddress
@@ -19,7 +18,6 @@ CATEGORIES = {
 }
 SOURCE = 'https://raw.githubusercontent.com/blocklistproject/Lists/master/alt-version/{}-nl.txt'
 MAX_DOWNLOAD = 64 * 1024 * 1024
-MAX_CACHE = 256 * 1024 * 1024
 MAX_DOMAINS = 5_000_000
 
 
@@ -48,22 +46,8 @@ def normalize_domain(value):
     return value
 
 
-def domain_lines(text):
-    domains = set()
-    for line in text.splitlines():
-        line = line.split('#', 1)[0].strip()
-        if not line:
-            continue
-        try:
-            domains.add(normalize_domain(line))
-        except ValueError:
-            continue
-        if len(domains) > MAX_DOMAINS:
-            raise ValueError('The domain list is too large.')
-    return domains
-
-
 def preferences(config):
+    from .dns_providers import DEFAULT_PROVIDER, PROVIDERS
     value = config.get('internet_protection', {})
     if not isinstance(value, dict):
         value = {}
@@ -73,101 +57,18 @@ def preferences(config):
     for key in ('allowed', 'blocked'):
         if not isinstance(value.get(key, []), list):
             raise ValueError('Saved website exceptions are invalid.')
-    return {'categories': categories,
+    provider = value.get('provider', DEFAULT_PROVIDER)
+    if provider not in PROVIDERS:
+        provider = DEFAULT_PROVIDER
+    return {'categories': categories, 'provider': provider,
             'allowed': sorted({normalize_domain(item) for item in value.get('allowed', [])}),
             'blocked': sorted({normalize_domain(item) for item in value.get('blocked', [])})}
 
 
-class DomainLists:
-    def __init__(self, directory):
-        self.path = Path(directory) / 'internet-protection' / 'lists.json.gz'
-
-    def load(self):
-        if not self.path.exists():
-            return {'updated': None, 'lists': {}}
-        with gzip.open(self.path, 'rb') as stream:
-            data = stream.read(MAX_CACHE + 1)
-        if len(data) > MAX_CACHE:
-            raise ValueError('Saved lists are too large. Download them again.')
-        bundle = json.loads(data)
-        if not isinstance(bundle, dict) or not isinstance(bundle.get('lists'), dict):
-            raise ValueError('Saved lists are invalid. Download them again.')
-        for key, values in bundle['lists'].items():
-            if key not in CATEGORIES or not isinstance(values, list) or len(values) > MAX_DOMAINS:
-                raise ValueError('Saved lists are invalid. Download them again.')
-            if any(normalize_domain(value) != value for value in values):
-                raise ValueError('Saved lists are invalid. Download them again.')
-        return bundle
-
-    def update(self, categories, log=None):
-        if any(not isinstance(key, str) or key not in CATEGORIES for key in categories):
-            raise ValueError('Choose supported protection categories.')
-        # Fetch all selected sources before replacing the last usable cache.
-        lists = {}
-        sources = []
-        for key in categories:
-            domains = set()
-            for name in CATEGORIES[key][1]:
-                if log:
-                    log(f'Downloading {name} domain list from The Block List Project…\n')
-                request = Request(SOURCE.format(name), headers={'User-Agent': 'LibreWard'})
-                with urlopen(request, timeout=30) as response:
-                    if not response.geturl().startswith('https://raw.githubusercontent.com/'):
-                        raise ValueError('The list source redirected to an unexpected location.')
-                    raw = response.read(MAX_DOWNLOAD + 1)
-                if len(raw) > MAX_DOWNLOAD:
-                    raise ValueError('Downloaded list is too large.')
-                values = domain_lines(raw.decode('utf-8', errors='strict'))
-                if not values:
-                    raise ValueError(f'The {name} list contained no usable domains. Existing protection was kept.')
-                domains.update(values)
-                sources.append({'url': SOURCE.format(name), 'sha256': hashlib.sha256(raw).hexdigest(),
-                                'header': '\n'.join(line for line in raw.decode('utf-8').splitlines()[:100]
-                                                   if line.startswith('#'))})
-            if len(domains) > MAX_DOMAINS:
-                raise ValueError('The combined list is too large.')
-            lists[key] = sorted(domains)
-        bundle = {'updated': datetime.now(timezone.utc).isoformat(timespec='seconds'), 'lists': lists,
-                  'sources': sources}
-        encoded = json.dumps(bundle).encode('utf-8')
-        if len(encoded) > MAX_CACHE:
-            raise ValueError('The combined lists are too large.')
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        fd, name = tempfile.mkstemp(dir=self.path.parent, prefix='.lists-')
-        try:
-            with os.fdopen(fd, 'wb') as stream:
-                stream.write(gzip.compress(encoded))
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(name, self.path)
-        finally:
-            if os.path.exists(name):
-                os.unlink(name)
-        return bundle
-
-    def compile(self, settings):
-        bundle = self.load()
-        domains = set(settings['blocked'])
-        for category in settings['categories']:
-            if category not in bundle['lists']:
-                raise ValueError('Download the selected protection lists first.')
-            domains.update(bundle['lists'][category])
-        domains.difference_update(settings['allowed'])
-        if len(domains) > MAX_DOMAINS:
-            raise ValueError('Too many blocked domains.')
-        return sorted(domains)
-
-
-def domain_digest(domains):
-    return hashlib.sha256('\n'.join(sorted(domains)).encode('ascii')).hexdigest()
-
-
-class DiskDomainLists(DomainLists):
-    """Production cache: stream downloads into a bounded-cache SQLite database.
+class DiskDomainLists:
+    """List cache: stream downloads into a bounded-cache SQLite database.
 
     load/update return metadata only, never millions of Python domain objects.
-    Old JSON caches are intentionally not expanded; selected lists are fetched
-    into the new format on the next update/apply.
     """
     def __init__(self, directory):
         self.path = Path(directory) / 'internet-protection' / 'lists.sqlite3'
@@ -257,28 +158,6 @@ class DiskDomainLists(DomainLists):
                 if os.path.exists(path):
                     os.unlink(path)
 
-    def compile(self, settings):
-        from .memory_budget import require_domain_memory
-        if not self.path.exists():
-            # Also keeps small in-memory callers compatible; production updates
-            # create the database before applying selected categories.
-            return super().compile(settings)
-        with closing(self.connect(self.path)) as connection:
-            connection.execute('CREATE TEMP TABLE selected (domain TEXT PRIMARY KEY) WITHOUT ROWID')
-            available = self.load()['lists']
-            for category in settings['categories']:
-                if category not in available:
-                    raise ValueError('Download the selected protection lists first.')
-                connection.execute('INSERT OR IGNORE INTO selected SELECT domain FROM domains WHERE category=?', (category,))
-            connection.executemany('INSERT OR IGNORE INTO selected VALUES (?)', ((normalize_domain(d),) for d in settings['blocked']))
-            connection.executemany('DELETE FROM selected WHERE domain=?', ((normalize_domain(d),) for d in settings['allowed']))
-            count = connection.execute('SELECT COUNT(*) FROM selected').fetchone()[0]
-            if count > MAX_DOMAINS:
-                raise ValueError('Too many blocked domains.')
-            require_domain_memory(count)
-            return [row[0] for row in connection.execute('SELECT domain FROM selected ORDER BY domain')]
-
-
     def prepare(self, settings):
         # No Python list/set of the selected domains is created on this path.
         database = self.path if self.path.exists() else ':memory:'
@@ -292,8 +171,6 @@ class DiskDomainLists(DomainLists):
             connection.executemany('INSERT OR IGNORE INTO selected VALUES (?)', ((normalize_domain(d),) for d in settings['blocked']))
             connection.executemany('DELETE FROM selected WHERE domain=?', ((normalize_domain(d),) for d in settings['allowed']))
             return prepare_domain_stream(connection, self.path.parent)
-
-
 class PreparedDomains:
     """Disk-backed, single-use input to the privileged database installer."""
     def __init__(self, path, count, digest):
@@ -329,6 +206,3 @@ def prepare_domain_stream(connection, directory):
     except BaseException:
         Path(name).unlink(missing_ok=True)
         raise
-
-
-

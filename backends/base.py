@@ -231,6 +231,9 @@ class PlatformBackend(ABC):
     def apply_internet_protection(self, domains):
         raise NotImplementedError('Domain protection is currently available on Linux only.')
 
+    def apply_public_dns(self, provider):
+        raise NotImplementedError('Domain protection is currently available on Linux only.')
+
     def internet_protection_keepalive(self):
         """Tell an app-bound protection service that LibreWard is still open."""
 

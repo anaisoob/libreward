@@ -109,20 +109,25 @@ class InstallerTests(unittest.TestCase):
         self.ns['reload_dns'].assert_not_called()
         self.assertFalse(Path(self.mapping['CONF']).exists())
 
-    def test_first_install_failure_keeps_previous_nm_configuration(self):
-        conf = Path(self.mapping['CONF'])
-        conf.parent.mkdir()
-        conf.write_text(self.ns['CONTENT'])
+    def test_first_install_failure_leaves_no_dns_changes(self):
         self.ns['query_health'].side_effect = RuntimeError('new filter failed')
         with self.assertRaisesRegex(RuntimeError, 'new filter failed'):
             self.apply()
-        self.assertEqual(conf.read_text(), self.ns['CONTENT'])
-        self.assertFalse(Path(self.mapping['DATABASE']).exists())
-        self.assertFalse(Path(self.mapping['UNIT']).exists())
+        for name in ('CONF', 'SETUP_CONF', 'DATABASE', 'UNIT', 'STATE'):
+            self.assertFalse(Path(self.mapping[name]).exists(), name)
+
+    def test_foreign_dnsmasq_snippet_is_never_replaced(self):
+        conf = Path(self.mapping['CONF'])
+        conf.parent.mkdir()
+        conf.write_text('addn-hosts=/etc/other.hosts\n')
+        with self.assertRaisesRegex(ValueError, 'changed outside'):
+            self.apply()
+        self.assertEqual(conf.read_text(), 'addn-hosts=/etc/other.hosts\n')
+        self.ns['reload_dns'].assert_not_called()
 
 @unittest.skipUnless(os.name == 'posix', 'Linux installer uses POSIX locks')
 class PreparedDatabaseTests(unittest.TestCase):
-    def test_preparing_and_installing_never_calls_the_in_memory_compiler(self):
+    def test_preparing_streams_selected_domains_to_a_single_use_file(self):
         from core.internet import DiskDomainLists
         import json
         with tempfile.TemporaryDirectory() as directory:
@@ -133,26 +138,14 @@ class PreparedDatabaseTests(unittest.TestCase):
                 db.execute('CREATE TABLE metadata(value TEXT)')
                 db.execute('INSERT INTO metadata VALUES (?)', (json.dumps({'lists': {'adult': 2}}),))
                 db.executemany('INSERT INTO domains VALUES (?,?)', [('adult', 'blocked.example.org'), ('adult', 'allowed.example.org')])
-            with patch.object(store, 'compile', side_effect=AssertionError('List materialized')):
-                with store.prepare({'categories': ['adult'], 'blocked': ['custom.example.org'], 'allowed': ['allowed.example.org']}) as prepared:
-                    path = prepared.path
-                    self.assertEqual(prepared.count, 2)
-                    with path.open('rb') as stream:
-                        header = json.loads(stream.readline())
-                        self.assertEqual(header['count'], 2)
-                        self.assertEqual(stream.read(), b'blocked.example.org\ncustom.example.org\n')
-                self.assertFalse(path.exists())
-
-    def test_legacy_hosts_removal_preserves_other_entries_and_original_newline(self):
-        namespace = {'__name__': 'test_dns_hosts_migration'}
-        exec(helper('/usr/bin/nmcli', '/usr/sbin/NetworkManager', '/usr/bin/systemctl', '/usr/bin/python3'), namespace)
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory, 'hosts')
-            for original in (b'127.0.0.1 localhost', b'127.0.0.1 localhost\n'):
-                path.write_bytes(original)
-                namespace['replace_hosts'](str(path), ['old.example.org'])
-                namespace['remove_legacy_hosts'](str(path))
-                self.assertEqual(path.read_bytes(), original)
+            with store.prepare({'categories': ['adult'], 'blocked': ['custom.example.org'], 'allowed': ['allowed.example.org']}) as prepared:
+                path = prepared.path
+                self.assertEqual(prepared.count, 2)
+                with path.open('rb') as stream:
+                    header = json.loads(stream.readline())
+                    self.assertEqual(header['count'], 2)
+                    self.assertEqual(stream.read(), b'blocked.example.org\ncustom.example.org\n')
+            self.assertFalse(path.exists())
 
     def test_failure_recovery_restores_normal_dns_without_replacing_connection_profiles(self):
         from backends.linux_dns_service import RECOVERY_SOURCE

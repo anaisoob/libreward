@@ -4,6 +4,18 @@ Open **Internet protection** to check the current state. Opening the page does
 not download lists or change network settings. Linux is currently supported;
 other platforms show an unavailable message.
 
+LibreWard uses one of two methods, chosen automatically:
+
+- **Local filter** on NetworkManager systems that can use its dnsmasq resolver
+  (for example Debian and Ubuntu Server/minimal installs). LibreWard checks
+  every website name itself against downloaded lists and your own allowed and
+  blocked websites. Nothing is sent to an extra service.
+- **Public filtering DNS** on systems using systemd-resolved (for example Ubuntu
+  Desktop, Fedora and Arch). The selected service decides what to block; see
+  [Public filtering DNS](#public-filtering-dns).
+
+Other setups show that Internet protection is unavailable and nothing is changed.
+
 ## Enable protection
 
 Choose categories and select **Enable / apply protection**. Dangerous websites
@@ -17,7 +29,8 @@ filter. If necessary, it first offers installation of `dnsmasq-base` through
 Debian/Ubuntu's package manager. Package installation and service setup may each
 ask for authorization. Passwords go through the system dialog.
 
-The filter continues running after LibreWard closes and after reboot. Turning
+Protection works while LibreWard is open (see
+[Protection follows the open app](#protection-follows-the-open-app)). Turning
 protection off restores normal DNS. Setup may briefly interrupt name resolution.
 
 ## How the database backend works
@@ -44,7 +57,6 @@ a VPN, hide your IP address, or encrypt DNS. See the
 The standalone Python service runs as a systemd dynamic user, with only the
 capability needed to bind its local port, read-only system access, a 128 MiB
 memory limit and a task limit. It imports only Python's standard library.
-The GUI does not need to stay open.
 
 ### Supported setup
 
@@ -57,12 +69,9 @@ Automatic setup requires:
   Debian's minimal mDNS lookup is supported.
 - Trusted system Python, nmcli, NetworkManager and systemctl executables.
 
-Standalone systemd-resolved, unmanaged DNS and other resolver owners are not
-automatically converted. If the private port is already occupied, setup stops
-before changing DNS. Test the setup with the machine's actual VPN.
-
-Other compatible systems retain hosts-file blocking for small custom lists
-(up to 50,000 domains). Full downloaded categories require the database service.
+systemd-resolved systems use public filtering DNS instead; unmanaged DNS and
+other resolver owners are not converted. If the private port is already occupied,
+setup stops before changing DNS. Test the setup with the machine's actual VPN.
 The detected method appears in the status before applying.
 
 ### Installed files
@@ -79,8 +88,52 @@ The owned NetworkManager snippets are:
 - `/etc/NetworkManager/conf.d/90-libreward-dns.conf`: selects dnsmasq.
 - `/etc/NetworkManager/dnsmasq.d/90-libreward.conf`: sets its private port.
 
-Existing LibreWard hosts/list configuration is migrated after successful health
-checks. Other hosts entries and network connection settings are preserved.
+Network connection settings and `/etc/hosts` are not changed.
+
+## Public filtering DNS
+
+Where the local filter is unavailable but systemd-resolved is the system resolver
+(`/etc/resolv.conf` points to its stub and NSS asks it before any other network
+source), the page shows **DNS service** instead of categories and website lists:
+
+| Service | Blocks |
+|---|---|
+| AdGuard DNS (default) | Ads, trackers, malware and phishing |
+| AdGuard DNS Family | Also adult content; turns on Safe Search |
+| Quad9 | Malware and phishing (non-profit) |
+| Cloudflare (malware blocking) | Malware |
+| Cloudflare for Families | Malware and adult content |
+
+Addresses come from the services' official setup pages and are defined in
+`core/dns_providers.py`. Before the first use, LibreWard explains that the service
+is a third party, not part of LibreWard, used under its own terms and privacy
+policy, that it sees which website names the computer looks up, and that it may
+block websites by mistake.
+
+Applying writes one owned drop-in,
+`/etc/systemd/resolved.conf.d/90-libreward-dns.conf`:
+
+```ini
+# Managed by LibreWard
+# provider=adguard
+[Resolve]
+DNS=94.140.14.14#dns.adguard-dns.com 94.140.15.15#dns.adguard-dns.com ...
+Domains=~.
+DNSOverTLS=opportunistic
+```
+
+`Domains=~.` makes the service the preferred server for all names. Connection and
+VPN profiles are not changed; VPN routing domains such as `~corp.example` still use
+the VPN's servers. A VPN that routes all names (`~.`) through its own DNS can
+bypass the service. Opportunistic DNS-over-TLS encrypts lookups where port 853 is
+reachable and falls back to plain DNS to the same service otherwise.
+
+The root helper receives only the service key, validates it against the built-in
+table and refuses a drop-in it did not write. After reloading systemd-resolved it
+checks that `resolvectl dns` lists the service as global DNS and that ordinary
+names resolve; otherwise the previous drop-in is restored. Pausing or closing
+LibreWard removes the drop-in. Your own allowed and blocked websites need the
+local filter and are not used with a public service.
 
 ## Websites and exceptions
 
@@ -104,7 +157,7 @@ to use the new lists. Downloads are manual; failed downloads leave the last cach
 and active protection alone.
 
 **Pause protection** stops/disables the filter and removes LibreWard's network
-snippets and old managed hosts section. Normal NetworkManager DNS is reloaded.
+snippets, or removes the public DNS drop-in. Normal DNS is reloaded.
 Choices and downloaded lists are kept. Pause persists until you enable protection
 again. Installed service files/database remain available for the next enable.
 
@@ -128,7 +181,7 @@ A recovery reload failure still needs administrator attention.
 
 Downloads, deduplication, selected-domain export, privileged database construction
 and membership lookups operate incrementally with bounded caches. No full-domain
-JSON payload or huge dnsmasq hosts list is created on the database path. Status
+list is held in memory. Status
 checks read small installed metadata and query the filter, not every domain.
 Initial preparation still uses disk space and time proportional to the list size.
 
@@ -176,5 +229,6 @@ The open app sends a fire-and-forget DNS query for
 answers it locally and, after the first heartbeat, exits with a failure status
 when none arrives for 120 seconds; `OnFailure=` then runs the recovery unit.
 Before the first heartbeat, for example at boot while waiting for login, the
-filter keeps protecting. The hosts-file and older dnsmasq-list methods have no
-service, so their blocks stay until LibreWard turns them off.
+filter keeps protecting. Public filtering DNS has no running filter: if LibreWard
+stops unexpectedly the selected service stays in use, and internet access keeps
+working. The next start sees protection as on and continues.

@@ -810,6 +810,8 @@ class QtMainWindow(QMainWindow):
             "the GNU General Public License version 2.\n\n"
             "PySide6 / Qt is used under the applicable open-source LGPLv3 license.\n\n"
             "Optional Internet protection domain lists come from The Block List Project under its upstream license terms. "
+            "On systems without the local filter, LibreWard can select a public filtering DNS service (AdGuard DNS, "
+            "Quad9 or Cloudflare). These are third-party services, not part of LibreWard, used under their own terms. "
             "Lists are downloaded only after confirmation and may contain mistakes.\n\n"
             f"ClamAV homepage: {CLAMAV_HOMEPAGE}\nClamAV source: {CLAMAV_SOURCE}\n\n"
             "LibreWard and ClamAV are provided with no warranty, to the extent permitted by law."

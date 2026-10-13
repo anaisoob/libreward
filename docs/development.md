@@ -8,7 +8,7 @@ LibreWard uses one GUI, one shared core layer and separate platform backends.
 | --- | --- |
 | `ui/` | PySide6 / Qt interface, dialogs, themes and widgets |
 | `core/` | Scans, ClamD protocol/lifecycle, health checks, updates, database handling, quarantine, firewall validation and domain lists |
-| `backends/` | Platform runtime detection, paths, processes, firewall and hosts-file changes/authorization and installation guidance |
+| `backends/` | Platform runtime detection, paths, processes, firewall and DNS changes/authorization and installation guidance |
 | `scanner.py` | File collection, commands and ClamAV output parsing |
 | `excludes.py` | Shared matching and ClamAV regex arguments |
 | `tests/` | Core, socket-protocol, launcher and Qt workflow regressions |
@@ -46,8 +46,8 @@ real socket framing, parallel requests, ownership checks and large-file handling
 GUI installation/update and firewall mutation operations are simulated. Automated
 tests never enable the host firewall or modify its rules. The suite does not download
 ClamAV or benchmark real antivirus scans.
-Domain-list downloads are mocked and the standalone hosts helper is tested only
-against temporary files. The database DNS filter is tested with real UDP/TCP queries on temporary loopback ports. Installer rollback, migration and failure recovery use temporary files and mocked service commands. Tests never alter system DNS settings or `/etc/hosts`.
+Domain-list downloads are mocked and the public DNS helper is tested only
+against temporary files. The database DNS filter is tested with real UDP/TCP queries on temporary loopback ports. Installer rollback, migration and failure recovery use temporary files and mocked service commands. Tests never alter system DNS settings.
 
 ## Release smoke checks
 
@@ -67,12 +67,13 @@ Verify on Windows and a desktop Linux installation:
 - Themes, exclusions and reopening resized or maximized windows.
 - Linux Internet protection in a disposable VM: enable, cancel authorization,
   allow/block an exact domain, update lists, pause, restart, and check IPv4/IPv6
-  resolution. Verify existing hosts entries and VPN/DNS settings remain intact.
+  resolution. Verify VPN/DNS connection settings remain intact.
   On NetworkManager/systemd, check that closing the GUI turns protection off and
   removes the autostart entry, that a reboot with protection on restores it and
   opens LibreWard minimized at login, that killing the GUI restores normal DNS
   after about two minutes and the next start offers to turn protection on,
-  upgrade from the old hosts backend, repeated enable/pause, and intentional
+  public filtering DNS on a systemd-resolved desktop (each service, pause, close,
+  reboot, unreachable service rollback, VPN split DNS), repeated enable/pause, and intentional
   filter termination/OOM recovery. Confirm normal DNS returns and the GUI stops
   claiming active protection. Test an occupied private port and failed reload.
 

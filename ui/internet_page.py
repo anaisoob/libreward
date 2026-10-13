@@ -1,12 +1,15 @@
 """Plain-language domain protection UI; system work belongs to backends."""
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QHBoxLayout, QLineEdit, QListWidget, QMessageBox,
+    QApplication, QCheckBox, QComboBox, QHBoxLayout, QLineEdit, QListWidget, QMessageBox,
     QScrollArea, QVBoxLayout, QWidget,
 )
 from backends import backend
 from config import save_config
+from core.dns_providers import PROVIDERS
 from core.internet import CATEGORIES, DiskDomainLists as DomainLists, normalize_domain, preferences
+
+PUBLIC_ENGINES = ('public-dns', 'public-dns-setup')
 
 
 class InternetProtectionPage:
@@ -64,9 +67,30 @@ class InternetProtectionPage:
         try:
             saved = preferences(window.config)
         except (ValueError, TypeError):
-            saved = {'categories': ['dangerous'], 'allowed': [], 'blocked': []}
+            saved = {'categories': ['dangerous'], 'provider': 'adguard', 'allowed': [], 'blocked': []}
             self.notice.setText('Saved website settings could not be read. Review them before applying protection.')
+        # Shown on systems without the local filter: a public filtering DNS service.
+        self.public_card, box = window.card()
+        box.addWidget(window.label('DNS SERVICE', 'eyebrow'))
+        self.provider = QComboBox()
+        for key, provider in PROVIDERS.items():
+            self.provider.addItem(provider.name + (' (recommended)' if key == 'adguard' else ''), key)
+        self.provider.setCurrentIndex(max(0, self.provider.findData(saved['provider'])))
+        self.provider.currentIndexChanged.connect(self.provider_changed)
+        box.addWidget(self.provider)
+        self.provider_info = window.label('', 'muted')
+        self.provider_info.setWordWrap(True)
+        box.addWidget(self.provider_info)
+        note = window.label('This computer cannot run LibreWard’s own filter, so website lookups are sent to the '
+                            'selected service, which decides what to block. Your own allowed and blocked websites '
+                            'need the local filter and are not used here.', 'muted')
+        note.setWordWrap(True)
+        box.addWidget(note)
+        layout.addWidget(self.public_card)
+        self.public_card.hide()
+        self.provider_changed(notify=False)
         card, box = window.card()
+        self.filter_cards = [card]
         box.addWidget(window.label('WHAT TO BLOCK', 'eyebrow'))
         self.categories = {}
         for key, (title, _) in CATEGORIES.items():
@@ -105,6 +129,7 @@ class InternetProtectionPage:
             field.returnPressed.connect(lambda k=key, f=field: self.add_domain(k, f))
             box.addWidget(window.button('Remove selected', lambda checked=False, k=key: self.remove_domain(k)))
             lists_row.addWidget(card)
+            self.filter_cards.append(card)
         layout.addLayout(lists_row)
         note = window.label('This protection blocks exact domain names, not page contents. '
                             'Subdomains need their own entries. It cannot remove every ad. '
@@ -113,10 +138,13 @@ class InternetProtectionPage:
                             'Allowed websites only removes LibreWard blocks; it cannot override other security tools.', 'muted')
         note.setWordWrap(True)
         layout.addWidget(note)
+        self.filter_cards.append(note)
         self.advanced_toggle = QCheckBox('Show how protection works')
         layout.addWidget(self.advanced_toggle)
-        self.advanced = window.label('Linux: a local service checks an indexed database on disk. NetworkManager forwards allowed requests, including VPN domains. Other supported setups use a marked /etc/hosts section. '
-                                    'Existing entries are kept. DNS server and VPN settings are unchanged. '
+        self.advanced = window.label('Linux with NetworkManager: a local service checks an indexed database on disk, and '
+                                    'NetworkManager forwards allowed requests, including VPN domains. Systems using '
+                                    'systemd-resolved instead send website lookups to the selected public filtering DNS '
+                                    'service, encrypted where the network allows it. VPN connection settings are unchanged. '
                                     'Protection works while LibreWard is open. If the computer restarts with protection on, '
                                     'LibreWard starts with it and protection continues. Closing LibreWard or pausing '
                                     'removes LibreWard’s blocks until you enable protection again.\n\n'
@@ -164,11 +192,21 @@ class InternetProtectionPage:
         else:
             self.remember_protection(False)
 
+    def public_mode(self):
+        return bool(self.state and self.state.get('engine') in PUBLIC_ENGINES)
+
+    def provider_changed(self, *_args, notify=True):
+        provider = PROVIDERS[self.provider.currentData()]
+        self.provider_info.setText(f'{provider.blocks}\nProvided by a third party under its own terms: {provider.homepage}')
+        if notify:
+            self.changed()
+
     def changed(self):
         self.notice.setText('Changes are not applied yet. Choose “Enable / apply protection” to use these settings.')
 
     def settings(self):
         return {'categories': [key for key, check in self.categories.items() if check.isChecked()],
+                'provider': self.provider.currentData(),
                 **{key: [listing.item(i).text() for i in range(listing.count())]
                    for key, listing in self.domain_lists.items()}}
 
@@ -247,22 +285,35 @@ class InternetProtectionPage:
             self.notice.setText('The filter stopped. Normal internet access was restored automatically. You can enable protection again.')
         active = state.get('active', False)
         supported = state.get('supported', False)
+        public = self.public_mode()
+        self.public_card.setVisible(public)
+        for card in self.filter_cards:
+            card.setVisible(not public)
+        if public and state.get('provider') in PROVIDERS:
+            self.provider.blockSignals(True)
+            self.provider.setCurrentIndex(self.provider.findData(state['provider']))
+            self.provider.blockSignals(False)
+            self.provider_changed(notify=False)
         self.status.setText('Domain blocking is on' if active and supported else
                             'Domain entries are installed — protection needs checking' if active else
                             'Protection is off' if supported else 'Protection is unavailable on this setup')
         self.status.setProperty('severity', 'success' if active and supported else 'warning')
         self.status.style().unpolish(self.status)
         self.status.style().polish(self.status)
-        self.info.setText(f"{state.get('count', 0):,} domains in the active blocklist.\n" +
-                          ('Method: Local DNS filter.\n' if state.get('engine') in ('dnsmasq', 'dnsmasq-setup', 'sqlite-dns', 'sqlite-setup') else 'Method: System hosts file (small lists only).\n') +
-                          state.get('message', ''))
+        if public:
+            method = 'Method: Public filtering DNS service.\n'
+        elif state.get('engine') in ('sqlite-dns', 'sqlite-setup'):
+            method = f"{state.get('count', 0):,} domains in the active blocklist.\nMethod: Local DNS filter.\n"
+        else:
+            method = ''
+        self.info.setText(method + state.get('message', ''))
         self.update_controls()
 
     def update_controls(self):
         idle = self.window.operation is None
         self.apply_button.setEnabled(idle and bool(self.state and self.state.get('supported')))
         self.pause_button.setEnabled(idle and bool(self.state and self.state.get('active')))
-        for widget in [*self.categories.values(), *self.domain_lists.values(), *self.domain_fields]:
+        for widget in [*self.categories.values(), *self.domain_lists.values(), *self.domain_fields, self.provider]:
             widget.setEnabled(idle)
         if idle and self.scroll_position is not None:
             self.scroll_restore_timer.start(0)
@@ -299,14 +350,12 @@ class InternetProtectionPage:
     def apply(self, confirmed=False):
         if self.window.operation or not self.state or not self.state.get('supported'):
             return
+        if self.public_mode():
+            self.apply_public(confirmed)
+            return
         settings = self.settings()
         if not settings['categories'] and not settings['blocked']:
             QMessageBox.information(self.window, 'Internet protection', 'Choose a category or add a blocked website first.')
-            return
-        if settings['categories'] and self.state.get('engine') == 'hosts':
-            QMessageBox.information(self.window, 'Local DNS setup needed',
-                'Automatic setup is unavailable for your current network settings. '
-                'You can still block individual websites by clearing the categories. ')
             return
         setup_text = ''
         if self.state.get('setup_available'):
@@ -321,7 +370,7 @@ class InternetProtectionPage:
                 'The Block List Project on GitHub. This may stop some websites or apps from working. '
                 'Protection works while LibreWard is open, including after restarting the computer. '
                 'Closing LibreWard turns it off. You can pause it or add allowed websites. '
-                'The detected blocking method is shown in the status above. Existing network and VPN connection settings will be kept. System authorization is required.'):
+                'Existing network and VPN connection settings will be kept. System authorization is required.'):
             return
         self.window.privileged_terminal_commands = ''
         if not self.window.ensure_system_authorization():
@@ -335,29 +384,48 @@ class InternetProtectionPage:
             available = set(self.store.load()['lists'])
             if any(key not in available for key in settings['categories']):
                 self.store.update(settings['categories'], self.window.events.put)
-            if self.state.get('engine') in ('sqlite-dns', 'sqlite-setup'):
-                self.window.events.put('Preparing the domain database on disk…\n')
-                with self.store.prepare(settings) as domains:
-                    if not len(domains):
-                        raise ValueError('No domains remain to block after your allowed websites were applied.')
-                    self.window.events.put(f'Applying {len(domains):,} blocked domains. Waiting for system authorization…\n')
-                    state = backend.apply_internet_protection(domains)
-            else:
-                domains = self.store.compile(settings)
-                if not domains:
+            self.window.events.put('Preparing the domain database on disk…\n')
+            with self.store.prepare(settings) as domains:
+                if not len(domains):
                     raise ValueError('No domains remain to block after your allowed websites were applied.')
                 self.window.events.put(f'Applying {len(domains):,} blocked domains. Waiting for system authorization…\n')
                 state = backend.apply_internet_protection(domains)
-            self.window.events.put(f"Applied {state['count']:,} exact-domain blocks. Blocking method: {'Local database filter' if state.get('engine') == 'sqlite-dns' else state.get('engine', 'hosts')}.\n")
+            self.window.events.put(f"Applied {state['count']:,} exact-domain blocks with the local filter.\n")
             return state
         self.window.start_task('internet-apply', work, title='Apply domain protection', on_done=self.applied)
+
+    def apply_public(self, confirmed):
+        settings = self.settings()
+        provider = PROVIDERS[settings['provider']]
+        if not confirmed and not self.window.confirm('Use a public DNS service',
+                f'Send this computer’s website lookups to {provider.name}? {provider.blocks}\n\n'
+                f'{provider.name} is a third-party service, not part of LibreWard, and is used under its own terms '
+                f'and privacy policy ({provider.homepage}). It can see which website names this computer looks up. '
+                'It may block websites by mistake, and LibreWard and the service are provided with no warranty, '
+                'to the extent permitted by law.\n\n'
+                'Protection works while LibreWard is open, including after restarting the computer. '
+                'Closing LibreWard turns it off. Network and VPN connection settings are kept. '
+                'System authorization is required.'):
+            return
+        self.window.privileged_terminal_commands = ''
+        if not self.window.ensure_system_authorization():
+            return
+        try:
+            self.persist(settings)
+        except OSError as exc:
+            QMessageBox.warning(self.window, 'Settings', str(exc))
+            return
+        def work():
+            self.window.events.put(f'Switching website lookups to {provider.name}. Waiting for system authorization…\n')
+            state = backend.apply_public_dns(provider.key)
+            self.window.events.put(f'Website lookups now go to {provider.name}.\n')
+            return state
+        self.window.start_task('internet-apply', work, title='Apply Internet protection', on_done=self.applied)
 
     def applied(self, state):
         self.show_state(state)
         self.remember_protection(bool(state.get('active')))
-        skipped = state.get('skipped', 0)
-        self.notice.setText('Protection settings were applied. Restart an affected app if it is still using cached addresses.'
-                            + (f' {skipped:,} domains were kept under existing system hosts entries.' if skipped else ''))
+        self.notice.setText('Protection settings were applied. Restart an affected app if it is still using cached addresses.')
 
     def pause(self):
         if self.window.operation or not self.state or not self.state.get('active'):
@@ -365,7 +433,7 @@ class InternetProtectionPage:
         if not self.window.confirm('Pause domain protection',
                 'Remove LibreWard’s active domain blocks? Your choices and downloaded lists will be kept. '
                 'Protection stays paused until you enable it again. '
-                'Other security tools and existing hosts entries are kept. System authorization is required.'):
+                'System authorization is required.'):
             return
         self.window.privileged_terminal_commands = ''
         if not self.window.ensure_system_authorization():

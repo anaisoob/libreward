@@ -860,8 +860,7 @@ class LinuxBackend(PlatformBackend):
             raise RuntimeError('The local DNS component could not be installed. ' + output.strip())
 
     def inspect_internet_protection(self):
-        from .linux_hosts import inspect_hosts
-        from .linux_resolver import nss_hosts_source, resolved_reads_hosts
+        """Local filter where NetworkManager allows it, else a public filtering DNS via resolved."""
         from .linux_dns_service import inspect_service
         service_state = inspect_service()
         if service_state is not None and service_state['active']:
@@ -871,59 +870,52 @@ class LinuxBackend(PlatformBackend):
             if not service_state['supported']:
                 service_state['message'] = 'The local filter needs attention. Pause protection to restore normal DNS.'
             return service_state
-        from .linux_dns import inspect as inspect_dns
-        dns_state = inspect_dns()
-        local_dns = self._local_dns_available()
+        recovered = bool(service_state and service_state.get('recovered'))
+        public = self._inspect_public_dns()
+        if public is not None:
+            return public
         can_run_service = bool(self._trusted_firewall_executable('systemctl') and Path('/run/systemd/system').is_dir())
-        if dns_state is not None:
-            if can_run_service and local_dns:
-                dns_state.update(engine='sqlite-setup', setup_available=True, needs_dns_install=False,
-                                 message='Ready to upgrade protection to the disk-backed local filter.')
-            dns_state['supported'] = dns_state['supported'] and local_dns
-            if not local_dns:
-                dns_state['message'] = 'Network DNS settings changed. Pause protection before changing the resolver.'
-            return dns_state
-        result = inspect_hosts('/etc/hosts')
-        result['engine'] = 'dnsmasq' if local_dns else 'hosts'
-        if local_dns and can_run_service:
-            result.update(engine='sqlite-setup', setup_available=True, needs_dns_install=False)
-            result['message'] = ('The filter stopped and normal DNS was restored. You can enable protection again.'
-                                 if service_state and service_state.get('recovered') else
-                                 'Ready for the disk-backed local filter. Network and VPN connection settings are kept.')
-            return result
-        if can_run_service and self._dns_setup_available():
-            result.update(supported=True, engine='sqlite-setup', setup_available=True,
-                          needs_dns_install=not bool(self._trusted_firewall_executable('dnsmasq')),
-                          recovered=bool(service_state and service_state.get('recovered')),
-                          message=('The filter stopped and normal DNS was restored. You can enable protection again.'
-                                   if service_state and service_state.get('recovered') else
-                                   'Ready to set up Internet protection. LibreWard will prepare the local filter when you enable protection.'))
-            return result
-        result['message'] = 'Automatic Internet protection setup is unavailable for these network settings. Individual website blocking is available where supported.'
+        python = self._trusted_firewall_executable('python3')
+        if python and can_run_service and (self._local_dns_available() or self._dns_setup_available()):
+            return {'supported': True, 'active': False, 'count': 0, 'engine': 'sqlite-setup', 'setup_available': True,
+                    'needs_dns_install': not bool(self._trusted_firewall_executable('dnsmasq')),
+                    'recovered': recovered,
+                    'message': ('The filter stopped and normal DNS was restored. You can enable protection again.'
+                                if recovered else 'Ready to set up Internet protection. Network and VPN connection settings are kept.')}
+        if python and self._public_dns_available():
+            return {'supported': True, 'active': False, 'count': 0, 'engine': 'public-dns-setup',
+                    'message': 'This computer can use a public filtering DNS service for Internet protection.'}
+        return {'supported': False, 'active': False, 'count': 0, 'engine': None,
+                'message': 'Internet protection is not available for these network settings. '
+                           'It needs NetworkManager or systemd-resolved. Your DNS settings have not been changed.'}
+
+    def _public_dns_available(self):
+        from .linux_public_dns import resolved_is_system_resolver
+        systemctl = self._trusted_firewall_executable('systemctl')
+        if not systemctl or not self._trusted_firewall_executable('resolvectl'):
+            return False
         try:
-            nss = Path('/etc/nsswitch.conf').read_text()
-            source = nss_hosts_source(nss)
-            if source is None and re.search(r'\bresolve\b', nss):
-                analyze = self._firewall_executable('systemd-analyze')
-                if analyze:
-                    code, config = self._firewall_query([analyze, 'cat-config', 'systemd/resolved.conf'], timeout=5)
-                    if code == 0:
-                        source = nss_hosts_source(nss, resolved_hosts=resolved_reads_hosts(config))
-            if source is None:
-                result['supported'] = False
-                result['message'] = ('Your system resolver could not be confirmed to use local domain blocks. '
-                                     'LibreWard supports hosts-file lookup and systemd-resolved with ReadEtcHosts enabled. '
-                                     'Your DNS settings have not been changed.')
-            elif source == 'resolve':
-                result['message'] = ('Your system uses systemd-resolved, configured to read local domain blocks. '
-                                     'DNS server and VPN settings are kept. Apps using their own DNS may bypass this protection.')
-        except (OSError, StopIteration, ValueError):
-            result['supported'] = False
-            result['message'] = 'System name-resolution settings could not be verified.'
-        if not self._trusted_firewall_executable('python3'):
-            result['supported'] = False
-            result['message'] = 'System Python 3 is required for domain protection setup.'
-        return result
+            if self._firewall_query([systemctl, 'is-active', '--quiet', 'systemd-resolved.service'], timeout=5)[0]:
+                return False
+            return resolved_is_system_resolver(Path('/etc/nsswitch.conf').read_text())
+        except (OSError, ValueError):
+            return False
+
+    def _inspect_public_dns(self):
+        from core.dns_providers import PROVIDERS
+        from .linux_public_dns import global_servers, inspect_public
+        key = inspect_public()
+        if key is None:
+            return None
+        provider = PROVIDERS[key]
+        resolvectl = self._trusted_firewall_executable('resolvectl')
+        effective = False
+        if resolvectl and self._public_dns_available():
+            code, output = self._firewall_query([resolvectl, 'dns'], timeout=5)
+            effective = code == 0 and set(provider.addresses) <= global_servers(output)
+        return {'supported': effective, 'active': True, 'count': 0, 'engine': 'public-dns', 'provider': key,
+                'message': (f'Website lookups go to {provider.name}. {provider.blocks}' if effective else
+                            f'{provider.name} is selected but the system is not using it. Pause protection, then enable it again.')}
 
     def internet_protection_keepalive(self):
         # Fire-and-forget UDP query; the GUI thread never waits for a reply.
@@ -977,73 +969,51 @@ class LinuxBackend(PlatformBackend):
                 os.unlink(name)
 
     def apply_internet_protection(self, domains):
+        """PreparedDomains enables the local filter; [] pauses whatever protection is active."""
         from core.internet import PreparedDomains
         if isinstance(domains, PreparedDomains):
             return self._apply_database_protection(domains)
-        if domains == []:
-            state = self.inspect_internet_protection()
-            if state.get('engine') in ('sqlite-dns', 'sqlite-setup'):
-                return self._apply_database_protection(None)
+        if domains != []:
+            raise ValueError('Invalid domain protection request.')
+        state = self.inspect_internet_protection()
+        if state.get('engine') == 'public-dns':
+            return self.apply_public_dns(None)
+        if state.get('engine') == 'sqlite-dns':
+            return self._apply_database_protection(None)
+        return state
+
+    def apply_public_dns(self, provider):
+        """Select a public filtering DNS service, or remove LibreWard's selection with None."""
         import json
-        from core.internet import normalize_domain, MAX_DOMAINS
-        from .linux_hosts import HOSTS_HELPER
-        if not isinstance(domains, list) or len(domains) > MAX_DOMAINS:
-            raise ValueError('Invalid domain list.')
-        from core.memory_budget import require_domain_memory
-        require_domain_memory(len(domains))
-        # Production compilation already yields canonical, sorted unique names.
-        # Validate without building another million-entry set/list.
-        previous = None
-        for value in domains:
-            if normalize_domain(value) != value or (previous is not None and value <= previous):
-                domains = sorted({normalize_domain(item) for item in domains})
-                break
-            previous = value
-        status = self.inspect_internet_protection()
-        if domains and not status['supported']:
-            raise RuntimeError(status['message'])
-        if domains and status.get('engine') == 'hosts' and len(domains) > 50000:
-            raise RuntimeError('This computer is using hosts-file blocking. Large protection lists require the local DNS backend. '
-                               'This version supports NetworkManager with its dnsmasq resolver. See the Internet protection guide; '
-                               'no system changes were made.')
-        helper_source = HOSTS_HELPER
-        if status.get('engine') in ('dnsmasq', 'dnsmasq-setup'):
-            from .linux_dns import helper
-            nmcli = self._trusted_firewall_executable('nmcli')
-            nm = self._trusted_firewall_executable('NetworkManager')
-            if not nmcli or not nm:
-                raise RuntimeError('NetworkManager tools are required to change local DNS protection.')
-            setup = bool(domains and status.get('setup_available'))
-            if setup:
-                self._install_dns_runtime()
-            helper_source = helper(nmcli, nm, setup=setup)
-        authorizer = self._require_authorizer()
-        python = self._trusted_firewall_executable('python3')
-        if not python:
-            raise RuntimeError('System Python 3 is unavailable.')
         import tempfile
-        with tempfile.TemporaryFile(mode='w+', encoding='utf-8') as payload:
-            json.dump(domains, payload, separators=(',', ':'))
-            payload.flush()
+        from core.dns_providers import PROVIDERS
+        from .linux_public_dns import helper
+        if provider is not None and provider not in PROVIDERS:
+            raise ValueError('Choose a supported DNS service.')
+        state = self.inspect_internet_protection()
+        if provider is not None and (not state.get('supported') or state.get('engine') not in ('public-dns', 'public-dns-setup')):
+            raise RuntimeError(state.get('message', 'Public DNS protection is unavailable.'))
+        executables = {name: self._trusted_firewall_executable(name) for name in ('systemctl', 'resolvectl', 'python3')}
+        if not all(executables.values()):
+            raise RuntimeError('System resolver tools are required for Internet protection.')
+        source = helper(executables['systemctl'], executables['resolvectl'])
+        with tempfile.TemporaryFile(mode='w+b') as payload:
+            payload.write(json.dumps({'provider': provider}).encode('ascii'))
             payload.seek(0)
-            process = self.start_process([authorizer, '--disable-internal-agent', python, '-I', '-c', helper_source],
+            process = self.start_process([self._require_authorizer(), '--disable-internal-agent', executables['python3'], '-I', '-c', source],
                                          stdin=payload, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                          text=True, encoding='utf-8', errors='replace')
-            try:
-                output, _ = process.communicate(timeout=180)
-            except subprocess.TimeoutExpired:
-                self.stop_process(process)
-                process.communicate()
-                raise RuntimeError('Setup timed out. Check protection status before retrying.')
+            # Never kill the helper while it is switching or restoring DNS.
+            output, _ = process.communicate()
         self._check_authorization_exit(process.returncode)
         if process.returncode:
-            raise RuntimeError('Domain protection could not be changed. ' + output.strip())
-        changes = json.loads(output)
-        status = self.inspect_internet_protection()
-        status['skipped'] = changes['skipped']
-        if status['count'] != changes['count']:
-            raise RuntimeError('The result could not be verified. Check protection status.')
-        return status
+            raise RuntimeError('Internet protection could not be changed. ' + output.strip())
+        state = self.inspect_internet_protection()
+        state['skipped'] = 0
+        if state.get('active') != (provider is not None) or (provider is not None and
+                                                             (state.get('provider') != provider or not state.get('supported'))):
+            raise RuntimeError('The DNS change could not be verified. Check protection status.')
+        return state
 
     def _apply_database_protection(self, prepared):
         import json
