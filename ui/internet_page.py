@@ -362,7 +362,7 @@ class InternetProtectionPage:
             setup_text = ('LibreWard will set up a local website filter using your existing network manager. '
                           'Turning protection off restores the previous DNS mode. The internet may briefly reconnect. ')
             if self.state.get('needs_dns_install'):
-                setup_text += ('The required dnsmasq-base package and its dependencies will be installed from your system repositories. '
+                setup_text += (f"The required {self.state.get('dns_package') or 'dnsmasq'} package and its dependencies will be installed from your system repositories. "
                                'Installation and setup may each ask for system authorization. ')
         if not confirmed and not self.window.confirm('Enable domain protection',
                 setup_text +

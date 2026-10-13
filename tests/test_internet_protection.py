@@ -258,6 +258,34 @@ class InternetBackendTests(unittest.TestCase):
         self.assertFalse(state['supported'])
         self.assertIsNone(state['engine'])
 
+    def test_dnsmasq_is_installed_with_each_supported_package_manager(self):
+        backend = self.backend()
+        expected = {'apt': ['/usr/bin/apt-get', 'install', '--assume-yes', '--no-remove', 'dnsmasq-base'],
+                    'pacman': ['/usr/bin/pacman', '-S', '--needed', '--noconfirm', 'dnsmasq'],
+                    'dnf': ['/usr/bin/dnf', 'install', '--assumeyes', 'dnsmasq'],
+                    'zypper': ['/usr/bin/zypper', '--non-interactive', 'install', '--no-recommends', 'dnsmasq']}
+        for manager, command in expected.items():
+            installed = []
+            def trusted(name):
+                return '/usr/sbin/dnsmasq' if name == 'dnsmasq' and installed else (
+                    None if name == 'dnsmasq' else '/usr/bin/' + name)
+            process = Mock(stdout=iter(['done\n']))
+            def start(arguments, **kwargs):
+                installed.append(True)
+                return process
+            process.wait.return_value = 0
+            with self.subTest(manager=manager), \
+                    patch.object(backend, 'distro_info', return_value={'pkg_manager': manager}), \
+                    patch.object(backend, '_trusted_firewall_executable', side_effect=trusted), \
+                    patch.object(backend, '_require_authorizer', return_value='/usr/bin/pkexec'), \
+                    patch.object(backend, 'start_process', side_effect=start) as started:
+                backend._install_dns_runtime()
+                self.assertEqual(started.call_args.args[0], ['/usr/bin/pkexec', '--disable-internal-agent', *command])
+        with patch.object(backend, 'distro_info', return_value={'pkg_manager': 'emerge'}), \
+                patch.object(backend, '_trusted_firewall_executable', return_value=None), \
+                self.assertRaisesRegex(RuntimeError, 'missing'):
+            backend._install_dns_runtime()
+
     def test_active_public_dns_requires_effective_global_servers(self):
         from core.dns_providers import PROVIDERS
         backend = self.backend()

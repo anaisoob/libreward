@@ -7,8 +7,8 @@
   phishing by default; tracking, ads and adult sites optional) and exact allowed/blocked
   websites. It is a standalone, hardened systemd service with a disk-backed SQLite index,
   bounded memory, UDP/TCP forwarding through NetworkManager's dnsmasq (network and VPN DNS
-  routing are kept), health checks, rollback and failure recovery. On default Debian/Ubuntu
-  NetworkManager systems it offers consented `dnsmasq-base` installation.
+  routing are kept), health checks, rollback and failure recovery. When dnsmasq is missing it
+  offers consented installation with apt, pacman, dnf or zypper.
 - On systems using systemd-resolved (Ubuntu Desktop, Fedora, Arch), Internet protection
   selects a public filtering DNS service instead: AdGuard DNS, AdGuard DNS Family, Quad9,
   Cloudflare (malware) or Cloudflare for Families, with opportunistic DNS-over-TLS,

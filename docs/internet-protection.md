@@ -25,8 +25,10 @@ The Block List Project over HTTPS only after confirmation.
 
 On supported Linux systems, LibreWard prepares an indexed domain database on
 disk, then asks for system polkit authorization to install/update its local DNS
-filter. If necessary, it first offers installation of `dnsmasq-base` through
-Debian/Ubuntu's package manager. Package installation and service setup may each
+filter. If dnsmasq is missing, it first offers to install it through the
+distribution's package manager: `dnsmasq-base` with apt, `dnsmasq` with pacman,
+dnf or zypper. NetworkManager starts its own dnsmasq; the package's system
+service is not enabled. Package installation and service setup may each
 ask for authorization. Passwords go through the system dialog.
 
 Protection works while LibreWard is open (see

@@ -833,21 +833,34 @@ class LinuxBackend(PlatformBackend):
             code, config = self._firewall_query([nm, '--print-config'], timeout=10)
             if code or not setup_supported(config, Path('/etc/nsswitch.conf').read_text(), '/etc/resolv.conf'):
                 return False
+            spec = self._dns_runtime_spec()
             return bool(self._trusted_firewall_executable('dnsmasq') or
-                        (self.distro_info().get('pkg_manager') == 'apt' and self._trusted_firewall_executable('apt-get')))
+                        (spec and self._trusted_firewall_executable(spec[0])))
         except (OSError, ValueError):
             return False
+
+    def _dns_runtime_spec(self):
+        # NetworkManager starts its own dnsmasq; the distribution's service stays disabled.
+        # Fixed package names and options; no repository refresh or system upgrade.
+        return {
+            'apt': ('apt-get', ['install', '--assume-yes', '--no-remove'], ['dnsmasq-base']),
+            'pacman': ('pacman', ['-S', '--needed', '--noconfirm'], ['dnsmasq']),
+            'dnf': ('dnf', ['install', '--assumeyes'], ['dnsmasq']),
+            'zypper': ('zypper', ['--non-interactive', 'install', '--no-recommends'], ['dnsmasq']),
+        }.get(self.distro_info().get('pkg_manager'))
 
     def _install_dns_runtime(self):
         if self._trusted_firewall_executable('dnsmasq'):
             return
-        if self.distro_info().get('pkg_manager') != 'apt':
+        spec = self._dns_runtime_spec()
+        if not spec:
             raise RuntimeError('The local DNS component is missing.')
-        apt = self._trusted_firewall_executable('apt-get')
-        if not apt:
+        executable, options, packages = spec
+        installer = self._trusted_firewall_executable(executable)
+        if not installer:
             raise RuntimeError('The package installer is unavailable.')
-        process = self.start_process([self._require_authorizer(), '--disable-internal-agent', apt,
-                                     'install', '--assume-yes', '--no-remove', 'dnsmasq-base'],
+        process = self.start_process([self._require_authorizer(), '--disable-internal-agent', installer,
+                                     *options, *packages],
                                     stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                     text=True, encoding='utf-8', errors='replace')
         # Drain output while waiting. Never terminate a package transaction on a timer.
@@ -879,6 +892,7 @@ class LinuxBackend(PlatformBackend):
         if python and can_run_service and (self._local_dns_available() or self._dns_setup_available()):
             return {'supported': True, 'active': False, 'count': 0, 'engine': 'sqlite-setup', 'setup_available': True,
                     'needs_dns_install': not bool(self._trusted_firewall_executable('dnsmasq')),
+                    'dns_package': (self._dns_runtime_spec() or ('', [], ['dnsmasq']))[2][0],
                     'recovered': recovered,
                     'message': ('The filter stopped and normal DNS was restored. You can enable protection again.'
                                 if recovered else 'Ready to set up Internet protection. Network and VPN connection settings are kept.')}

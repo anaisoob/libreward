@@ -169,7 +169,8 @@ class QtFrontendTests(unittest.TestCase):
     def test_debian_dns_setup_is_offered_with_installation_consent(self):
         page = self.window.internet_page
         page.show_state({'supported': True, 'active': False, 'count': 0,
-                         'engine': 'sqlite-setup', 'setup_available': True, 'needs_dns_install': True})
+                         'engine': 'sqlite-setup', 'setup_available': True, 'needs_dns_install': True,
+                         'dns_package': 'dnsmasq-base'})
         apply = self.patch('ui.internet_page.backend.apply_internet_protection')
         with patch.object(self.window, 'confirm', return_value=False) as confirm:
             page.apply()
