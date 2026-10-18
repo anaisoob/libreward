@@ -26,10 +26,22 @@ ClamAV, Linux firewall management and Linux domain blocking.
 Linux packages are prepared for Arch (AUR), Fedora, openSUSE, Debian 13 and
 Ubuntu 25.10 or newer; see [Packaging](docs/packaging.md). To run from source,
 clone or download the project and run these commands from its directory.
-Python 3.10 or newer with virtual-environment support is required. Python
-dependencies are listed in [requirements.txt](requirements.txt).
+Python 3.10 or newer is required. Python dependencies are listed in
+[pyproject.toml](pyproject.toml), with exact versions in `uv.lock`;
+[requirements.txt](requirements.txt) lists the same packages for pip.
 
 ### Linux
+
+With [uv](https://docs.astral.sh/uv/), which creates `.venv` and installs the
+locked dependencies on the first run:
+
+```bash
+uv run main.py
+```
+
+Tests: `QT_QPA_PLATFORM=offscreen uv run python -m unittest discover -s tests`.
+
+Without uv:
 
 ```bash
 python3 -m venv venv
