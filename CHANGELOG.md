@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- AppStream metadata (`io.github.anaisoob.LibreWard.metainfo.xml`), installed to
+  `/usr/share/metainfo`, so GNOME Software and KDE Discover show LibreWard with a
+  description, screenshot and license.
+
 - Uninstalling through sudo or pkexec (`sudo make uninstall`, `sudo dnf remove`) also
   stops and deletes that user's Live protection service.
 

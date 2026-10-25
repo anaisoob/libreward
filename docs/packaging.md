@@ -15,6 +15,7 @@ Flatpak sandbox blocks exactly these operations, and working around it with
 | `/usr/bin/libreward` | Launcher (`packaging/libreward.in`); runs the system Python with `-s -E` |
 | `/usr/share/libreward/` | Application modules, byte-compiled, and bundled data |
 | `/usr/share/applications/libreward.desktop` | Menu entry |
+| `/usr/share/metainfo/io.github.anaisoob.LibreWard.metainfo.xml` | AppStream metadata for GNOME Software and KDE Discover (`packaging/`) |
 | `/usr/share/icons/hicolor/{scalable,256x256}/apps/libreward.*` | Icon |
 
 The modules live in a private directory instead of site-packages because their
@@ -65,7 +66,9 @@ backport in a PPA.
 1. Set `APP_VERSION` in `core/constants.py`, the `CHANGELOG.md` heading, and the
    versions in `packaging/arch/PKGBUILD`, `packaging/rpm/libreward.spec`
    (`Version`, `%changelog`), `packaging/debian/changelog` and
-   `packaging/obs/libreward.dsc`.
+   `packaging/obs/libreward.dsc`. Add a `<release>` entry with a short summary at
+   the top of `packaging/io.github.anaisoob.LibreWard.metainfo.xml`; software
+   centers show it as the update notes.
 2. Run `make test`, commit, tag `vX.Y.Z` and push the tag.
 
 ### AUR

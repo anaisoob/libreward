@@ -35,6 +35,8 @@ install:
 		packaging/libreward.in > $(DESTDIR)$(BINDIR)/libreward
 	chmod 755 $(DESTDIR)$(BINDIR)/libreward
 	install -Dm 644 packaging/libreward.desktop $(DESTDIR)$(DATADIR)/applications/libreward.desktop
+	install -Dm 644 packaging/io.github.anaisoob.LibreWard.metainfo.xml \
+		$(DESTDIR)$(DATADIR)/metainfo/io.github.anaisoob.LibreWard.metainfo.xml
 	install -Dm 644 assets/icons/libreward.svg $(DESTDIR)$(DATADIR)/icons/hicolor/scalable/apps/libreward.svg
 	install -Dm 644 assets/icons/libreward-256.png $(DESTDIR)$(DATADIR)/icons/hicolor/256x256/apps/libreward.png
 	$(PYTHON) -m compileall -q -d $(APPDIR) $(DESTDIR)$(APPDIR)
@@ -45,6 +47,7 @@ uninstall:
 	if [ -z "$(DESTDIR)" ] && [ -f $(APPDIR)/system_cleanup.py ]; then $(PYTHON) -I $(APPDIR)/system_cleanup.py; fi
 	rm -rf $(DESTDIR)$(APPDIR)
 	rm -f $(DESTDIR)$(BINDIR)/libreward $(DESTDIR)$(DATADIR)/applications/libreward.desktop \
+		$(DESTDIR)$(DATADIR)/metainfo/io.github.anaisoob.LibreWard.metainfo.xml \
 		$(DESTDIR)$(DATADIR)/icons/hicolor/scalable/apps/libreward.svg \
 		$(DESTDIR)$(DATADIR)/icons/hicolor/256x256/apps/libreward.png
 

@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AppStream metadata for software centers (GNOME Software, KDE Discover). -->
+<component type="desktop-application">
+  <id>io.github.anaisoob.LibreWard</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-2.0-or-later</project_license>
+  <name>LibreWard</name>
+  <summary>Virus scanning, live protection and firewall made simple</summary>
+  <developer id="io.github.anaisoob">
+    <name>anaisoob</name>
+  </developer>
+  <description>
+    <p>
+      LibreWard protects your computer with plain choices instead of technical settings.
+      It uses the open-source ClamAV antivirus engine, which is developed separately by
+      the ClamAV project and Cisco Talos.
+    </p>
+    <ul>
+      <li>Scan folders or the most common places for viruses, with clear results</li>
+      <li>Live protection checks new downloads in the background, also when the window
+        is closed, and asks what to do with a dangerous file</li>
+      <li>Move dangerous files to quarantine and restore them if needed</li>
+      <li>Block dangerous, advertising or adult websites on the whole computer</li>
+      <li>Turn the firewall on and allow your local network</li>
+    </ul>
+    <p>
+      LibreWard changes system settings such as the firewall and DNS only after you
+      confirm, and asks for your password through the system dialog.
+    </p>
+  </description>
+  <launchable type="desktop-id">libreward.desktop</launchable>
+  <provides>
+    <binary>libreward</binary>
+  </provides>
+  <url type="homepage">https://github.com/anaisoob/libreward</url>
+  <url type="bugtracker">https://github.com/anaisoob/libreward/issues</url>
+  <url type="vcs-browser">https://github.com/anaisoob/libreward</url>
+  <screenshots>
+    <screenshot type="default">
+      <caption>Virus scan page</caption>
+      <image>https://raw.githubusercontent.com/anaisoob/libreward/main/assets/libreward.png</image>
+    </screenshot>
+  </screenshots>
+  <categories>
+    <category>System</category>
+    <category>Security</category>
+  </categories>
+  <keywords>
+    <keyword>antivirus</keyword>
+    <keyword>virus</keyword>
+    <keyword>malware</keyword>
+    <keyword>clamav</keyword>
+    <keyword>firewall</keyword>
+    <keyword>privacy</keyword>
+    <keyword>ad blocker</keyword>
+  </keywords>
+  <branding>
+    <color type="primary" scheme_preference="light">#b9e3cb</color>
+    <color type="primary" scheme_preference="dark">#237c53</color>
+  </branding>
+  <requires>
+    <display_length compare="ge">768</display_length>
+  </requires>
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </supports>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.2.0" date="2026-10-11">
+      <description>
+        <p>First release with virus scanning, quarantine, firewall management and
+          Internet protection.</p>
+      </description>
+    </release>
+  </releases>
+</component>

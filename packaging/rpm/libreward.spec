@@ -48,6 +48,7 @@ fi
 %{_bindir}/libreward
 %{_datadir}/libreward/
 %{_datadir}/applications/libreward.desktop
+%{_metainfodir}/io.github.anaisoob.LibreWard.metainfo.xml
 %{_datadir}/icons/hicolor/scalable/apps/libreward.svg
 %{_datadir}/icons/hicolor/256x256/apps/libreward.png
 
