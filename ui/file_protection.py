@@ -249,8 +249,10 @@ class FileProtectionSection:
         self.toggle_button.style().unpolish(self.toggle_button)
         self.toggle_button.style().polish(self.toggle_button)
         self.toggle_button.setEnabled(not self.busy)
-        self.folders_label.setText('Protected folders: ' + ', '.join(folder_name(path) for path in folders)
-                                   if folders else '')
+        names = ', '.join(folder_name(path) for path in folders)
+        self.folders_label.setText('' if not folders else
+                                   f'Protected folders: {names}' if self.is_on else
+                                   f'Folders to protect: {names}')
         self.window.show_monitor_threats(state)
 
     @staticmethod

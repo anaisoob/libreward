@@ -1001,7 +1001,9 @@ class QtMainWindow(QMainWindow):
         self.update_firewall_controls()
         self.internet_page.update_controls()
         self.stop_button.setEnabled(operation == "scan")
-        self.activity.setVisible(operation is not None)
+        # The thin bar shows that a running scan is still busy, for example on a
+        # large file; it appears with the first checked file, not while preparing.
+        self.activity.setVisible(False)
         if operation:
             self.percent.setText("Working…")
         else:
@@ -1436,6 +1438,8 @@ class QtMainWindow(QMainWindow):
                         self.summary.setText(values[0].capitalize())
             elif kind == "__CURRENT_FILE__":
                 self.current_file.setText(values[0])
+                if self.operation == 'scan':
+                    self.activity.show()
             elif kind == '__DISCOVERY__':
                 discovered, processed, done, elapsed = values
                 if self.service and self.service.stop_requested:

@@ -175,6 +175,30 @@ class QtFrontendTests(unittest.TestCase):
         self.assertEqual(section.status.text(), 'Off')
         section.stop()
 
+    def test_folders_are_only_called_protected_while_protection_is_on(self):
+        section = self.enable_monitoring(str(Path.home() / 'Downloads'))
+        self.agent_running.return_value = True
+        self.monitor_state.return_value = {'status': 'watching'}
+        section.refresh()
+        self.assertEqual(section.folders_label.text(), 'Protected folders: ~/Downloads')
+        section.toggle()
+        self.wait_for(lambda: section.status.text() == 'Off')
+        self.assertEqual(section.folders_label.text(), 'Folders to protect: ~/Downloads')
+
+    def test_scan_activity_bar_appears_only_once_files_are_checked(self):
+        release = threading.Event()
+        try:
+            self.window.start_task('scan', lambda: release.wait(3))
+            self.app.processEvents()
+            self.assertTrue(self.window.activity.isHidden())  # preparing: one bar is enough
+            self.window.events.put(('__CURRENT_FILE__', '/home/user/big.iso'))
+            self.window.poll_events()
+            self.assertFalse(self.window.activity.isHidden())
+        finally:
+            release.set()
+        self.wait_idle()
+        self.assertTrue(self.window.activity.isHidden())
+
     def test_service_failure_needs_attention_and_settings_save_retries(self):
         self.monitor_service.side_effect = OSError('Background folder monitoring needs systemd (systemctl --user).')
         section = self.enable_monitoring()

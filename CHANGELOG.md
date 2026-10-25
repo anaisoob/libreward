@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- While protection for new files is off, its folders are listed as “Folders to protect”
+  instead of “Protected folders”. While a scan prepares, only one progress bar is shown;
+  the thin activity bar appears once files are being checked.
+
 - Live protection is right below Virus scan and shows how many protections are on:
   a green check when all are on, otherwise 1/2 in amber or 0/2 in red. Quarantine
   appears in the sidebar only when it holds files.
