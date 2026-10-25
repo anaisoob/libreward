@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- “Waiting” notifications no longer name the file (browsers use temporary names); the
+  check and result show the real name. A dangerous file always gets a new notification
+  instead of updating an earlier one in place, which GNOME could hide or leave a
+  “Checking…” behind. The service log says why each file is checked.
+
 - A download whose modification time the browser changes afterwards (to the server's
   Last-Modified) is no longer checked a second time: unchanged contents are recognized
   by their SHA-256. “Checking…” no longer stays when a check could not finish, and the

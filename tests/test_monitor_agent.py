@@ -154,13 +154,12 @@ class MonitorAgentTests(unittest.TestCase):
         agent, scan = self.scanning_agent(clean)
         partial = path + '.part'
         firefox_temporary = str(self.watched / 'Xq7Lp2.part')
-        agent.announce([(partial, 'setup.zip'), (firefox_temporary, None)])
-        agent.announce([(partial, 'setup.zip'), (firefox_temporary, None)])  # once per download
+        agent.announce([partial, firefox_temporary])
+        agent.announce([partial, firefox_temporary])  # once per download
         messages = [call.args[1] for call in self.notify.call_args_list]
         self.assertEqual(len(messages), 2)
-        self.assertIn('Waiting for setup.zip to finish downloading', messages[0])
-        self.assertIn('Waiting for a download to finish downloading', messages[1])  # no random names
-        self.assertNotIn('Xq7Lp2', messages[1])
+        # Browsers use temporary, sometimes random names: none are shown while waiting.
+        self.assertTrue(all(message.startswith('Waiting for a download to finish.') for message in messages))
         self.assertEqual(self.notify.call_args_list[0].kwargs['replace'], f'download:{partial}')
         agent.monitor.came_from.return_value = partial
         self.notify.reset_mock()
@@ -187,7 +186,7 @@ class MonitorAgentTests(unittest.TestCase):
                                            'warnings': False, 'stopped': False, 'scanned': 1})
         agent.config['notify_threats_only'] = True
         agent.monitor.came_from.return_value = None
-        agent.announce([(path + '.part', 'file.zip')])
+        agent.announce([path + '.part'])
         with scan:
             agent.scan([path])
         self.notify.assert_not_called()
@@ -214,7 +213,8 @@ class MonitorAgentTests(unittest.TestCase):
             agent.follow_downloads(105)  # within the interval
             history.new_downloads.assert_not_called()
             agent.follow_downloads(111)
-        agent.monitor.changed.assert_called_once_with(str(saved), finished=True)
+        agent.monitor.changed.assert_called_once_with(str(saved), finished=True,
+                                                     reason="in a browser's list of downloads")
         agent.config['follow_download_folders'] = False
         agent.follow_downloads(200)
         self.assertEqual(history.new_downloads.call_count, 1)
@@ -275,7 +275,7 @@ class MonitorAgentTests(unittest.TestCase):
         agent = self.agent()
         agent.config = {}
         with patch('core.monitor_agent.time.monotonic', return_value=100):
-            agent.announce([('/d/setup.zip.part', 'setup.zip')])
+            agent.announce(['/d/setup.zip.part'])
             agent.announce([])  # gone: cancelled, or moved to a folder chosen in Firefox
         with patch('core.monitor_agent.time.monotonic', return_value=110):
             agent.announce([])
@@ -284,6 +284,14 @@ class MonitorAgentTests(unittest.TestCase):
             agent.announce([])
         self.close_notification.assert_called_once_with('download:/d/setup.zip.part')
         self.assertEqual(agent.announced, {})
+
+    def test_each_check_is_logged_with_its_reason(self):
+        agent, scan = self.scanning_agent({'infected': [], 'errors': False, 'warnings': False,
+                                           'stopped': False, 'scanned': 1})
+        agent.monitor.reason.return_value = "in a browser's list of downloads"
+        with scan:
+            agent.scan([str(self.watched / 'setup.zip')])
+        self.assertIn("Checking setup.zip (in a browser's list of downloads).", self.logged)
 
     def test_an_unfinished_check_never_leaves_checking_behind(self):
         agent, scan = self.scanning_agent({'infected': [], 'errors': True, 'stopped': False, 'scanned': 0})

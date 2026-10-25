@@ -202,11 +202,11 @@ class QtFrontendTests(unittest.TestCase):
     def test_browser_folders_and_downloads_in_progress_are_shown(self):
         section = self.enable_monitoring(str(Path.home() / 'Downloads'))
         self.agent_running.return_value = True
-        self.monitor_state.return_value = {'status': 'watching', 'downloading': ['setup.zip'],
+        self.monitor_state.return_value = {'status': 'watching', 'downloading': ['a download'],
                                            'discovered_folders': [str(Path.home() / 'Browser')]}
         section.refresh()
         self.assertEqual(section.folders_label.text(), 'Protected folders: ~/Downloads, ~/Browser')
-        self.assertIn('Waiting for a download to finish, then checking it: setup.zip', section.info.text())
+        self.assertIn('Waiting for a download to finish, then checking it.', section.info.text())
         self.monitor_state.return_value = {'status': 'watching', 'checking': 'setup.zip'}
         section.refresh()
         self.assertIn('Checking setup.zip…', section.info.text())

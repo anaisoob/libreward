@@ -102,7 +102,7 @@ class FolderMonitorTests(unittest.TestCase):
             chrome.write_text('half')
             monitor.started(str(partial))
             monitor.started(str(chrome))
-            self.assertEqual(sorted(name or '' for _partial, name in monitor.downloads()), ['', 'setup.zip'])
+            self.assertEqual(sorted(monitor.downloads()), sorted([str(partial), str(chrome)]))
             final = Path(folder) / 'setup.zip'
             partial.rename(final)
             monitor.finished(str(partial), str(final))
@@ -128,7 +128,7 @@ class FolderMonitorTests(unittest.TestCase):
                 deadline = time.monotonic() + 3
                 while time.monotonic() < deadline and not monitor.downloads():
                     time.sleep(.02)
-                self.assertEqual([name for _partial, name in monitor.downloads()], ['report.pdf'])
+                self.assertEqual(monitor.downloads(), [str(partial)])
                 final = Path(folder) / 'report.pdf'
                 partial.rename(final)
                 found = []
@@ -141,21 +141,6 @@ class FolderMonitorTests(unittest.TestCase):
                 self.assertEqual(monitor.came_from(str(final)), str(partial))
             finally:
                 monitor.stop()
-
-    def test_temporary_download_names_are_not_shown(self):
-        from core.folder_watch import download_name
-        self.assertEqual(download_name('/d/setup.zip.part'), 'setup.zip')
-        self.assertEqual(download_name('/d/report.pdf.crdownload'), 'report.pdf')
-        self.assertIsNone(download_name('/d/Xq7Lp2.part'))  # Firefox while its save dialog is open
-        self.assertIsNone(download_name('/d/Unconfirmed 4711.crdownload'))
-
-    def test_firefox_random_names_with_extension_are_not_shown(self):
-        from core.folder_watch import download_name
-        self.assertIsNone(download_name('/d/aK3fQ9zX.zip.part'))
-        self.assertIsNone(download_name('/d/7fT2kPq1.exe.part'))
-        self.assertIsNone(download_name('/d/k3f9zq1x.zip.part'))  # lowercase letters and digits
-        self.assertEqual(download_name('/d/document.pdf.part'), 'document.pdf')  # a real word, all lowercase
-        self.assertEqual(download_name('/d/setup-2024.zip.part'), 'setup-2024.zip')
 
     def test_new_modification_time_with_same_contents_is_not_checked_again(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -190,12 +175,25 @@ class FolderMonitorTests(unittest.TestCase):
                 named = Path(folder) / 'setup.zip.crdownload'
                 unconfirmed.rename(named)
                 deadline = time.monotonic() + 3
-                while time.monotonic() < deadline and monitor.downloads() != [(str(named), 'setup.zip')]:
+                while time.monotonic() < deadline and monitor.downloads() != [str(named)]:
                     time.sleep(.02)
-                self.assertEqual(monitor.downloads(), [(str(named), 'setup.zip')])
+                self.assertEqual(monitor.downloads(), [str(named)])
                 self.assertEqual(monitor.ready(), [])
             finally:
                 monitor.stop()
+
+    def test_reasons_say_why_a_file_is_checked(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'file.zip'
+            path.write_text('x')
+            monitor = FolderMonitor([folder], [], settle=0)
+            monitor.changed(str(path), finished=True)
+            # The folder check finding the same unchanged file keeps the first reason.
+            monitor.changed(str(path), reason='found by the folder check')
+            self.assertEqual(monitor.reason(str(path)), 'download finished')
+            monitor.changed(str(path), finished=True, reason="in a browser's list of downloads")
+            self.assertEqual(monitor.reason(str(path)), "in a browser's list of downloads")
+            self.assertEqual(monitor.reason(str(path)), 'new or changed file')  # reported once
 
     def test_metadata_added_after_saving_does_not_check_again(self):
         with tempfile.TemporaryDirectory() as folder:

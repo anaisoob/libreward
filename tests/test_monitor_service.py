@@ -248,6 +248,26 @@ class NotificationActionTests(unittest.TestCase):
             self.assertFalse(backend.close_desktop_notification('check:eicar.com'))  # already closed
         LinuxBackend._notification_ids.clear()
 
+    def test_a_warning_closes_the_earlier_notification_instead_of_replacing_it(self):
+        import subprocess
+        LinuxBackend._notification_ids.clear()
+        LinuxBackend._notification_ids['download:/d/x.part'] = 12  # "Checking…"
+        waiting = Mock()
+        waiting.wait.side_effect = subprocess.TimeoutExpired('notify-send', 2)
+        with patch('backends.linux.shutil.which', side_effect=lambda name: f'/usr/bin/{name}'), \
+                patch('backends.linux.subprocess.run', return_value=Mock(returncode=0, stdout='40\n')) as run, \
+                patch('backends.linux.subprocess.Popen', return_value=waiting) as popen, \
+                patch('backends.linux.threading.Thread'):
+            LinuxBackend().send_desktop_notification('Threat', 'x.zip', warning=True,
+                                                     on_open=lambda _token: None, replace='download:/d/x.part')
+        commands = [call.args[0] for call in run.call_args_list]
+        self.assertIn('org.freedesktop.Notifications.CloseNotification', commands[0])
+        self.assertEqual(commands[0][-1], '12')
+        self.assertFalse(any(argument.startswith('--replace-id=12') for argument in commands[1]))
+        self.assertIn('--replace-id=40', popen.call_args.args[0])
+        self.assertEqual(LinuxBackend._notification_ids['download:/d/x.part'], 40)
+        LinuxBackend._notification_ids.clear()
+
     def test_a_number_of_an_already_closed_notification_is_not_kept(self):
         import subprocess
         LinuxBackend._notification_ids.clear()
@@ -260,8 +280,7 @@ class NotificationActionTests(unittest.TestCase):
                 patch('backends.linux.threading.Thread'):
             LinuxBackend().send_desktop_notification('Threat', 'eicar.com', warning=True,
                                                      on_open=lambda _token: None, replace='check:/d/eicar.com')
-        self.assertIn('--replace-id=5', run.call_args.args[0])  # asked to replace the old one…
-        self.assertIn('--replace-id=31', popen.call_args.args[0])  # …but the desktop's new number is used
+        self.assertIn('--replace-id=31', popen.call_args.args[0])  # the desktop's new number is used
         self.assertEqual(LinuxBackend._notification_ids['check:/d/eicar.com'], 31)
         LinuxBackend().forget_desktop_notification('check:/d/eicar.com')
         self.assertNotIn('check:/d/eicar.com', LinuxBackend._notification_ids)

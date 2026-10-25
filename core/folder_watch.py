@@ -1,6 +1,5 @@
 """Native notifications plus periodic reconciliation, independent of the GUI."""
 import os
-import re
 import threading
 import time
 
@@ -29,6 +28,8 @@ class FolderMonitor:
         # finished files with the partial file they came from.
         self.downloading = {}
         self.completed = {}
+        # Why a file is checked, for the agent's log.
+        self.reasons = {}
         self.snapshot = {}
         self.dispatched = {}
         self.baseline_ready = threading.Event()
@@ -96,11 +97,13 @@ class FolderMonitor:
                 if self.observer.is_alive():
                     self.observer.join()
 
-    def changed(self, path, *, retry=False, finished=False):
+    def changed(self, path, *, retry=False, finished=False, reason=None):
         """Queue a new or changed file; a finished download needs no settling time."""
         path = os.path.abspath(path)
         if not incomplete_download(path) and not path_is_excluded(path, self.excludes):
             with self.lock:
+                reason = reason or ('checking again' if retry else 'download finished' if finished
+                                    else 'new or changed file')
                 if retry:
                     self.dispatched.pop(path, None)
                 try:
@@ -110,10 +113,12 @@ class FolderMonitor:
                 waiting = self.pending.get(path)
                 if finished:
                     self.pending[path] = (time.monotonic() - self.settle, signature)
+                    self.reasons[path] = reason
                 elif waiting is None or waiting[1] is None or waiting[1] != signature:
                     self.pending[path] = (time.monotonic(), None)
+                    self.reasons[path] = reason
                 # Otherwise unchanged since it was queued, e.g. the folder check after a
-                # finished download: keep its place instead of waiting again.
+                # finished download: keep its place (and reason) instead of waiting again.
 
     def started(self, partial):
         partial = os.path.abspath(partial)
@@ -130,18 +135,25 @@ class FolderMonitor:
                 while len(self.completed) > 256:
                     self.completed.pop(next(iter(self.completed)))
 
+    def reason(self, path):
+        with self.lock:
+            return self.reasons.pop(os.path.abspath(path), 'new or changed file')
+
     def came_from(self, final):
         """The partial file a finished download had, once; None for other files."""
         with self.lock:
             return self.completed.pop(os.path.abspath(final), None)
 
     def downloads(self):
-        """(partial file, name or None) of downloads in progress, for the status shown to the user."""
+        """Partial files of downloads in progress, oldest first.
+
+        Their names are not shown: browsers use temporary, sometimes random, names
+        until the download is finished; the check then shows the real one.
+        """
         with self.lock:
             for partial in [path for path in self.downloading if not os.path.exists(path)]:
                 del self.downloading[partial]
-            partials = sorted(self.downloading, key=self.downloading.get)
-        return [(partial, download_name(partial)) for partial in partials]
+            return sorted(self.downloading, key=self.downloading.get)
 
 
     def _run(self):
@@ -157,7 +169,7 @@ class FolderMonitor:
                     signature = self._signature(stat)
                     current[path] = signature
                     if self.baseline_ready.is_set() and self.snapshot.get(path) != signature:
-                        self.changed(path)
+                        self.changed(path, reason='found by the folder check')
                 with self.lock:
                     for path in self.snapshot.keys() - current.keys():
                         self.dispatched.pop(path, None)
@@ -225,19 +237,6 @@ class FolderMonitor:
         if self.thread:
             self.thread.join(timeout=.1)
 
-
-def download_name(partial):
-    """The file's real name, or None while the browser uses a temporary one."""
-    suffix = next(s for s in DOWNLOAD_SUFFIXES if partial.lower().endswith(s))
-    name = os.path.basename(partial[:-len(suffix)])
-    # Chrome says "Unconfirmed 12345" until the download is saved; Firefox uses a
-    # random eight-character name (keeping the extension) while its save dialog is open.
-    stem = name.split('.', 1)[0]
-    random = bool(re.fullmatch(r'[A-Za-z0-9]{8}', stem)) and (
-        any(char.isdigit() for char in stem) or not (stem.islower() or stem.isupper()))
-    if name.startswith('Unconfirmed ') or '.' not in name.strip('.') or random:
-        return None
-    return name
 
 
 def file_digest(path, size):

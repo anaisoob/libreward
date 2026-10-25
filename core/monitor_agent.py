@@ -278,7 +278,7 @@ class MonitorAgent:
         for path in self.history.new_downloads():
             if os.path.isfile(path):
                 # Already checked when it was in a watched folder: not checked twice.
-                self.monitor.changed(path, finished=True)
+                self.monitor.changed(path, finished=True, reason="in a browser's list of downloads")
 
     def release_clamd(self, force=False):
         if self.clamd is not None and (force or time.monotonic() - self.clamd_used > CLAMD_IDLE):
@@ -376,7 +376,7 @@ class MonitorAgent:
             self.update_state(status='watching',
                               message=f'Monitoring {len(self.settings[0])} folder(s), including subfolders.')
         downloads = monitor.downloads()
-        self.update_state(downloading=[name or 'a download' for _partial, name in downloads][:5])
+        self.update_state(downloading=['a download'] * min(len(downloads), 5))
         self.announce(downloads)
         self.forget_handled_threats()
         if time.monotonic() < self.retry_at:
@@ -390,13 +390,12 @@ class MonitorAgent:
                 self.update_state(checking=None)
 
     def announce(self, downloads):
-        """downloads: (partial file, real name or None) from FolderMonitor.downloads()."""
+        """downloads: partial files from FolderMonitor.downloads()."""
         now = time.monotonic()
-        current = {partial for partial, _name in downloads}
-        for partial, name in downloads:
+        current = set(downloads)
+        for partial in downloads:
             if partial not in self.announced and not threats_only(self.config):
-                what = name or 'a download'  # no temporary or random names
-                self.send('LibreWard — download', f'Waiting for {what} to finish downloading. '
+                self.send('LibreWard — download', 'Waiting for a download to finish. '
                           'LibreWard checks it for viruses right after.', False, replace=f'download:{partial}')
             self.announced[partial] = None
         for partial, gone in list(self.announced.items()):
@@ -453,6 +452,8 @@ class MonitorAgent:
 
     def _scan(self, paths, patterns, key):
         """Check files and report the result; True when the check did not finish."""
+        for path in paths[:5]:
+            self.log(f'Checking {os.path.basename(path)} ({self.monitor.reason(path)}).')
         service = ScanService(_Discard(), scan_profile=self.config.get('scan_profile', 'standard'),
                               workers=self.config.get('scan_workers', 'auto'))
         self.service = service

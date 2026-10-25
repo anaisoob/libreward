@@ -249,7 +249,8 @@ class FileProtectionSection:
             if state.get('checking'):
                 info += f"\nChecking {state['checking']}…"
             elif downloading:
-                info += f"\nWaiting for a download to finish, then checking it: {', '.join(downloading)}"
+                info += ('\nWaiting for a download to finish, then checking it.' if len(downloading) == 1 else
+                         f'\nWaiting for {len(downloading)} downloads to finish, then checking them.')
             elif isinstance(last, dict) and last.get('outcome'):
                 checked = time.strftime('%H:%M', time.localtime(last.get('time', 0)))
                 info += f"\nLast check at {checked}: {last['outcome']} ({last.get('names', '')})."

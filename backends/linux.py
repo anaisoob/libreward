@@ -119,6 +119,12 @@ class LinuxBackend(PlatformBackend):
         text = ['--', title, escape(message)]
         with self._notification_lock:
             previous = self._notification_ids.get(replace) if replace else None
+        if previous and on_open is not None:
+            # A warning never updates an earlier notification in place: GNOME may keep
+            # the earlier one ("Checking…", an older warning) underneath it, or not
+            # show the update again. Close that one and show the warning on its own.
+            self.close_desktop_notification(replace)
+            previous = None
         replacing = [f'--replace-id={previous}'] if previous else []
         if on_open is not None:
             if replace:
