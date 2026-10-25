@@ -455,6 +455,23 @@ class QtFrontendTests(unittest.TestCase):
         self.assertFalse(self.answer_threat_question(ThreatsFoundDialog.KEEP,
                                                      before=lambda: self.window.user_switch_page('settings')))
 
+    def test_a_listed_file_found_again_is_asked_about(self):
+        # A new download under the name of a file handled earlier: listed at once from
+        # the old entry, then found again by the service with a new time.
+        from ui.dialogs import ThreatsFoundDialog
+        with tempfile.TemporaryDirectory() as folder:
+            path = self.background_threat(folder, found=10)
+            self.window.config['threats_reviewed_at'] = 50
+            asked = []
+            with patch.object(ThreatsFoundDialog, 'exec', side_effect=lambda: asked.append(1) or ThreatsFoundDialog.KEEP):
+                self.window.file_protection.refresh()
+                self.assertEqual(asked, [])  # already decided on
+                self.assertEqual(self.window.results.rowCount(), 1)
+                self.monitor_state.return_value = {'updated': 60, 'threats': [
+                    {'path': str(path), 'threat': 'Eicar-Signature FOUND', 'time': 60}]}
+                self.window.file_protection.refresh()
+            self.assertEqual(asked, [1])
+
     def test_threat_question_stands_out_from_ordinary_dialogs(self):
         from ui.dialogs import ThreatsFoundDialog
         from PySide6.QtWidgets import QWidget

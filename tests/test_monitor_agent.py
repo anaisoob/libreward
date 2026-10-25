@@ -251,6 +251,15 @@ class MonitorAgentTests(unittest.TestCase):
             agent.scan([str(self.watched / 'd')])
             self.assertIsNot(agent.clamd, first)
 
+    def test_threats_whose_file_is_gone_are_forgotten(self):
+        kept = self.watched / 'still-here.exe'
+        kept.write_text('sample')
+        agent = self.agent()
+        agent.update_state(threats=[{'path': str(kept), 'threat': 'A FOUND', 'time': 1},
+                                    {'path': str(self.watched / 'deleted.com'), 'threat': 'B FOUND', 'time': 2}])
+        agent.forget_removed_threats()
+        self.assertEqual([entry['path'] for entry in read_state()['threats']], [str(kept)])
+
     def test_cancelled_download_loses_its_waiting_notification(self):
         agent = self.agent()
         agent.config = {}

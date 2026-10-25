@@ -133,8 +133,10 @@ class QtMainWindow(QMainWindow):
         if updated == self.monitor_state_mtime:
             return
         self.monitor_state_mtime = updated
-        if self.list_background_threats() or self.threat_dialog is not None:
-            self.open_background_threats()
+        # Always: a file already listed may just have been found again (a new download
+        # under an earlier name), which needs a new question.
+        self.list_background_threats()
+        self.open_background_threats()
 
     def list_background_threats(self):
         """Add background threats to Detected files; True when one was new there."""

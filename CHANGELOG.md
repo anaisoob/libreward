@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fix a new dangerous download with the name of an earlier, already handled file being
+  listed without a question: the service forgets threats whose file is gone, and the
+  window checks for undecided threats on every update.
+
 - When LibreWard was opened only to ask about a dangerous file, it closes itself after
   the answer. The window behind the question is shaded while it is open.
 

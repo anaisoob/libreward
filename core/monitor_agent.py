@@ -376,6 +376,7 @@ class MonitorAgent:
         downloads = monitor.downloads()
         self.update_state(downloading=['a download'] * min(len(downloads), 5))
         self.announce(downloads)
+        self.forget_removed_threats()
         if time.monotonic() < self.retry_at:
             return
         paths = [path for path in monitor.ready(BATCH_SIZE) if os.path.isfile(path)]
@@ -385,6 +386,14 @@ class MonitorAgent:
                 self.scan(paths)
             finally:
                 self.update_state(checking=None)
+
+    def forget_removed_threats(self):
+        """Drop threats whose file is gone, so a new file with that name starts fresh."""
+        threats = self.state.get('threats', [])
+        present = [entry for entry in threats if isinstance(entry, dict)
+                   and isinstance(entry.get('path'), str) and os.path.lexists(entry['path'])]
+        if len(present) != len(threats):
+            self.update_state(threats=present)
 
     def announce(self, downloads):
         """downloads: partial files from FolderMonitor.downloads()."""
