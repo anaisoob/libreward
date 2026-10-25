@@ -83,6 +83,9 @@ def stylesheet(dark):
     QCheckBox {{ spacing: 9px; padding: 6px 0; background: transparent; }}
     QCheckBox::indicator {{ width: 17px; height: 17px; border: 1px solid {c['muted']}; border-radius: 4px; background: {c['field']}; }}
     QCheckBox::indicator:checked {{ background: #278359; border-color: {c['accent']}; }}
+    QRadioButton {{ spacing: 9px; padding: 6px 0; background: transparent; }}
+    QRadioButton::indicator {{ width: 15px; height: 15px; border: 1px solid {c['muted']}; border-radius: 8px; background: {c['field']}; }}
+    QRadioButton::indicator:checked {{ background: qradialgradient(cx:0.5, cy:0.5, radius:0.5, fx:0.5, fy:0.5, stop:0 white, stop:0.35 white, stop:0.45 #278359, stop:1 #278359); border-color: {c['accent']}; }}
     QScrollArea {{ background: transparent; border: none; }}
     QScrollBar:vertical {{ background: transparent; width: 9px; margin: 2px; }}
     QScrollBar::handle:vertical {{ background: {c['border']}; border-radius: 3px; min-height: 28px; }}

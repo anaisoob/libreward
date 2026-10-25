@@ -3,15 +3,19 @@
 Two modes, chosen by the app:
 
 - networkmanager: the filter listens on 127.0.0.1:53; NetworkManager's dnsmasq
-  keeps forwarding normal and VPN queries on the private port 5354.
+  runs on the private port 5354. Allowed queries go to dnsmasq (the network's DNS,
+  with VPN forwarding) or to a selected public service over TLS, local network
+  names still to dnsmasq.
 - resolved: the filter listens on 127.0.0.1:5354 as systemd-resolved's global DNS
   server and forwards allowed queries to the selected public service over TLS.
   VPN routing domains and local network names stay with resolved.
+
+The blocklist may be empty (Simple protection: a protective DNS service blocks).
 """
 import json
 from pathlib import Path
 
-from core.dns_providers import PROVIDERS
+from core.dns_providers import NETWORK, PROVIDERS
 from core.dns_proxy import SERVICE_SOURCE
 from .linux_dns import helper as shared_helper, probe_filter
 from .linux_resolved import RESOLVED_CHECK
@@ -34,13 +38,15 @@ def inspect_service():
     mode = state.get('mode', 'networkmanager')
     port = 5354 if mode == 'resolved' else 53
     healthy = probe_filter(port) if active else True
-    provider = PROVIDERS.get(state.get('provider'))
+    # 'provider' in states written by earlier versions; NetworkManager then used the network's DNS.
+    upstream = state.get('upstream', state.get('provider') or (NETWORK if mode == 'networkmanager' else None))
+    provider = PROVIDERS.get(upstream)
     message = 'Local filtering checks domains from disk with a small memory cache. Network and VPN DNS routing is kept.'
     if provider is not None:
         message += f' Allowed lookups go to {provider.name}, encrypted where the network allows it.'
     return {'active': active, 'supported': healthy, 'count': state.get('count', 0) if active else 0,
             'engine': 'sqlite-dns', 'digest': state.get('digest'), 'mode': mode, 'port': port,
-            'provider': state.get('provider') if active else None,
+            'upstream': upstream if active else None,
             'message': message if healthy else 'The local filter needs attention. Pause protection to restore normal DNS.',
             'recovered': state.get('phase') == 'recovered'}
 
@@ -281,11 +287,14 @@ def owned_small(path):
     return data
 
 
-def service_unit(mode, provider):
+def service_unit(mode, upstream):
+    if mode == 'networkmanager' and upstream == 'network':
+        return SERVICE_UNIT.replace('__ARGS__', '--listen-port 53')
+    tls = ' '.join('--tls-upstream ' + address + '#' + name for address, name in UPSTREAMS[upstream])
     if mode == 'resolved':
-        upstream = ' '.join('--tls-upstream ' + address + '#' + name for address, name in UPSTREAMS[provider])
-        return SERVICE_UNIT.replace('__ARGS__', '--listen-port 5354 ' + upstream)
-    return SERVICE_UNIT.replace('__ARGS__', '--listen-port 53')
+        return SERVICE_UNIT.replace('__ARGS__', '--listen-port 5354 ' + tls)
+    # Local network names still go to NetworkManager's dnsmasq.
+    return SERVICE_UNIT.replace('__ARGS__', '--listen-port 53 --local-upstream-port 5354 ' + tls)
 
 
 def reload_resolved():
@@ -399,7 +408,8 @@ def allowed_example():
     return allowed
 
 
-def apply_database(stream, count, mode='networkmanager', provider=None):
+def apply_database(stream, count, mode='networkmanager', upstream=None, install=False):
+    """install: turn on or change protection (count may be 0); otherwise pause."""
     secure_directory(ROOT)
     secure_directory(os.path.dirname(UNIT))
     # Installing creates the target mode's directories; pausing only checks the
@@ -407,7 +417,7 @@ def apply_database(stream, count, mode='networkmanager', provider=None):
     resolved_dirs = [os.path.dirname(RESOLVED_CONF)]
     nm_dirs = [os.path.dirname(os.path.dirname(CONF)), os.path.dirname(CONF), os.path.dirname(SETUP_CONF)]
     for path in resolved_dirs + nm_dirs:
-        secure_directory(path, create=bool(count) and path in (resolved_dirs if mode == 'resolved' else nm_dirs))
+        secure_directory(path, create=install and path in (resolved_dirs if mode == 'resolved' else nm_dirs))
     lockfd = os.open(ROOT + '/.dns-lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     with os.fdopen(lockfd, 'wb') as lock:
         st = os.fstat(lock.fileno())
@@ -418,9 +428,9 @@ def apply_database(stream, count, mode='networkmanager', provider=None):
         staged = None
         running = systemctl('is-active', '--quiet', 'libreward-dns.service', required=False)
         # Port 5354 is for NetworkManager's dnsmasq or, behind resolved, for the filter.
-        if count and not running and not (mode == 'networkmanager' and owned_small(CONF) == PROXY_CONFIG):
+        if install and not running and not (mode == 'networkmanager' and owned_small(CONF) == PROXY_CONFIG):
             check_upstream_port()
-        if count:
+        if install:
             if not network_ready(mode):
                 raise RuntimeError('Network settings changed. Check protection status before retrying.')
             staged, actual, digest = build_database(stream, count)
@@ -437,13 +447,13 @@ def apply_database(stream, count, mode='networkmanager', provider=None):
             raise
         backup = None
         # Reload only the resolvers whose files LibreWard had or now changes.
-        touched_nm = mode == 'networkmanager' and bool(count) or snapshot[CONF] is not None or snapshot[SETUP_CONF] is not None
-        touched_resolved = mode == 'resolved' and bool(count) or snapshot[RESOLVED_CONF] is not None
-        state = {'active': True, 'count': actual, 'digest': digest, 'mode': mode, 'provider': provider}
+        touched_nm = mode == 'networkmanager' and install or snapshot[CONF] is not None or snapshot[SETUP_CONF] is not None
+        touched_resolved = mode == 'resolved' and install or snapshot[RESOLVED_CONF] is not None
+        state = {'active': True, 'count': actual, 'digest': digest, 'mode': mode, 'upstream': upstream}
         try:
             if snapshot[UNIT] is not None and was_active:
                 systemctl('stop', 'libreward-dns.service')
-            if count:
+            if install:
                 if os.path.lexists(DATABASE):
                     info = os.lstat(DATABASE)
                     if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_nlink != 1:
@@ -455,7 +465,7 @@ def apply_database(stream, count, mode='networkmanager', provider=None):
                 staged = None
                 write(SERVICE, b'# Managed by LibreWard\n' + SERVICE_SOURCE.encode())
                 write(RECOVERY, RECOVERY_SOURCE.encode())
-                write(UNIT, service_unit(mode, provider).encode())
+                write(UNIT, service_unit(mode, upstream).encode())
                 write(RECOVERY_UNIT_PATH, RECOVERY_UNIT.encode())
                 write(STATE, json.dumps(dict(state, phase='installing')).encode())
                 systemctl('daemon-reload')
@@ -484,8 +494,9 @@ def apply_database(stream, count, mode='networkmanager', provider=None):
                     try:
                         probe(allowed, False)
                     except (OSError, RuntimeError) as exc:
-                        raise RuntimeError('Websites could not be reached through the network’s DNS servers. '
-                                           'Check the internet connection and try again.') from exc
+                        raise RuntimeError('Websites could not be reached through the '
+                                           + ('network’s DNS servers' if upstream == 'network' else 'selected DNS service')
+                                           + ' on this network. Check the internet connection and try again.') from exc
                 systemctl('enable', 'libreward-dns.service')
                 write(STATE, json.dumps(dict(state, phase='enabled')).encode())
             else:
@@ -508,7 +519,7 @@ def apply_database(stream, count, mode='networkmanager', provider=None):
                 if backup is not None:
                     os.replace(backup, DATABASE)
                     backup = None
-                elif count and snapshot[STATE] is None and os.path.exists(DATABASE):
+                elif install and snapshot[STATE] is None and os.path.exists(DATABASE):
                     os.unlink(DATABASE)
                 for path, data in snapshot.items(): write(path, data)
                 systemctl('daemon-reload')
@@ -567,16 +578,18 @@ if __name__ == '__main__':
         if len(header) > 4096: raise ValueError('Invalid DNS setup header.')
         request = json.loads(header)
         count = request.get('count')
-        # Mode and provider are arguments, so the prepared domain file is sent unchanged.
-        mode = sys.argv[1] if len(sys.argv) > 1 else 'networkmanager'
-        provider = sys.argv[2] if len(sys.argv) > 2 else None
+        # Mode and upstream are arguments, so the prepared domain file is sent unchanged.
+        # Without them the request pauses protection.
+        install = len(sys.argv) > 1
+        mode = sys.argv[1] if install else 'networkmanager'
+        upstream = sys.argv[2] if len(sys.argv) > 2 else None
         if request.get('version') != 1 or type(count) is not int or not 0 <= count <= 5000000:
             raise ValueError('Invalid DNS setup request.')
-        if mode not in ('networkmanager', 'resolved') or (mode == 'resolved') != (provider is not None):
+        if mode not in ('networkmanager', 'resolved') or install != (upstream is not None) or len(sys.argv) > 3:
             raise ValueError('Invalid DNS setup request.')
-        if provider is not None and not UPSTREAMS.get(provider):
+        if install and not (UPSTREAMS.get(upstream) or upstream == 'network' and mode == 'networkmanager'):
             raise ValueError('Unknown DNS service.')
-        print(json.dumps(apply_database(sys.stdin.buffer, count, mode, provider)))
+        print(json.dumps(apply_database(sys.stdin.buffer, count, mode, upstream, install)))
     except Exception as exc:
         print(str(exc), file=sys.stderr)
         sys.exit(1)

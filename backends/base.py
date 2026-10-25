@@ -245,7 +245,7 @@ class PlatformBackend(ABC):
         return {'supported': False, 'active': False, 'count': 0,
                 'message': 'Domain protection is currently available on Linux only.'}
 
-    def apply_internet_protection(self, domains, provider=None):
+    def apply_internet_protection(self, domains, upstream=None):
         raise NotImplementedError('Domain protection is currently available on Linux only.')
 
     def reset_cancellation(self):

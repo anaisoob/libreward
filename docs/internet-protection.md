@@ -1,27 +1,77 @@
 # Internet protection
 
-Open **Internet protection** to check the current state. Opening the page does
-not download lists or change network settings. Linux is currently supported;
-other platforms show an unavailable message.
+Open **Live protection** and look under **Websites** to check the current state.
+Opening the page does not download lists or change network settings. Linux is
+currently supported; other platforms show an unavailable message.
 
-LibreWard's local filter checks every website name on this computer against
-downloaded lists and your own allowed and blocked websites. It works in one of
-two places, chosen automatically:
+## Simple and Advanced
+
+**Simple** (recommended, the default for new users) uses a protective DNS service
+that blocks unwanted websites itself. Choose what to block:
+
+| Choice | Service |
+|---|---|
+| Dangerous websites (default) | Quad9: malware and phishing (non-profit) |
+| Dangerous websites and ads | AdGuard DNS: also ads and trackers |
+| Family protection | AdGuard DNS Family: also adult websites; turns on Safe Search |
+
+There is nothing to download or maintain, and there are no allowed or blocked
+websites: what is blocked is the service's decision.
+
+**Advanced** uses LibreWard's own block lists (dangerous websites, tracking, ads,
+adult websites, social media) with your own allowed and blocked websites. Lookups
+that LibreWard allows go to a DNS service that blocks nothing, so an allowed
+website really opens:
+
+| DNS service for allowed websites | |
+|---|---|
+| Quad9 (no blocking), 9.9.9.10 (default) | Non-profit |
+| Cloudflare 1.1.1.1 | |
+| Google Public DNS 8.8.8.8 | |
+| Your network's DNS | NetworkManager setups only; unencrypted, keeps VPN names working |
+
+Public services are always used over DNS-over-TLS (see
+[Encryption](#encryption)). Addresses and certificate names come from the services'
+official setup pages and are defined in `core/dns_providers.py`. Before a service
+is first used, LibreWard explains that it is a third party, not part of
+LibreWard, used under its own terms and privacy policy, and that it sees which
+website names this computer looks up.
+
+Users of earlier versions, who always used the lists, continue with Advanced.
+Behind systemd-resolved their DNS service changes from a filtering service to
+Quad9 (no blocking), shown as a change to apply; with NetworkManager they keep
+the network's DNS.
+
+## Where the filter runs
+
+LibreWard's local filter checks every website name on this computer. With Simple
+protection its list is empty and it only forwards; with Advanced it checks the
+downloaded lists and your own websites. It works in one of two places, chosen
+automatically:
 
 - **With NetworkManager's dnsmasq** (for example Debian, Ubuntu Server/minimal,
-  Raspberry Pi OS, and Arch or Manjaro without systemd-resolved). Allowed names
-  go to the network's own DNS servers. Nothing is sent to an extra service.
+  Raspberry Pi OS, and Arch or Manjaro without systemd-resolved). Lookups go to
+  the chosen DNS service over TLS, while local network names (single-label names,
+  `.lan`, `.home`, `.home.arpa`, `.internal`, `.local`, reverse lookups) still go to
+  NetworkManager's dnsmasq. Names that only a VPN can answer need **Your network's
+  DNS** in Advanced.
 - **Behind systemd-resolved** (for example Ubuntu Desktop, Linux Mint, Fedora
-  and Arch with resolved). Allowed names go to a DNS service you choose, over
-  TLS; see [Behind systemd-resolved](#behind-systemd-resolved).
+  and Arch with resolved). Allowed names go to the chosen DNS service over TLS;
+  resolved keeps sending VPN and local network names to their own servers. See
+  [Behind systemd-resolved](#behind-systemd-resolved).
 
 Other setups show that Internet protection is unavailable and nothing is changed.
 
+Browsers can bypass system DNS with their own “Secure DNS” (DNS-over-HTTPS). The
+filter answers Firefox's `use-application-dns.net` check as nonexistent, which
+tells Firefox to keep its default DNS-over-HTTPS off; a setting the user turned on
+in the browser still bypasses protection.
+
 ## Enable protection
 
-The page has one switch: **Turn on** or **Turn off**. Its state is checked
-automatically while the page is open. Dangerous websites and phishing are
-selected by default. Tracking, ads, adult websites and social media (Facebook,
+The Websites section has one switch: **Turn on** or **Turn off**. Its state is
+checked automatically while the page is open. With Advanced, dangerous websites
+and phishing are selected by default. Tracking, ads, adult websites and social media (Facebook,
 Instagram, Messenger and WhatsApp, TikTok and X/Twitter, from the project's
 `facebook`, `whatsapp`, `tiktok` and `twitter` lists) are optional and off by default. Missing lists are downloaded from
 The Block List Project over HTTPS only after confirmation.
@@ -57,11 +107,13 @@ one domain against a SQLite index, with a 2 MiB SQLite page cache and at most
 workers. The list is never expanded into a Python list or dnsmasq hosts records.
 Blocked A/AAAA queries return null IPv4/IPv6 addresses. Other blocked record types
 receive an empty answer. Allowed queries retain the original DNS request and are
-forwarded to NetworkManager's dnsmasq on `127.0.0.1:5354`.
+forwarded to the chosen DNS service over TLS, local network names to
+NetworkManager's dnsmasq on `127.0.0.1:5354`. With **Your network's DNS**, every
+allowed query goes to dnsmasq.
 
 NetworkManager retains upstream servers and conditional VPN forwarding. LibreWard
-sets no public DNS servers and changes no connection profiles. It does not provide
-a VPN, hide your IP address, or encrypt DNS. See the
+changes no connection profiles. It does not provide a VPN or hide your IP address.
+See the
 [NetworkManager DNS plugin documentation](https://networkmanager.dev/docs/api/latest/NetworkManager.conf.html).
 
 The standalone Python service runs as a systemd dynamic user, with only the
@@ -113,21 +165,8 @@ application -> systemd-resolved -> LibreWard DNS filter -> DNS service over TLS
         go to their own servers
 ```
 
-The page then also shows **Encrypted DNS service**. Allowed lookups go to it:
-
-| Service | Also blocks on its own |
-|---|---|
-| AdGuard DNS (default) | Ads, trackers, malware and phishing |
-| AdGuard DNS Family | Also adult content; turns on Safe Search |
-| Quad9 | Malware and phishing (non-profit) |
-| Cloudflare (malware blocking) | Malware |
-| Cloudflare for Families | Malware and adult content |
-
-Addresses and certificate names come from the services' official setup pages
-and are defined in `core/dns_providers.py`. Before enabling, LibreWard explains
-that the service is a third party, not part of LibreWard, used under its own
-terms and privacy policy, that it sees which website names pass LibreWard's own
-checks, and that it may block websites by mistake.
+Allowed lookups go to the DNS service chosen in Simple or Advanced; **Your
+network's DNS** is not offered here.
 
 The filter listens on `127.0.0.1:5354` and becomes resolved's only global server
 through one owned drop-in, `/etc/systemd/resolved.conf.d/90-libreward-filter.conf`:
@@ -144,10 +183,14 @@ such as a VPN's `~corp.example` or a router's `lan` search domain, keep using
 their own servers and are not filtered. A VPN that routes all names (`~.`)
 through its own DNS can bypass the filter.
 
-The filter forwards over DNS-over-TLS (port 853, TLS 1.2 or newer, certificate
-checked against the service's name, connections reused). Where the network blocks
-port 853, it uses plain DNS to the same service for a minute before trying TLS
-again. Answers over 1,232 bytes make UDP clients retry over TCP.
+### Encryption
+
+The filter forwards to public services over DNS-over-TLS (port 853, TLS 1.2 or
+newer, certificate checked against the service's name, connections reused). Where
+the network blocks port 853, it uses plain DNS to the same service for a minute
+before trying TLS again. Answers over 1,232 bytes make UDP clients retry over TCP.
+DNS-over-DTLS is not used: it is an experimental standard that public services do
+not offer. DNS-over-HTTPS as a fallback for networks blocking port 853 is planned.
 
 Setup starts the filter and checks it directly before resolved points to it, so
 DNS never points to a filter that is not running. It then reloads resolved and
@@ -164,8 +207,9 @@ Enter exact names such as `example.org`, without `https://`, paths, IP addresses
 or wildcards. International domains are normalized to IDNA. `example.org` does
 not automatically include `www.example.org` or other subdomains.
 
-Allowed websites override downloaded and custom blocks inside LibreWard. They
-do not override other security tools or upstream filtering. Existing system hosts
+Allowed websites override downloaded and custom blocks inside LibreWard. Because
+Advanced uses a DNS service that blocks nothing, they are not blocked again
+upstream. They do not override other security tools. Existing system hosts
 entries retain their precedence over DNS.
 
 Every change is saved at once. While protection is off, nothing else is needed:

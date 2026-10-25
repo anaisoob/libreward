@@ -70,7 +70,18 @@ def internet_available(timeout=6):
 
 
 def preferences(config):
-    from .dns_providers import DEFAULT_PROVIDER, PROVIDERS
+    """Saved choices: 'simple' uses a protective DNS service, 'advanced' LibreWard's lists.
+
+    Earlier versions had only the lists; their users continue with Advanced.
+    """
+    from .dns_providers import (
+        DEFAULT_NEUTRAL,
+        DEFAULT_PROTECTIVE,
+        FORMER_PROTECTIVE,
+        NETWORK,
+        NEUTRAL,
+        PROTECTIVE,
+    )
     value = config.get('internet_protection', {})
     if not isinstance(value, dict):
         value = {}
@@ -80,12 +91,45 @@ def preferences(config):
     for key in ('allowed', 'blocked'):
         if not isinstance(value.get(key, []), list):
             raise ValueError('Saved website exceptions are invalid.')
-    provider = value.get('provider', DEFAULT_PROVIDER)
-    if provider not in PROVIDERS:
-        provider = DEFAULT_PROVIDER
-    return {'categories': categories, 'provider': provider,
+    level = value.get('level')
+    former = 'level' not in value and bool(value)
+    if level not in ('simple', 'advanced'):
+        level = 'advanced' if former else 'simple'
+    simple = value.get('simple')
+    if simple not in PROTECTIVE:
+        previous = value.get('provider')
+        simple = FORMER_PROTECTIVE.get(previous, previous if previous in PROTECTIVE else DEFAULT_PROTECTIVE)
+    upstream = value.get('upstream')
+    if upstream not in (*NEUTRAL, NETWORK):
+        applied = config.get('internet_protection_applied')
+        # NetworkManager users of earlier versions kept the network's DNS servers.
+        upstream = NETWORK if former and isinstance(applied, dict) and 'provider' not in applied else DEFAULT_NEUTRAL
+    return {'level': level, 'simple': simple, 'upstream': upstream, 'categories': categories,
             'allowed': sorted({normalize_domain(item) for item in value.get('allowed', [])}),
             'blocked': sorted({normalize_domain(item) for item in value.get('blocked', [])})}
+
+
+def protection_upstream(settings):
+    """The DNS service the filter forwards to: a provider key or 'network'."""
+    return settings['simple'] if settings['level'] == 'simple' else settings['upstream']
+
+
+def applied_choices(settings, lists_version):
+    """What the running filter depends on, to notice saved but unapplied changes."""
+    if settings['level'] == 'simple':
+        return {'level': 'simple', 'upstream': settings['simple']}
+    return {'level': 'advanced', 'upstream': settings['upstream'], 'categories': list(settings['categories']),
+            'allowed': list(settings['allowed']), 'blocked': list(settings['blocked']), 'lists': lists_version}
+
+
+def upgrade_applied(applied):
+    """Applied choices recorded by earlier versions, in the current form."""
+    from .dns_providers import NETWORK
+    if not isinstance(applied, dict) or 'level' in applied:
+        return applied
+    return {'level': 'advanced', 'upstream': applied.get('provider', NETWORK),
+            'categories': list(applied.get('categories', [])), 'allowed': list(applied.get('allowed', [])),
+            'blocked': list(applied.get('blocked', [])), 'lists': applied.get('lists')}
 
 
 class DiskDomainLists:

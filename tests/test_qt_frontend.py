@@ -346,30 +346,36 @@ class QtFrontendTests(unittest.TestCase):
         self.warning.assert_called_once()
         self.assertEqual(page.settings()['blocked'], [])
 
-    def test_resolved_filter_applies_lists_with_the_chosen_dns_service(self):
+    def test_advanced_applies_lists_with_a_neutral_dns_service(self):
         from core.internet import DiskDomainLists, PreparedDomains
         page = self.window.internet_page
         with tempfile.TemporaryDirectory() as directory:
             page.store = DiskDomainLists(directory)
+            self.assertTrue(page.advanced_section.isHidden())  # new users start with Simple
+            page.levels['advanced'].setChecked(True)
+            self.assertFalse(page.advanced_section.isHidden())
+            self.assertTrue(page.simple_card.isHidden())
             for checkbox in page.categories.values():
                 checkbox.setChecked(False)
             page.domain_lists['blocked'].addItem('blocked.example.org')
             page.show_state({'supported': True, 'active': False, 'count': 0, 'engine': 'sqlite-setup',
                              'mode': 'resolved', 'setup_available': True, 'needs_dns_install': False})
-            self.assertFalse(page.public_card.isHidden())
-            self.assertFalse(page.categories['dangerous'].isHidden())
-            page.provider.setCurrentIndex(page.provider.findData('adguard-family'))
+            self.assertEqual(page.upstream.currentData(), 'quad9-unfiltered')
+            self.assertEqual(page.upstream.findData('network'), -1)
+            page.upstream.setCurrentIndex(page.upstream.findData('cloudflare'))
             calls = []
-            def apply(prepared, provider=None):
+
+            def apply(prepared, upstream=None):
                 self.assertIsInstance(prepared, PreparedDomains)
-                calls.append(provider)
+                calls.append((upstream, len(prepared)))
                 return {'supported': True, 'active': True, 'count': 1, 'engine': 'sqlite-dns',
-                        'mode': 'resolved', 'provider': provider}
+                        'mode': 'resolved', 'upstream': upstream}
             with patch('ui.internet_page.backend.apply_internet_protection', side_effect=apply), \
                  patch.object(self.window, 'confirm', return_value=False) as confirm:
                 page.apply()
             consent = confirm.call_args.args[1]
-            for text in ('AdGuard DNS Family', 'third-party service', 'no warranty', 'even when LibreWard is closed'):
+            for text in ('Cloudflare 1.1.1.1', 'that LibreWard allows', 'third-party service', 'Blocks nothing',
+                         'no warranty', 'even when LibreWard is closed'):
                 self.assertIn(text, consent)
             self.assertEqual(calls, [])
             with patch('ui.internet_page.backend.apply_internet_protection', side_effect=apply), \
@@ -377,11 +383,42 @@ class QtFrontendTests(unittest.TestCase):
                 page.apply()
                 dialog = self.window.update_dialog
                 self.wait_idle()
-            self.assertEqual(calls, ['adguard-family'])
+            self.assertEqual(calls, [('cloudflare', 1)])
             dialog.accept()
             self.app.processEvents()
             self.assertTrue(page.state['active'])
-            self.assertEqual(self.window.config['internet_protection']['provider'], 'adguard-family')
+            self.assertEqual(page.info.text(), 'Blocking 1 website. Other lookups go to Cloudflare 1.1.1.1.')
+            saved = self.window.config['internet_protection']
+            self.assertEqual((saved['level'], saved['upstream']), ('advanced', 'cloudflare'))
+
+    def test_simple_protection_needs_no_lists_and_uses_the_chosen_service(self):
+        from core.internet import DiskDomainLists
+        page = self.window.internet_page
+        with tempfile.TemporaryDirectory() as directory:
+            page.store = DiskDomainLists(directory)
+            page.show_state({'supported': True, 'active': False, 'count': 0, 'engine': 'sqlite-setup',
+                             'mode': 'resolved', 'setup_available': True, 'needs_dns_install': False})
+            self.assertFalse(page.simple_card.isHidden())
+            self.assertTrue(page.simple_choices['quad9'].isChecked())
+            page.simple_choices['adguard-family'].setChecked(True)
+            calls = []
+
+            def apply(prepared, upstream=None):
+                calls.append((upstream, len(prepared)))
+                return {'supported': True, 'active': True, 'count': 0, 'engine': 'sqlite-dns',
+                        'mode': 'resolved', 'upstream': upstream}
+            with patch('ui.internet_page.backend.apply_internet_protection', side_effect=apply), \
+                    patch.object(page.store, 'update', side_effect=AssertionError('no list download')), \
+                    patch.object(self.window, 'confirm', return_value=True) as confirm:
+                page.apply()
+                dialog = self.window.update_dialog
+                self.wait_idle()
+            self.assertIn('Website lookups go to AdGuard DNS Family', confirm.call_args.args[1])
+            self.assertEqual(calls, [('adguard-family', 0)])
+            dialog.accept()
+            self.app.processEvents()
+            self.assertEqual(page.info.text(), 'AdGuard DNS Family blocks dangerous and adult websites and ads.')
+            self.assertTrue(page.pending_bar.isHidden())
 
     def test_offline_apply_explains_and_changes_nothing(self):
         page = self.window.internet_page
@@ -448,24 +485,25 @@ class QtFrontendTests(unittest.TestCase):
 
     def test_status_checks_never_undo_unapplied_choices(self):
         page = self.window.internet_page
-        page.show_state({'supported': True, 'active': True, 'count': 5, 'engine': 'sqlite-dns',
-                         'mode': 'resolved', 'provider': 'quad9'})
+        page.show_state({'supported': True, 'active': True, 'count': 0, 'engine': 'sqlite-dns',
+                         'mode': 'resolved', 'upstream': 'quad9'})
         self.assertTrue(page.pending_bar.isHidden())
-        page.provider.setCurrentIndex(page.provider.findData('adguard-family'))
+        page.simple_choices['adguard-family'].setChecked(True)
         # Saved at once, and shown as waiting to be applied.
-        self.assertEqual(self.window.config['internet_protection']['provider'], 'adguard-family')
+        self.assertEqual(self.window.config['internet_protection']['simple'], 'adguard-family')
         self.assertFalse(page.pending_bar.isHidden())
         # The periodic status check reports the active service; the choice stays.
-        page.show_state({'supported': True, 'active': True, 'count': 5, 'engine': 'sqlite-dns',
-                         'mode': 'resolved', 'provider': 'quad9'})
-        self.assertEqual(page.provider.currentData(), 'adguard-family')
+        page.show_state({'supported': True, 'active': True, 'count': 0, 'engine': 'sqlite-dns',
+                         'mode': 'resolved', 'upstream': 'quad9'})
+        self.assertTrue(page.simple_choices['adguard-family'].isChecked())
         self.assertFalse(page.pending_bar.isHidden())
-        page.applied({'supported': True, 'active': True, 'count': 5, 'engine': 'sqlite-dns',
-                      'mode': 'resolved', 'provider': 'adguard-family'})
+        page.applied({'supported': True, 'active': True, 'count': 0, 'engine': 'sqlite-dns',
+                      'mode': 'resolved', 'upstream': 'adguard-family'})
         self.assertTrue(page.pending_bar.isHidden())
 
     def test_changes_while_off_need_no_apply_and_leaving_with_changes_asks(self):
         page = self.window.internet_page
+        page.levels['advanced'].setChecked(True)
         page.show_state({'supported': True, 'active': False, 'count': 0, 'engine': 'sqlite-setup', 'mode': 'networkmanager'})
         page.categories['ads'].setChecked(True)
         self.assertTrue(page.pending_bar.isHidden())
@@ -479,10 +517,16 @@ class QtFrontendTests(unittest.TestCase):
         apply.assert_called_once_with(changes=True)
         self.assertEqual(self.window.pages.currentIndex(), self.window.page_indices['internet'])
 
-    def test_networkmanager_filter_hides_dns_service_choice(self):
+    def test_network_dns_is_offered_only_with_networkmanager(self):
         page = self.window.internet_page
         page.show_state({'supported': True, 'active': False, 'count': 0, 'engine': 'sqlite-setup', 'mode': 'networkmanager'})
-        self.assertTrue(page.public_card.isHidden())
+        index = page.upstream.findData('network')
+        self.assertGreaterEqual(index, 0)
+        page.upstream.setCurrentIndex(index)
+        self.assertEqual(self.window.config['internet_protection']['upstream'], 'network')
+        page.show_state({'supported': True, 'active': False, 'count': 0, 'engine': 'sqlite-setup', 'mode': 'resolved'})
+        self.assertEqual(page.upstream.findData('network'), -1)
+        self.assertEqual(page.upstream.currentData(), 'quad9-unfiltered')
 
     def test_debian_dns_setup_is_offered_with_installation_consent(self):
         page = self.window.internet_page
@@ -501,14 +545,15 @@ class QtFrontendTests(unittest.TestCase):
         page = self.window.internet_page
         with tempfile.TemporaryDirectory() as directory:
             page.store = DiskDomainLists(directory)
+            page.levels['advanced'].setChecked(True)
             for checkbox in page.categories.values():
                 checkbox.setChecked(False)
             page.domain_lists['blocked'].addItem('blocked.example.org')
             page.show_state({'supported': True, 'active': False, 'count': 0, 'engine': 'sqlite-setup',
                              'setup_available': True, 'needs_dns_install': False})
             payloads = []
-            def apply(prepared, provider=None):
-                self.assertIsNone(provider)
+            def apply(prepared, upstream=None):
+                self.assertEqual(upstream, 'quad9-unfiltered')
                 self.assertIsInstance(prepared, PreparedDomains)
                 self.assertTrue(prepared.path.exists())
                 payloads.append(prepared.path)

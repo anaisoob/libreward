@@ -1,4 +1,9 @@
-"""Public filtering DNS services offered where the local filter is unavailable.
+"""Public DNS services used by Internet protection, always over DNS-over-TLS.
+
+Simple protection uses a protective service that blocks websites itself.
+Advanced protection uses LibreWard's own lists and a service that blocks nothing,
+so allowed websites really open; on NetworkManager it can also use the network's
+own DNS servers ('network').
 
 Addresses and DNS-over-TLS names come from each provider's official setup page.
 LibreWard is not affiliated with these services; they are used under their own terms.
@@ -39,8 +44,34 @@ PROVIDERS = {provider.key: provider for provider in (
     DnsProvider('cloudflare-family', 'Cloudflare for Families', 'Blocks malware and adult content.',
                 ('1.1.1.3', '1.0.0.3', '2606:4700:4700::1113', '2606:4700:4700::1003'),
                 'family.cloudflare-dns.com', 'https://one.one.one.one/family/'),
+    # Services that block nothing, for LibreWard's own lists.
+    DnsProvider('quad9-unfiltered', 'Quad9 (no blocking)', 'Blocks nothing. Run by a non-profit foundation.',
+                ('9.9.9.10', '149.112.112.10', '2620:fe::10', '2620:fe::fe:10'),
+                'dns10.quad9.net', 'https://quad9.net/'),
+    DnsProvider('cloudflare', 'Cloudflare 1.1.1.1', 'Blocks nothing.',
+                ('1.1.1.1', '1.0.0.1', '2606:4700:4700::1111', '2606:4700:4700::1001'),
+                'cloudflare-dns.com', 'https://one.one.one.one/'),
+    DnsProvider('google', 'Google Public DNS 8.8.8.8', 'Blocks nothing.',
+                ('8.8.8.8', '8.8.4.4', '2001:4860:4860::8888', '2001:4860:4860::8844'),
+                'dns.google', 'https://developers.google.com/speed/public-dns'),
 )}
-DEFAULT_PROVIDER = 'adguard'
+
+# Simple protection: what the user wants blocked, and the service that does it:
+# (choice, description, what the active service blocks).
+PROTECTIVE = {
+    'quad9': ('Dangerous websites', 'Blocks malware and phishing websites.', 'dangerous websites'),
+    'adguard': ('Dangerous websites and ads', 'Also blocks ads and trackers.', 'dangerous websites and ads'),
+    'adguard-family': ('Family protection', 'Also blocks adult websites and turns on Safe Search.',
+                       'dangerous and adult websites and ads'),
+}
+DEFAULT_PROTECTIVE = 'quad9'
+# Advanced protection: lookups LibreWard allows go here, without further blocking.
+NEUTRAL = ('quad9-unfiltered', 'cloudflare', 'google')
+DEFAULT_NEUTRAL = 'quad9-unfiltered'
+# The network's own DNS servers; only where NetworkManager's dnsmasq forwards.
+NETWORK = 'network'
+# Earlier protective choices that are no longer offered.
+FORMER_PROTECTIVE = {'cloudflare-security': 'quad9', 'cloudflare-family': 'adguard-family'}
 
 
 def validate_providers(providers=PROVIDERS):
@@ -55,3 +86,5 @@ def validate_providers(providers=PROVIDERS):
 
 
 validate_providers()
+if not set(PROTECTIVE) | set(NEUTRAL) <= set(PROVIDERS):
+    raise ValueError('Every offered DNS service needs a provider entry.')

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Internet protection has Simple and Advanced. Simple (the default for new users)
+  uses a protective DNS service and needs no lists: Dangerous websites (Quad9),
+  Dangerous websites and ads (AdGuard DNS) or Family protection (AdGuard DNS Family).
+  Advanced uses LibreWard's lists with allowed and blocked websites, and sends allowed
+  lookups to a service that blocks nothing (Quad9 9.9.9.10 by default, Cloudflare
+  1.1.1.1, Google 8.8.8.8, or the network's DNS with NetworkManager), so an allowed
+  website is no longer blocked upstream. Users of earlier versions continue with
+  Advanced. Behind NetworkManager, public services are now used over DNS-over-TLS too,
+  with local network names still going to the network. The filter tells Firefox to
+  keep its default DNS-over-HTTPS off (`use-application-dns.net`).
+
 - AppStream metadata (`io.github.anaisoob.LibreWard.metainfo.xml`), installed to
   `/usr/share/metainfo`, so GNOME Software and KDE Discover show LibreWard with a
   description, screenshot and license.

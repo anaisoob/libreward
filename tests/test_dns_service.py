@@ -50,9 +50,14 @@ class InstallerTests(unittest.TestCase):
         self.run.start()
         self.addCleanup(self.run.stop)
 
-    def apply(self, data=b'a.example.org\nb.example.org\n', count=2, mode='networkmanager', provider=None):
+    def apply(self, data=b'a.example.org\nb.example.org\n', count=2, mode='networkmanager', provider=None,
+              install=None):
+        # Earlier tests pause with an empty request; installs default to the network's DNS.
+        install = bool(count) if install is None else install
+        if install and provider is None and mode == 'networkmanager':
+            provider = 'network'
         with patch.object(Path, 'read_text', return_value=''):
-            return self.ns['apply_database'](io.BytesIO(data), count, mode, provider)
+            return self.ns['apply_database'](io.BytesIO(data), count, mode, provider, install)
 
     def resolved(self, data=b'a.example.org\n', count=1, provider='quad9'):
         with patch.dict(self.ns, network_ready=Mock(return_value=True)):
@@ -70,7 +75,7 @@ class InstallerTests(unittest.TestCase):
         unit = Path(self.mapping['UNIT']).read_text()
         self.assertIn('--listen-port 5354 --tls-upstream 9.9.9.9#dns.quad9.net --tls-upstream 149.112.112.112#dns.quad9.net\n', unit)
         state = json.loads(Path(self.mapping['STATE']).read_text())
-        self.assertEqual((state['mode'], state['provider'], state['phase']), ('resolved', 'quad9', 'enabled'))
+        self.assertEqual((state['mode'], state['upstream'], state['phase']), ('resolved', 'quad9', 'enabled'))
         # NetworkManager is neither changed nor reloaded on a resolved system.
         self.assertFalse(Path(self.mapping['CONF']).exists())
         self.ns['reload_dns'].assert_not_called()
@@ -145,6 +150,19 @@ class InstallerTests(unittest.TestCase):
         self.assertFalse(Path(self.mapping['CONF']).exists())
         self.assertFalse(Path(self.mapping['SETUP_CONF']).exists())
         self.assertIn(b'false', Path(self.mapping['STATE']).read_bytes())
+
+    def test_simple_protection_installs_an_empty_list_with_a_protective_service(self):
+        result = self.apply(b'', 0, provider='quad9', install=True)
+        self.assertEqual(result['count'], 0)
+        state = json.loads(Path(self.mapping['STATE']).read_text())
+        self.assertEqual((state['active'], state['upstream'], state['count']), (True, 'quad9', 0))
+        unit = Path(self.mapping['UNIT']).read_text()
+        self.assertIn('--local-upstream-port 5354 --tls-upstream 9.9.9.9#dns.quad9.net', unit)
+        with closing(sqlite3.connect(self.mapping['DATABASE'])) as db:
+            self.assertEqual(db.execute('SELECT domain FROM blocked').fetchall(),
+                             [('libreward-protection-check.invalid',)])
+        self.apply(b'', 0)  # an empty request without arguments still pauses
+        self.assertFalse(json.loads(Path(self.mapping['STATE']).read_text())['active'])
 
     def test_health_failure_restores_previous_database_and_configuration(self):
         self.apply()

@@ -1378,15 +1378,15 @@ class LinuxBackend(PlatformBackend):
         except OSError:
             pass
 
-    def apply_internet_protection(self, domains, provider=None):
-        """PreparedDomains enables the local filter; [] pauses it.
+    def apply_internet_protection(self, domains, upstream=None):
+        """PreparedDomains (possibly empty) enables the local filter; [] pauses it.
 
-        Behind systemd-resolved, `provider` selects the DNS service that receives
-        allowed lookups over TLS.
+        `upstream` is the DNS service that receives allowed lookups over TLS, or
+        'network' for NetworkManager's resolver (NetworkManager setups only).
         """
         from core.internet import PreparedDomains
         if isinstance(domains, PreparedDomains):
-            return self._apply_database_protection(domains, provider)
+            return self._apply_database_protection(domains, upstream)
         if domains != []:
             raise ValueError('Invalid domain protection request.')
         state = self.inspect_internet_protection()
@@ -1394,10 +1394,10 @@ class LinuxBackend(PlatformBackend):
             return self._apply_database_protection(None)
         return state
 
-    def _apply_database_protection(self, prepared, provider=None):
+    def _apply_database_protection(self, prepared, upstream=None):
         import json
         import tempfile
-        from core.dns_providers import PROVIDERS
+        from core.dns_providers import NETWORK, PROVIDERS
         from .linux_dns_service import helper
         state = self.inspect_internet_protection()
         if prepared is not None and (not state.get('supported') or state.get('engine') not in ('sqlite-dns', 'sqlite-setup')):
@@ -1405,12 +1405,9 @@ class LinuxBackend(PlatformBackend):
         mode = state.get('mode', 'networkmanager')
         arguments = []
         if prepared is not None:
-            if mode == 'resolved':
-                if provider not in PROVIDERS:
-                    raise ValueError('Choose a supported DNS service.')
-                arguments = [mode, provider]
-            else:
-                arguments = [mode]
+            if upstream not in PROVIDERS and not (upstream == NETWORK and mode == 'networkmanager'):
+                raise ValueError('Choose a supported DNS service.')
+            arguments = [mode, upstream]
         names = ['systemctl', 'python3'] + (['resolvectl'] if mode == 'resolved' else ['nmcli', 'NetworkManager'])
         executables = {name: self._trusted_firewall_executable(name)
                        for name in ('nmcli', 'NetworkManager', 'systemctl', 'python3', 'resolvectl')}
@@ -1442,6 +1439,6 @@ class LinuxBackend(PlatformBackend):
         state = self.inspect_internet_protection()
         state['skipped'] = 0
         if state['count'] != changes['count'] or (prepared is not None and not state.get('supported')) or (
-                prepared is not None and mode == 'resolved' and state.get('provider') != provider):
+                prepared is not None and state.get('upstream') != upstream):
             raise RuntimeError('The local DNS service could not be verified. Check protection status.')
         return state

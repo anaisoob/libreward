@@ -3,14 +3,15 @@ import threading
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QHBoxLayout, QLineEdit, QListWidget, QMessageBox,
-    QScrollArea, QVBoxLayout, QWidget,
+    QApplication, QButtonGroup, QCheckBox, QComboBox, QHBoxLayout, QLineEdit, QListWidget, QMessageBox,
+    QRadioButton, QScrollArea, QVBoxLayout, QWidget,
 )
 from backends import backend
 from core.authorization import AuthorizationError
 from config import save_config
-from core.dns_providers import PROVIDERS
-from core.internet import CATEGORIES, DiskDomainLists as DomainLists, internet_available, normalize_domain, preferences
+from core.dns_providers import DEFAULT_NEUTRAL, NETWORK, NEUTRAL, PROTECTIVE, PROVIDERS
+from core.internet import (CATEGORIES, DiskDomainLists as DomainLists, applied_choices, internet_available,
+                           normalize_domain, preferences, protection_upstream, upgrade_applied)
 
 
 class InternetProtectionPage:
@@ -83,28 +84,65 @@ class InternetProtectionPage:
         try:
             saved = preferences(window.config)
         except (ValueError, TypeError):
-            saved = {'categories': ['dangerous'], 'provider': 'adguard', 'allowed': [], 'blocked': []}
+            saved = preferences({})
             self.notice.setText('Saved website settings could not be read. Review them before applying protection.')
-        # Behind systemd-resolved, allowed lookups go to a chosen DNS service over TLS.
-        self.public_card, box = window.card()
-        box.addWidget(window.label('ENCRYPTED DNS SERVICE', 'eyebrow'))
-        self.provider = QComboBox()
-        for key, provider in PROVIDERS.items():
-            self.provider.addItem(provider.name + (' (recommended)' if key == 'adguard' else ''), key)
-        self.provider.setCurrentIndex(max(0, self.provider.findData(saved['provider'])))
-        self.provider.currentIndexChanged.connect(self.provider_changed)
-        box.addWidget(self.provider)
-        self.provider_info = window.label('', 'muted')
-        self.provider_info.setWordWrap(True)
-        box.addWidget(self.provider_info)
-        note = window.label('LibreWard first checks every website name on this computer against your choices below. '
-                            'Allowed lookups then go to this service, encrypted where the network allows it. '
-                            'It may block more on its own. Local network and VPN names are not sent to it.', 'muted')
+        # Simple: a protective DNS service blocks. Advanced: LibreWard's lists with
+        # a DNS service that blocks nothing, so allowed websites really open.
+        card, box = window.card()
+        box.addWidget(window.label('HOW TO PROTECT', 'eyebrow'))
+        self.level_group = QButtonGroup(self.page)
+        self.levels = {}
+        for key, title, text in (
+                ('simple', 'Simple (recommended)', ('A protective DNS service blocks unwanted websites for you. '
+                                                    'Nothing to maintain.')),
+                ('advanced', 'Advanced', 'LibreWard’s own block lists, with websites you allow or block yourself.')):
+            radio = QRadioButton(title)
+            radio.setChecked(saved['level'] == key)
+            self.level_group.addButton(radio)
+            self.levels[key] = radio
+            box.addWidget(radio)
+            note = window.label(text, 'muted')
+            note.setWordWrap(True)
+            note.setContentsMargins(26, 0, 0, 4)
+            box.addWidget(note)
+        layout.addWidget(card)
+        self.simple_card, box = window.card()
+        box.addWidget(window.label('WHAT TO BLOCK', 'eyebrow'))
+        self.simple_group = QButtonGroup(self.page)
+        self.simple_choices = {}
+        for key, (title, text, _blocks) in PROTECTIVE.items():
+            radio = QRadioButton(title)
+            radio.setChecked(saved['simple'] == key)
+            self.simple_group.addButton(radio)
+            self.simple_choices[key] = radio
+            box.addWidget(radio)
+            note = window.label(f'{text} Uses {PROVIDERS[key].name}.', 'muted')
+            note.setWordWrap(True)
+            note.setContentsMargins(26, 0, 0, 4)
+            box.addWidget(note)
+        note = window.label('Website names are looked up through this service over an encrypted connection. '
+                            'It is a third party with its own privacy policy and decides itself what it blocks.',
+                            'muted')
         note.setWordWrap(True)
         box.addWidget(note)
-        layout.addWidget(self.public_card)
-        self.public_card.hide()
-        self.provider_changed(notify=False)
+        layout.addWidget(self.simple_card)
+        self.advanced_section = QWidget()
+        advanced = QVBoxLayout(self.advanced_section)
+        advanced.setContentsMargins(0, 0, 0, 0)
+        advanced.setSpacing(layout.spacing())
+        layout.addWidget(self.advanced_section)
+        card, box = window.card()
+        box.addWidget(window.label('DNS SERVICE FOR ALLOWED WEBSITES', 'eyebrow'))
+        self.upstream = QComboBox()
+        for key in NEUTRAL:
+            self.upstream.addItem(PROVIDERS[key].name + (' (recommended)' if key == DEFAULT_NEUTRAL else ''), key)
+        self.saved_upstream = saved['upstream']
+        self.upstream.setCurrentIndex(max(0, self.upstream.findData(saved['upstream'])))
+        box.addWidget(self.upstream)
+        self.upstream_info = window.label('', 'muted')
+        self.upstream_info.setWordWrap(True)
+        box.addWidget(self.upstream_info)
+        advanced.addWidget(card)
         card, box = window.card()
         box.addWidget(window.label('WHAT TO BLOCK', 'eyebrow'))
         self.categories = {}
@@ -119,7 +157,7 @@ class InternetProtectionPage:
         note.setWordWrap(True)
         box.addWidget(note)
         box.addWidget(window.button('Update lists now', self.download))
-        layout.addWidget(card)
+        advanced.addWidget(card)
         lists_row = QHBoxLayout()
         self.domain_lists = {}
         self.domain_fields = []
@@ -144,20 +182,26 @@ class InternetProtectionPage:
             field.returnPressed.connect(lambda k=key, f=field: self.add_domain(k, f))
             box.addWidget(window.button('Remove selected', lambda checked=False, k=key: self.remove_domain(k)))
             lists_row.addWidget(card)
-        layout.addLayout(lists_row)
-        note = window.label('This protection blocks exact domain names, not page contents. '
+        advanced.addLayout(lists_row)
+        note = window.label('LibreWard’s lists block exact domain names, not page contents. '
                             'Subdomains need their own entries. It cannot remove every ad. '
-                            'Apps using their own DNS and already-open connections may bypass it. '
-                            'No browsing history or blocked-request history is recorded. '
                             'Allowed websites only removes LibreWard blocks; it cannot override other security tools.', 'muted')
+        note.setWordWrap(True)
+        advanced.addWidget(note)
+        note = window.label('Apps using their own DNS, such as a browser with “Secure DNS” turned on, and '
+                            'already-open connections may bypass protection. LibreWard asks Firefox to keep '
+                            'its default Secure DNS off. No browsing history or blocked-request history is recorded.',
+                            'muted')
         note.setWordWrap(True)
         layout.addWidget(note)
         self.advanced_toggle = QCheckBox('Show how protection works')
         layout.addWidget(self.advanced_toggle)
-        self.advanced = window.label('Linux: a local service checks an indexed database on disk. With NetworkManager, '
-                                    'NetworkManager forwards allowed requests, including VPN domains. With systemd-resolved, '
-                                    'allowed requests go to the selected DNS service over TLS, while resolved keeps sending '
-                                    'VPN and local network names to their own servers. VPN connection settings are unchanged. '
+        self.advanced = window.label('Linux: a local service checks an indexed database on disk (empty with Simple '
+                                    'protection) and sends allowed requests to the selected DNS service over TLS. '
+                                    'With systemd-resolved, resolved keeps sending VPN and local network names to their '
+                                    'own servers. With NetworkManager, local network names go to the network’s DNS; '
+                                    'choose “Your network’s DNS” in Advanced if a VPN needs its own names. '
+                                    'VPN connection settings are unchanged. '
                                     'Protection is a system setting, like the firewall: it keeps working when LibreWard '
                                     'is closed and after restarts, until you turn it off here.\n\n'
                                     'Sources: The Block List Project, downloaded over HTTPS from GitHub. '
@@ -175,6 +219,11 @@ class InternetProtectionPage:
         self.advanced_toggle.toggled.connect(self.advanced.setVisible)
         self.advanced_toggle.toggled.connect(self.method_info.setVisible)
         layout.addStretch()
+        self.level_group.buttonToggled.connect(lambda _button, checked: checked and self.level_changed())
+        self.simple_group.buttonToggled.connect(lambda _button, checked: checked and self.changed())
+        self.upstream.currentIndexChanged.connect(self.upstream_changed)
+        self.show_level()
+        self.upstream_changed(notify=False)
 
     def explain_once(self, key, title, text):
         """Show an explanation the first time only."""
@@ -190,21 +239,57 @@ class InternetProtectionPage:
 
     def explain_blocking(self):
         QMessageBox.information(self.window, 'Why is a website blocked?',
-            'When Internet protection is on, LibreWard blocks websites from the lists you chose '
-            '(for example dangerous, advertising or adult websites) and the websites you added. '
+            'With Simple protection, the protective DNS service you chose blocks dangerous websites '
+            '(and, depending on your choice, ads or adult websites). With Advanced protection, LibreWard '
+            'blocks websites from the lists you chose and the websites you added. '
             'A blocked website looks unavailable in the browser.\n\n'
             'Protection is a system setting, like the firewall: it keeps working when LibreWard is closed. '
-            'To open a trusted website, add it to Allowed websites, or turn protection off here. '
-            'An unavailable website is not always blocked by LibreWard.')
+            'To open a trusted website, choose Advanced and add it to Allowed websites, or turn protection '
+            'off here. An unavailable website is not always blocked by LibreWard.')
 
-    def public_mode(self):
-        """Behind systemd-resolved the filter forwards to a selected public DNS service."""
-        return bool(self.state and self.state.get('mode') == 'resolved')
+    def level(self):
+        return 'advanced' if self.levels['advanced'].isChecked() else 'simple'
 
-    def provider_changed(self, *_args, notify=True):
-        provider = PROVIDERS[self.provider.currentData()]
-        self.provider_info.setText(f'{provider.blocks}\nProvided by a third party under its own terms: {provider.homepage}')
+    def show_level(self):
+        simple = self.level() == 'simple'
+        self.simple_card.setVisible(simple)
+        self.advanced_section.setVisible(not simple)
+
+    def level_changed(self):
+        self.show_level()
+        self.changed()
+
+    def network_available(self):
+        """The network's own DNS servers can be used behind NetworkManager's dnsmasq."""
+        return bool(self.state and self.state.get('mode') == 'networkmanager')
+
+    def offer_network(self, available):
+        index = self.upstream.findData(NETWORK)
+        if available and index < 0:
+            self.upstream.blockSignals(True)
+            self.upstream.addItem('Your network’s DNS (keeps VPN names working)', NETWORK)
+            if self.saved_upstream == NETWORK:
+                self.upstream.setCurrentIndex(self.upstream.count() - 1)
+            self.upstream.blockSignals(False)
+        elif not available and index >= 0:
+            self.upstream.blockSignals(True)
+            self.upstream.removeItem(index)
+            self.upstream.setCurrentIndex(max(0, self.upstream.findData(
+                self.saved_upstream if self.saved_upstream != NETWORK else DEFAULT_NEUTRAL)))
+            self.upstream.blockSignals(False)
+        self.upstream_changed(notify=False)
+
+    def upstream_changed(self, *_args, notify=True):
+        key = self.upstream.currentData()
+        if key == NETWORK:
+            self.upstream_info.setText('Allowed lookups go to the DNS servers of your network or provider, '
+                                       'unencrypted. VPN and local network names keep working.')
+        else:
+            provider = PROVIDERS[key]
+            self.upstream_info.setText(f'{provider.blocks} Encrypted where the network allows it.\n'
+                                       f'Provided by a third party under its own terms: {provider.homepage}')
         if notify:
+            self.saved_upstream = key
             self.changed()
 
     def changed(self):
@@ -222,15 +307,12 @@ class InternetProtectionPage:
             return None
 
     def active_choices(self, settings=None):
-        """What the running filter depends on; the DNS service only behind resolved."""
-        settings = dict(settings or self.settings())
-        if not self.public_mode():
-            settings.pop('provider', None)
-        settings['lists'] = self.lists_version()
-        return settings
+        """What the running filter depends on."""
+        settings = settings or self.settings()
+        return applied_choices(settings, self.lists_version() if settings['level'] == 'advanced' else None)
 
     def has_pending(self):
-        applied = self.window.config.get('internet_protection_applied')
+        applied = upgrade_applied(self.window.config.get('internet_protection_applied'))
         return bool(self.state and self.state.get('active') and applied is not None
                     and self.active_choices() != applied)
 
@@ -246,8 +328,10 @@ class InternetProtectionPage:
         self.pending_bar.setVisible(self.has_pending())
 
     def settings(self):
-        return {'categories': [key for key, check in self.categories.items() if check.isChecked()],
-                'provider': self.provider.currentData(),
+        return {'level': self.level(),
+                'simple': next(key for key, radio in self.simple_choices.items() if radio.isChecked()),
+                'upstream': self.saved_upstream,
+                'categories': [key for key, check in self.categories.items() if check.isChecked()],
                 **{key: [listing.item(i).text() for i in range(listing.count())]
                    for key, listing in self.domain_lists.items()}}
 
@@ -325,8 +409,7 @@ class InternetProtectionPage:
             self.recovery_noticed = False
         active = state.get('active', False)
         supported = state.get('supported', False)
-        public = self.public_mode()
-        self.public_card.setVisible(public)
+        self.offer_network(self.network_available())
         # The page shows the saved choices; the active ones are compared, never copied back.
         if active and self.window.config.get('internet_protection_applied') is None:
             self.remember_applied()  # protection enabled by an earlier version
@@ -336,12 +419,16 @@ class InternetProtectionPage:
         self.status.setProperty('severity', 'success' if active and supported else 'warning')
         self.status.style().unpolish(self.status)
         self.status.style().polish(self.status)
-        provider = PROVIDERS.get(state.get('provider'))
+        upstream = state.get('upstream')
+        provider = PROVIDERS.get(upstream)
         if active and supported:
             count = state.get('count', 0)
-            text = f"Blocking {count:,} website{'s' if count != 1 else ''}."
-            if provider is not None:
-                text += f' Other lookups go to {provider.name}.'
+            if not count and upstream in PROTECTIVE:
+                text = f'{provider.name} blocks {PROTECTIVE[upstream][2]}.'
+            else:
+                text = f"Blocking {count:,} website{'s' if count != 1 else ''}."
+                text += (' Other lookups go to your network’s DNS.' if upstream == NETWORK else
+                         f' Other lookups go to {provider.name}.' if provider is not None else '')
         elif active:
             text = 'Turn protection off to restore normal internet access, then turn it on again.'
         elif supported:
@@ -362,7 +449,8 @@ class InternetProtectionPage:
         editable = idle or self.window.operation == 'internet-status'
         self.toggle_button.setEnabled(idle and bool(self.state and (self.state.get('supported') or self.state.get('active'))))
         self.apply_button.setEnabled(idle)
-        for widget in [*self.categories.values(), *self.domain_lists.values(), *self.domain_fields, self.provider]:
+        for widget in [*self.categories.values(), *self.domain_lists.values(), *self.domain_fields, self.upstream,
+                       *self.levels.values(), *self.simple_choices.values()]:
             widget.setEnabled(editable)
         self.update_pending()
         if idle and self.scroll_position is not None:
@@ -406,15 +494,16 @@ class InternetProtectionPage:
 
     def consent_text(self, settings, changes):
         """Short; a new third-party DNS service always gets its own explanation."""
-        applied = self.window.config.get('internet_protection_applied') or {}
+        applied = upgrade_applied(self.window.config.get('internet_protection_applied')) or {}
+        upstream = protection_upstream(settings)
         parts = []
-        if self.public_mode() and (not changes or applied.get('provider') != settings['provider']):
-            provider = PROVIDERS[settings['provider']]
-            parts.append(f'Website lookups that LibreWard allows go to {provider.name}, a third-party service that is '
+        if upstream in PROVIDERS and (not changes or applied.get('upstream') != upstream):
+            provider = PROVIDERS[upstream]
+            lookups = 'Website lookups' if settings['level'] == 'simple' else 'Website lookups that LibreWard allows'
+            parts.append(f'{lookups} go to {provider.name}, a third-party service that is '
                          f'not part of LibreWard, with its own terms and privacy policy ({provider.homepage}). '
-                         f'{provider.blocks} It can see which websites '
-                         'this computer visits after LibreWard’s checks. Both are provided with no warranty, to the '
-                         'extent permitted by law.')
+                         f'{provider.blocks} It can see which websites this computer visits. '
+                         'Both are provided with no warranty, to the extent permitted by law.')
         if self.state.get('needs_dns_install'):
             parts.append(f"LibreWard will install the {self.state.get('dns_package') or 'dnsmasq'} package from your "
                          'system’s software sources.')
@@ -429,9 +518,12 @@ class InternetProtectionPage:
         if self.window.operation or not self.state or not self.state.get('supported'):
             return
         settings = self.settings()
-        if not settings['categories'] and not settings['blocked']:
+        if settings['level'] == 'advanced' and not settings['categories'] and not settings['blocked']:
             QMessageBox.information(self.window, 'Internet protection', 'Choose what to block first.')
             return
+        if settings['upstream'] == NETWORK and not self.network_available():
+            settings['upstream'] = DEFAULT_NEUTRAL
+        upstream = protection_upstream(settings)
         text = self.consent_text(settings, changes)
         if not confirmed and text and not self.window.confirm(
                 'Apply changes' if changes else 'Turn on Internet protection', text):
@@ -448,18 +540,23 @@ class InternetProtectionPage:
             if not internet_available():
                 raise ValueError('This computer is not connected to the internet. Connect, then try again. '
                                  'No settings were changed.')
-            available = set(self.store.load()['lists'])
-            if any(key not in available for key in settings['categories']):
-                self.store.update(settings['categories'], self.window.events.put)
+            if settings['level'] == 'simple':
+                # The protective DNS service blocks; LibreWard's list stays empty.
+                lists = {'categories': [], 'allowed': [], 'blocked': []}
+            else:
+                lists = settings
+                available = set(self.store.load()['lists'])
+                if any(key not in available for key in settings['categories']):
+                    self.store.update(settings['categories'], self.window.events.put)
             self.window.events.put('Preparing the domain database on disk…\n')
-            with self.store.prepare(settings) as domains:
-                if not len(domains):
+            with self.store.prepare(lists) as domains:
+                if settings['level'] == 'advanced' and not len(domains):
                     raise ValueError('No domains remain to block after your allowed websites were applied.')
                 self.window.events.put(f'Applying {len(domains):,} blocked domains. Waiting for system authorization…\n')
                 self.start_system_change()
-                state = backend.apply_internet_protection(
-                    domains, provider=settings['provider'] if self.public_mode() else None)
-            self.window.events.put(f"Applied {state['count']:,} exact-domain blocks with the local filter.\n")
+                state = backend.apply_internet_protection(domains, upstream=upstream)
+            name = 'your network’s DNS' if upstream == NETWORK else PROVIDERS[upstream].name
+            self.window.events.put(f"Applied {state['count']:,} exact-domain blocks; lookups go to {name}.\n")
             return state
         self.reset_cancel()
         if self.window.start_task('internet-apply', work,

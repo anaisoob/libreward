@@ -54,6 +54,44 @@ class ProxyTests(unittest.TestCase):
             self.assertEqual(filter_.answer(packet)[3] & 15, 1)
         self.assertEqual(filter_.answer(query('allowed.example.org'))[3] & 15, 2)
 
+    def test_firefox_canary_says_secure_dns_is_unwanted(self):
+        filter_ = Filter(str(self.db))
+        self.addCleanup(filter_.index.close)
+        with patch('core.dns_proxy.socket.socket', side_effect=AssertionError('Canary was forwarded')):
+            answer = filter_.answer(query('use-application-dns.net'))
+        self.assertEqual(answer[3] & 15, 3)  # NXDOMAIN
+
+    def test_local_network_names_go_to_the_network_resolver(self):
+        class Recorder:
+            def __init__(self):
+                self.seen = []
+
+            def exchange(self, packet, tcp):
+                self.seen.append(question(packet)[0])
+                return reply(packet)
+
+        public, local = Recorder(), Recorder()
+        filter_ = Filter(str(self.db), upstream=public, local=local)
+        self.addCleanup(filter_.index.close)
+        for name in ('example.org', 'router', 'printer.lan', 'nas.home.arpa', '9.2.0.192.in-addr.arpa'):
+            self.assertEqual(filter_.answer(query(name, kind=1))[3] & 15, 0)
+        self.assertEqual(public.seen, ['example.org'])
+        self.assertEqual(local.seen, ['router', 'printer.lan', 'nas.home.arpa', '9.2.0.192.in-addr.arpa'])
+
+    def test_empty_blocklist_forwards_everything(self):
+        empty = Path(self.temp.name, 'empty.sqlite3')
+        with closing(sqlite3.connect(empty)) as db, db:
+            db.execute('CREATE TABLE blocked(domain TEXT PRIMARY KEY) WITHOUT ROWID')
+            db.execute("INSERT INTO blocked VALUES ('libreward-protection-check.invalid')")
+
+        class Echo:
+            def exchange(self, packet, tcp):
+                return reply(packet)
+
+        filter_ = Filter(str(empty), upstream=Echo())
+        self.addCleanup(filter_.index.close)
+        self.assertEqual(filter_.answer(query('blocked.example.org'))[-4:], socket.inet_aton('192.0.2.9'))
+
     def test_membership_cache_is_bounded_and_exact(self):
         index = DomainIndex(str(self.db), cache_entries=4)
         self.addCleanup(index.close)

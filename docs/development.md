@@ -76,6 +76,8 @@ Verify on Windows and a desktop Linux installation:
   On NetworkManager/systemd, check that protection keeps working after closing the
   GUI, logging out and rebooting, that the first turn-on and first close show their
   one-time messages, that Turn off restores normal DNS,
+  Simple (each protective service) and Advanced (an allowed website on a list really
+  opens; each neutral service; network DNS with NetworkManager, including a VPN name),
   the filter behind systemd-resolved on Ubuntu Desktop and Fedora (each DNS
   service, TLS and blocked port 853, pause, close, reboot, killed GUI, unreachable
   service rollback, VPN split DNS and full-tunnel VPN), repeated enable/pause, and intentional

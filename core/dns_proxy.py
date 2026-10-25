@@ -2,7 +2,9 @@
 
 Only exact-domain membership is cached. Allowed queries go either to the
 existing NetworkManager resolver (VPN forwarding and network changes stay there)
-or, behind systemd-resolved, to the selected public DNS service over TLS.
+or to the selected public DNS service over TLS. With NetworkManager, local
+network names still go to its resolver. The blocklist may be empty: Simple
+protection relies on a protective DNS service alone.
 """
 SERVICE_SOURCE = r'''
 import argparse
@@ -19,6 +21,10 @@ import threading
 import time
 
 SENTINEL = 'libreward-protection-check.invalid'
+# Firefox turns its default DNS-over-HTTPS off when this name does not exist, so
+# browsing keeps going through the protection.
+DOH_CANARY = 'use-application-dns.net'
+LOCAL_SUFFIXES = ('.lan', '.home', '.home.arpa', '.internal', '.localdomain', '.local', '.arpa')
 MAX_QUERY = 4096
 # Larger answers make UDP clients retry over TCP (EDNS default buffer size).
 MAX_UDP_REPLY = 1232
@@ -221,10 +227,15 @@ class TlsUpstream:
             except queue.Empty:
                 return
 
+def local_name(domain):
+    """Names only the local network can answer (router, printers, reverse lookups)."""
+    return '.' not in domain or domain.endswith(LOCAL_SUFFIXES)
+
 class Filter:
-    def __init__(self, database, upstream=('127.0.0.1', 5354), timeout=3):
+    def __init__(self, database, upstream=('127.0.0.1', 5354), timeout=3, local=None):
         self.index = DomainIndex(database)
         self.upstream = upstream if hasattr(upstream, 'exchange') else PlainUpstream(upstream, timeout)
+        self.local = local if local is None or hasattr(local, 'exchange') else PlainUpstream(local, timeout)
         self.timeout = timeout
 
     def answer(self, packet, tcp=False):
@@ -235,9 +246,12 @@ class Filter:
         except (ValueError, UnicodeError):
             return error_response(packet, 1)
         try:
+            if domain == DOH_CANARY:
+                return error_response(packet, 3)
             if self.index.blocked(domain):
                 return blocked_response(packet, kind, cls, end)
-            reply = self.upstream.exchange(packet, tcp)
+            upstream = self.local if self.local is not None and local_name(domain) else self.upstream
+            reply = upstream.exchange(packet, tcp)
             if len(reply) < 12 or reply[:2] != packet[:2] or not reply[2] & 0x80:
                 raise ValueError('Invalid upstream DNS response')
             # Response questions use the same parser after clearing QR/RCODE.
@@ -344,13 +358,16 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--database', required=True)
     parser.add_argument('--listen-port', type=int, default=53)
-    # Behind systemd-resolved: ADDRESS#CERTIFICATE-NAME entries of the selected service.
+    # ADDRESS#CERTIFICATE-NAME entries of the selected DNS-over-TLS service.
     parser.add_argument('--tls-upstream', action='append', default=[])
+    # NetworkManager's resolver for local network names while using a TLS service.
+    parser.add_argument('--local-upstream-port', type=int)
     args = parser.parse_args()
     upstream = ('127.0.0.1', 5354)
     if args.tls_upstream:
         upstream = TlsUpstream([tuple(entry.split('#', 1)) for entry in args.tls_upstream])
-    server = Server(Filter(args.database, upstream=upstream), address=('127.0.0.1', args.listen_port))
+    local = ('127.0.0.1', args.local_upstream_port) if args.local_upstream_port else None
+    server = Server(Filter(args.database, upstream=upstream, local=local), address=('127.0.0.1', args.listen_port))
     signal.signal(signal.SIGTERM, lambda *_: server.stop())
     signal.signal(signal.SIGINT, lambda *_: server.stop())
     server.serve()

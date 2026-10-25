@@ -29,13 +29,44 @@ class DomainTests(unittest.TestCase):
         with patch('socket.getaddrinfo', side_effect=lambda *a, **k: blocked.wait(5)):
             self.assertFalse(internet_available(timeout=0.1))
 
-    def test_default_categories_provider_and_invalid_settings(self):
-        self.assertEqual(preferences({})['categories'], ['dangerous'])
-        self.assertEqual(preferences({})['provider'], 'adguard')
-        self.assertEqual(preferences({'internet_protection': {'provider': 'quad9'}})['provider'], 'quad9')
-        self.assertEqual(preferences({'internet_protection': {'provider': 'unknown'}})['provider'], 'adguard')
+    def test_new_users_start_simple_with_quad9(self):
+        settings = preferences({})
+        self.assertEqual((settings['level'], settings['simple'], settings['upstream']),
+                         ('simple', 'quad9', 'quad9-unfiltered'))
+        self.assertEqual(settings['categories'], ['dangerous'])
         with self.assertRaises(ValueError):
             preferences({'internet_protection': {'allowed': 'example.org'}})
+
+    def test_earlier_list_users_continue_with_advanced_and_a_neutral_service(self):
+        from core.internet import applied_choices, protection_upstream, upgrade_applied
+        former = {'internet_protection': {'categories': ['dangerous', 'ads'], 'provider': 'adguard',
+                                          'allowed': ['Example.org'], 'blocked': []},
+                  'internet_protection_applied': {'categories': ['dangerous', 'ads'], 'provider': 'adguard',
+                                                  'allowed': ['example.org'], 'blocked': [], 'lists': 'v1'}}
+        settings = preferences(former)
+        self.assertEqual((settings['level'], settings['upstream'], settings['simple']),
+                         ('advanced', 'quad9-unfiltered', 'adguard'))
+        self.assertEqual(settings['allowed'], ['example.org'])
+        self.assertEqual(protection_upstream(settings), 'quad9-unfiltered')
+        # Their AdGuard filter is replaced by a service that blocks nothing: a pending change.
+        self.assertNotEqual(applied_choices(settings, 'v1'), upgrade_applied(former['internet_protection_applied']))
+        # NetworkManager users kept the network's DNS and see no change.
+        networkmanager = {'internet_protection': {'categories': ['dangerous'], 'allowed': [], 'blocked': []},
+                          'internet_protection_applied': {'categories': ['dangerous'], 'allowed': [], 'blocked': [],
+                                                          'lists': 'v1'}}
+        settings = preferences(networkmanager)
+        self.assertEqual(settings['upstream'], 'network')
+        self.assertEqual(applied_choices(settings, 'v1'), upgrade_applied(networkmanager['internet_protection_applied']))
+
+    def test_simple_choices_ignore_lists_and_map_former_services(self):
+        from core.internet import applied_choices, protection_upstream
+        settings = preferences({'internet_protection': {'level': 'simple', 'provider': 'cloudflare-family'}})
+        self.assertEqual(settings['simple'], 'adguard-family')
+        self.assertEqual(protection_upstream(settings), 'adguard-family')
+        self.assertEqual(applied_choices(dict(settings, categories=['ads']), 'v2'),
+                         {'level': 'simple', 'upstream': 'adguard-family'})
+        settings = preferences({'internet_protection': {'level': 'advanced', 'upstream': 'evil', 'simple': 'evil'}})
+        self.assertEqual((settings['upstream'], settings['simple']), ('quad9-unfiltered', 'quad9'))
 
 
 class LocalDnsTests(unittest.TestCase):
@@ -133,8 +164,13 @@ class DiskDomainListTests(unittest.TestCase):
 class ProviderTests(unittest.TestCase):
     def test_provider_table_is_validated_and_names_tls_hosts(self):
         from core.dns_providers import DnsProvider, PROVIDERS, validate_providers
-        self.assertEqual(set(PROVIDERS), {'adguard', 'adguard-family', 'quad9', 'cloudflare-security', 'cloudflare-family'})
+        from core.dns_providers import NEUTRAL, PROTECTIVE
+        self.assertEqual(set(PROVIDERS), {'adguard', 'adguard-family', 'quad9', 'cloudflare-security', 'cloudflare-family',
+                                          'quad9-unfiltered', 'cloudflare', 'google'})
         self.assertEqual(PROVIDERS['quad9'].servers()[0], '9.9.9.9#dns.quad9.net')
+        self.assertEqual(PROVIDERS['quad9-unfiltered'].servers()[0], '9.9.9.10#dns10.quad9.net')
+        self.assertEqual(list(PROTECTIVE), ['quad9', 'adguard', 'adguard-family'])
+        self.assertEqual(NEUTRAL[0], 'quad9-unfiltered')
         bad = DnsProvider('bad', 'Bad', '', ('9.9.9.9\nDNS=1.2.3.4',), 'dns.example', '')
         with self.assertRaises(ValueError):
             validate_providers({'bad': bad})
@@ -210,19 +246,19 @@ class InternetBackendTests(unittest.TestCase):
             with patch.object(backend, '_firewall_query', side_effect=[(0, ''), (0, 'Global: 192.168.1.1\n')]):
                 self.assertFalse(backend.inspect_internet_protection()['supported'])
 
-    def apply(self, backend, state, provider, final=None):
+    def apply(self, backend, state, upstream, final=None):
         from core.internet import PreparedDomains
         process = Mock(returncode=0)
         process.communicate.return_value = ('{"count": 1, "digest": "d", "skipped": 0}', None)
         with tempfile.NamedTemporaryFile() as payload:
             prepared = PreparedDomains(payload.name, 1, 'd')
             with patch.object(backend, 'inspect_internet_protection', side_effect=[state, final or {
-                    'count': 1, 'supported': True, 'active': True, 'provider': provider}]), \
+                    'count': 1, 'supported': True, 'active': True, 'upstream': upstream}]), \
                  patch.object(backend, '_require_authorizer', return_value='/usr/bin/pkexec'), \
                  patch.object(backend, '_install_dns_runtime') as install, \
                  patch.object(backend, '_trusted_firewall_executable', side_effect=lambda name: '/usr/bin/' + name), \
                  patch.object(backend, 'start_process', return_value=process) as start:
-                result = backend.apply_internet_protection(prepared, provider=provider)
+                result = backend.apply_internet_protection(prepared, upstream=upstream)
         return result, start.call_args.args[0], install
 
     def test_resolved_apply_passes_mode_and_provider_and_verifies_them(self):
@@ -232,15 +268,20 @@ class InternetBackendTests(unittest.TestCase):
         self.assertEqual(command[:4], ['/usr/bin/pkexec', '--disable-internal-agent', '/usr/bin/python3', '-I'])
         self.assertEqual(command[-2:], ['resolved', 'adguard-family'])
         install.assert_not_called()
-        self.assertEqual(result['provider'], 'adguard-family')
+        self.assertEqual(result['upstream'], 'adguard-family')
         with self.assertRaisesRegex(RuntimeError, 'could not be verified'):
-            self.apply(backend, state, 'quad9', final={'count': 1, 'supported': True, 'active': True, 'provider': 'adguard'})
+            self.apply(backend, state, 'quad9', final={'count': 1, 'supported': True, 'active': True, 'upstream': 'adguard'})
+        with self.assertRaisesRegex(ValueError, 'supported DNS service'):
+            self.apply(backend, state, 'network')  # resolved has no network DNS to forward to
 
     def test_networkmanager_apply_installs_dnsmasq_and_passes_mode(self):
         backend = self.backend()
-        _, command, install = self.apply(backend, {'supported': True, 'engine': 'sqlite-setup', 'mode': 'networkmanager'}, None)
-        self.assertEqual(command[-1], 'networkmanager')
+        state = {'supported': True, 'engine': 'sqlite-setup', 'mode': 'networkmanager'}
+        _, command, install = self.apply(backend, state, 'network')
+        self.assertEqual(command[-2:], ['networkmanager', 'network'])
         install.assert_called_once()
+        _, command, _ = self.apply(backend, state, 'quad9-unfiltered')
+        self.assertEqual(command[-2:], ['networkmanager', 'quad9-unfiltered'])
 
     def test_unknown_provider_and_unsupported_system_are_not_changed(self):
         from core.internet import PreparedDomains
@@ -250,11 +291,11 @@ class InternetBackendTests(unittest.TestCase):
             with patch.object(backend, 'inspect_internet_protection', return_value={
                     'supported': True, 'engine': 'sqlite-setup', 'mode': 'resolved'}), \
                     self.assertRaisesRegex(ValueError, 'supported DNS service'):
-                backend.apply_internet_protection(prepared, provider='evil')
+                backend.apply_internet_protection(prepared, upstream='evil')
             with patch.object(backend, 'inspect_internet_protection', return_value={
                     'supported': False, 'engine': None, 'message': 'Unsupported resolver'}), \
                     self.assertRaisesRegex(RuntimeError, 'Unsupported resolver'):
-                backend.apply_internet_protection(prepared, provider='quad9')
+                backend.apply_internet_protection(prepared, upstream='quad9')
         start.assert_not_called()
 
     def test_pause_only_acts_on_an_active_filter(self):
@@ -357,6 +398,11 @@ class AutostartTests(unittest.TestCase):
         namespace = {'__name__': 'test_units'}
         exec(helper('/usr/bin/nmcli', '/usr/sbin/NetworkManager', '/usr/bin/systemctl', '/usr/bin/python3'), namespace)
         self.assertIn('domains.sqlite3 __ARGS__\n', namespace['SERVICE_UNIT'])
-        self.assertIn('--listen-port 53\n', namespace['service_unit']('networkmanager', None))
+        self.assertIn('--listen-port 53\n', namespace['service_unit']('networkmanager', 'network'))
+        # A TLS service behind NetworkManager still sends local names to its dnsmasq.
+        unit = namespace['service_unit']('networkmanager', 'quad9-unfiltered')
+        self.assertIn('--listen-port 53 --local-upstream-port 5354 --tls-upstream 9.9.9.10#dns10.quad9.net ', unit)
+        self.assertIn('--listen-port 5354 --tls-upstream 9.9.9.9#dns.quad9.net',
+                      namespace['service_unit']('resolved', 'quad9'))
         self.assertIn('OnFailure=libreward-dns-recover.service', namespace['SERVICE_UNIT'])
         self.assertIn('WantedBy=multi-user.target', namespace['SERVICE_UNIT'])
