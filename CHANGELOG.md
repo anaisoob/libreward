@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- The Apply changes bar of Internet protection is a highlighted bar at the bottom of
+  the page that stays in view while you change lists further down.
+
 - Plain wording on the Websites part of Live protection: no technical terms such as
   DNS service, domain or lookup outside “Show how protection works”.
 

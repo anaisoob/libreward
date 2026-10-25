@@ -3,7 +3,7 @@ import threading
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
-    QApplication, QButtonGroup, QCheckBox, QComboBox, QHBoxLayout, QLineEdit, QListWidget, QMessageBox,
+    QApplication, QButtonGroup, QCheckBox, QComboBox, QFrame, QHBoxLayout, QLineEdit, QListWidget, QMessageBox,
     QRadioButton, QScrollArea, QVBoxLayout, QWidget,
 )
 from backends import backend
@@ -67,16 +67,22 @@ class InternetProtectionPage:
         row.addWidget(help_button)
         box.addLayout(row)
         # Shown only while protection is on and saved choices differ from the active ones.
-        self.pending_bar = QWidget()
+        # Below the scrolling content, so it stays in view wherever the change was made.
+        self.pending_bar = QFrame()
+        self.pending_bar.setObjectName('pendingBar')
         pending = QHBoxLayout(self.pending_bar)
-        pending.setContentsMargins(0, 6, 0, 0)
-        pending_text = window.label('Your changes are saved but not active yet.', 'sectionTitle')
-        pending_text.setWordWrap(True)
-        pending.addWidget(pending_text, 1)
+        pending.setContentsMargins(18, 12, 18, 12)
+        texts = QVBoxLayout()
+        texts.setSpacing(2)
+        texts.addWidget(window.label('Your changes are not active yet', 'sectionTitle'))
+        hint = window.label('Select Apply changes to use them. Your password is needed.', 'muted')
+        hint.setWordWrap(True)
+        texts.addWidget(hint)
+        pending.addLayout(texts, 1)
         self.apply_button = window.button('Apply changes', lambda: self.apply(changes=True), variant='primary')
         pending.addWidget(self.apply_button)
         self.pending_bar.hide()
-        box.addWidget(self.pending_bar)
+        outer.addWidget(self.pending_bar)
         self.notice = window.label('', 'muted')
         self.notice.setWordWrap(True)
         box.addWidget(self.notice)

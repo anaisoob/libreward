@@ -501,6 +501,11 @@ class QtFrontendTests(unittest.TestCase):
         for word in ('blocks nothing', 'no blocking', 'domain', 'lookup', 'upstream', 'dns service', 'resolver'):
             self.assertNotIn(word, joined)
 
+    def test_apply_bar_stays_in_view_below_the_scrolling_content(self):
+        page = self.window.internet_page
+        self.assertFalse(page.scroll.widget().isAncestorOf(page.pending_bar))
+        self.assertTrue(page.page.isAncestorOf(page.pending_bar))
+
     def test_status_checks_never_undo_unapplied_choices(self):
         page = self.window.internet_page
         page.show_state({'supported': True, 'active': True, 'count': 0, 'engine': 'sqlite-dns',

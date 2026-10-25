@@ -41,6 +41,7 @@ def stylesheet(dark):
     QDialog, QMessageBox {{ background: {c['surface']}; }}
     QFrame#sidebar {{ background: {c['sidebar']}; border-right: 1px solid {c['border']}; }}
     QFrame#card {{ background: {c['surface']}; border: 1px solid {c['border']}; border-radius: 12px; }}
+    QFrame#pendingBar {{ background: {c['selected']}; border: 1px solid {c['accent']}; border-radius: 12px; }}
     QLabel {{ background: transparent; border: none; }}
     QLabel#brand {{ font-size: 21px; font-weight: 700; }}
     QLabel#logo {{ background: #278359; color: white; border-radius: 11px; font-weight: 700; font-size: 14px; }}
