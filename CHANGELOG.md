@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- The dangerous file question stands out: a red band with a warning sign, a reddish
+  background and border, and the file in a highlighted box, in dark and light themes.
+
 - Simpler, reliable notifications: one notification per checked file that updates in
   place (Waiting, Checking, result) and is never closed or replaced by the window. The
   dangerous file notification has no button: LibreWard opens by itself, or asks at once

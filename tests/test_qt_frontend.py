@@ -322,6 +322,15 @@ class QtFrontendTests(unittest.TestCase):
                     window.close()
                     window.deleteLater()
 
+    def test_threat_question_stands_out_from_ordinary_dialogs(self):
+        from ui.dialogs import ThreatsFoundDialog
+        from PySide6.QtWidgets import QWidget
+        dialog = ThreatsFoundDialog(self.window, [('/d/eicar.com', 'Eicar FOUND')])
+        self.assertEqual(dialog.objectName(), 'dangerDialog')
+        self.assertIsNotNone(dialog.findChild(QWidget, 'dangerHeader'))
+        self.assertIn('QDialog#dangerDialog', self.app.styleSheet() or self.window.styleSheet())
+        dialog.deleteLater()
+
     def test_closing_the_threat_question_asks_again_and_keep_does_not(self):
         from ui.dialogs import ThreatsFoundDialog
         with tempfile.TemporaryDirectory() as folder:

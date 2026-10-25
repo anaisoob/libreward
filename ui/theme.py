@@ -65,6 +65,11 @@ def stylesheet(dark):
     QPushButton#primaryButton:hover {{ background: #31966a; }}
     QPushButton#primaryButton:disabled {{ background: {c['field']}; color: {c['muted']}; border-color: {c['border']}; }}
     QPushButton#dangerButton {{ background: transparent; border: 1px solid #8c4b4b; color: {'#f0a5a5' if dark else '#a33232'}; }}
+    QDialog#dangerDialog {{ background: {'#241718' if dark else '#fff5f4'}; border: 2px solid {'#c24141' if dark else '#d93636'}; }}
+    QWidget#dangerHeader {{ background: {'#8f2424' if dark else '#c62f2f'}; }}
+    QLabel#dangerTitle {{ color: #ffffff; font-size: 21px; font-weight: 700; background: transparent; }}
+    QLabel#dangerSubtitle {{ color: #ffe3e3; font-size: 14px; background: transparent; }}
+    QLabel#dangerFile {{ background: {'#33201f' if dark else '#ffe9e7'}; border: 1px solid {'#6b3333' if dark else '#f2b8b2'}; border-radius: 8px; padding: 8px 10px; }}
     QPushButton#dangerButton:hover {{ background: {'#462b2b' if dark else '#fbe9e9'}; }}
     QPushButton#dangerButton:disabled {{ color: {c['muted']}; border-color: {c['border']}; }}
     QPushButton#navButton {{ text-align: left; padding: 0 12px; background: transparent; border: 1px solid transparent; color: {c['muted']}; }}

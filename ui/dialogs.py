@@ -100,8 +100,28 @@ class ProtectedFoldersDialog(QDialog):
         self.find_button.setEnabled(True)
 
 
+def danger_icon(size=48, on_red=False):
+    """A circle with an exclamation mark, the same in every theme; white on a red background."""
+    from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    circle, mark = ('#ffffff', '#c62f2f') if on_red else ('#d93636', '#ffffff')
+    painter.setPen(QPen(QColor('#ffffff'), max(2, size / 16)))
+    painter.setBrush(QColor(circle))
+    painter.drawEllipse(2, 2, size - 4, size - 4)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor(mark))
+    bar = size * .12
+    painter.drawRoundedRect(int((size - bar) / 2), int(size * .22), int(bar), int(size * .36), bar / 2, bar / 2)
+    painter.drawEllipse(int((size - bar * 1.25) / 2), int(size * .66), int(bar * 1.25), int(bar * 1.25))
+    painter.end()
+    return pixmap
+
+
 class ThreatsFoundDialog(QDialog):
-    """One clear decision for files found by Live protection."""
+    """One clear decision for files found by Live protection; looks unlike other dialogs."""
     QUARANTINE = 2
     DELETE = 3
     KEEP = 4
@@ -110,31 +130,52 @@ class ThreatsFoundDialog(QDialog):
         import os
         from html import escape
         super().__init__(parent)
+        self.setObjectName('dangerDialog')
         self.setWindowTitle('Dangerous file found' if len(threats) == 1 else 'Dangerous files found')
-        self.setMinimumWidth(520)
+        self.setMinimumWidth(560)
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 16)
+        layout.setSpacing(12)
+        # A red band with the warning sign: clearly not an ordinary dialog.
+        header = QWidget()
+        header.setObjectName('dangerHeader')
+        header.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        band = QHBoxLayout(header)
+        band.setContentsMargins(20, 18, 20, 18)
+        band.setSpacing(16)
+        icon = QLabel()
+        icon.setPixmap(danger_icon(52, on_red=True))
+        band.addWidget(icon, 0, Qt.AlignmentFlag.AlignTop)
+        heading = QVBoxLayout()
+        heading.setSpacing(4)
         title = QLabel('LibreWard found a dangerous file' if len(threats) == 1 else
                        f'LibreWard found {len(threats)} dangerous files')
-        title.setObjectName('statusValue')
-        title.setProperty('severity', 'danger')
-        title.setStyleSheet('font-size: 22px;')
-        layout.addWidget(title)
+        title.setObjectName('dangerTitle')
+        title.setWordWrap(True)
+        heading.addWidget(title)
         text = QLabel('It contains a virus or other harmful software. Do not open it.')
+        text.setObjectName('dangerSubtitle')
         text.setWordWrap(True)
-        layout.addWidget(text)
+        heading.addWidget(text)
+        band.addLayout(heading, 1)
+        layout.addWidget(header)
+        body = QVBoxLayout()
+        body.setContentsMargins(20, 4, 20, 0)
+        body.setSpacing(10)
         for path, threat in threats[:8]:
             row = QLabel(f'<b>{escape(os.path.basename(path))}</b> &nbsp;·&nbsp; {escape(threat.removesuffix(" FOUND"))}<br>'
                          f'<span style="font-size: 11px;">{escape(os.path.dirname(path))}</span>')
+            row.setObjectName('dangerFile')
             row.setTextFormat(Qt.TextFormat.RichText)
             row.setWordWrap(True)
-            layout.addWidget(row)
+            body.addWidget(row)
         if len(threats) > 8:
-            layout.addWidget(QLabel(f'…and {len(threats) - 8} more, listed on the Virus scan page.'))
+            body.addWidget(QLabel(f'…and {len(threats) - 8} more, listed on the Virus scan page.'))
         note = QLabel('Quarantine moves it to a safe place where it cannot do harm. '
                       'If it was a mistake, you can restore it later from Quarantine.')
         note.setObjectName('muted')
         note.setWordWrap(True)
-        layout.addWidget(note)
+        body.addWidget(note)
         buttons = QDialogButtonBox()
         keep = buttons.addButton('Keep file', QDialogButtonBox.ButtonRole.RejectRole)
         keep.clicked.connect(lambda: self.done(self.KEEP))
@@ -145,7 +186,9 @@ class ThreatsFoundDialog(QDialog):
         quarantine.setObjectName('primaryButton')
         quarantine.setDefault(True)
         quarantine.clicked.connect(lambda: self.done(self.QUARANTINE))
-        layout.addWidget(buttons)
+        body.addSpacing(4)
+        body.addWidget(buttons)
+        layout.addLayout(body)
 
 
 class ClamAVConsentDialog(QDialog):
