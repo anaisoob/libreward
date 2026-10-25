@@ -149,8 +149,8 @@ $app = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell
             command[0] = str(windowless)
         return command
 
-    def open_application(self):
-        subprocess.Popen(self.application_command(), stdin=subprocess.DEVNULL,
+    def open_application(self, *arguments, activation_token=None):
+        subprocess.Popen(self.application_command(*arguments), stdin=subprocess.DEVNULL,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                          creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
 

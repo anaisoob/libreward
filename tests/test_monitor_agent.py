@@ -50,8 +50,9 @@ class MonitorAgentTests(unittest.TestCase):
     def save(self, **config):
         self.config_file.write_text(json.dumps(config))
 
-    def agent(self):
-        return MonitorAgent(notify=self.notify, open_application=self.open_application, log=self.logged.append)
+    def agent(self, gui_running=False):
+        return MonitorAgent(notify=self.notify, open_application=self.open_application,
+                            gui_running=lambda: gui_running, log=self.logged.append)
 
     def scanning_agent(self, result):
         agent = self.agent()
@@ -97,10 +98,24 @@ class MonitorAgentTests(unittest.TestCase):
         self.assertEqual(self.notify.call_args.args[0], 'LibreWard — threat found')
         self.assertIn('eicar.com', self.notify.call_args.args[1])
         self.assertTrue(self.notify.call_args.kwargs['warning'])
-        self.assertIs(self.notify.call_args.kwargs['on_open'], self.open_application)
+        self.assertEqual(self.notify.call_args.kwargs['on_open'], agent.show_threats)
+        # Nobody had LibreWard open, so it opens to ask what to do.
+        self.open_application.assert_called_with('--threats', activation_token=None)
+        self.notify.call_args.kwargs['on_open']('token-1')
+        self.open_application.assert_called_with('--threats', activation_token='token-1')
         threats = read_state()['threats']
         self.assertEqual([(entry['path'], entry['threat']) for entry in threats],
                          [(path, 'Eicar-Signature FOUND')])
+
+    def test_open_window_asks_by_itself(self):
+        path = str(self.watched / 'eicar.com')
+        agent, scan = self.scanning_agent({'infected': [(path, 'Eicar FOUND')], 'infected_found': True,
+                                           'errors': False, 'warnings': False, 'stopped': False, 'scanned': 1})
+        agent.gui_running = lambda: True
+        with scan:
+            agent.scan([path])
+        self.open_application.assert_not_called()
+        self.notify.assert_called_once()
 
     def test_failed_scans_retry_and_notify_once(self):
         agent, scan = self.scanning_agent({'infected': [], 'errors': True, 'stopped': False, 'scanned': 0})

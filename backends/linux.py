@@ -74,11 +74,94 @@ class LinuxBackend(PlatformBackend):
         # list it in notification settings; routine results are not kept there.
         extended = basic + ['--hint=string:desktop-entry:libreward'] + ([] if warning else ['--transient'])
         text = ['--', title, escape(message)]
-        if on_open is not None and self._notify_with_action(
-                extended + ['--action=default=Open LibreWard', '--action=open=Open LibreWard'] + text, on_open):
-            return True
+        if on_open is not None:
+            actions = extended + ['--action=default=Open LibreWard', '--action=open=Open LibreWard']
+            # libnotify 0.8.4+ hands over the activation token; older versions only the action.
+            if self._notify_with_action(actions, text, on_open, token=True) or \
+                    self._notify_with_action(actions, text, on_open, token=False):
+                return True
         # Older libnotify versions reject the newer options.
         return any(self._notify(command + text) for command in (extended, basic))
+
+    @staticmethod
+    def _notify(command):
+        try:
+            return subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                  stderr=subprocess.DEVNULL, timeout=5, check=False).returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+
+    @staticmethod
+    def _read_all(descriptor):
+        chunks = []
+        with os.fdopen(descriptor, 'rb') as stream:
+            while chunk := stream.read(4096):
+                chunks.append(chunk)
+        return b''.join(chunks).decode('utf-8', 'replace').strip()
+
+    def _notify_with_action(self, command, text, on_open, *, token):
+        """notify-send waits with actions; answer in a thread once it was shown."""
+        import threading
+        pipes = [os.pipe(), os.pipe()] if token else []
+        if pipes:
+            # Written directly by notify-send, unlike its buffered standard output.
+            command = command + [f'--selected-action-fd={pipes[0][1]}', f'--activation-token-fd={pipes[1][1]}']
+        try:
+            process = subprocess.Popen(command + text, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                       stderr=subprocess.DEVNULL, text=True,
+                                       pass_fds=[write for _read, write in pipes])
+        except OSError:
+            process = None
+        finally:
+            for _read, write in pipes:
+                os.close(write)
+        try:
+            if process is None or process.wait(timeout=2) != 0:
+                raise ChildProcessError
+        except subprocess.TimeoutExpired:
+            pass  # shown and waiting for the user
+        except ChildProcessError:
+            if process is not None:
+                process.stdout.close()
+            for read, _write in pipes:
+                os.close(read)
+            return False
+
+        def answer():
+            with process.stdout:
+                printed = process.stdout.read().strip()
+            process.wait()
+            choice, activation = printed, None
+            if pipes:
+                choice = self._read_all(pipes[0][0]) or printed
+                activation = self._read_all(pipes[1][0]) or None
+            if choice in ('default', 'open'):
+                on_open(activation)
+
+        threading.Thread(target=answer, name='notification-action', daemon=True).start()
+        return True
+
+    # Display variables a session sets after the user manager started this agent.
+    SESSION_VARIABLES = ('WAYLAND_DISPLAY', 'DISPLAY', 'XAUTHORITY', 'XDG_SESSION_TYPE',
+                         'XDG_CURRENT_DESKTOP', 'DBUS_SESSION_BUS_ADDRESS')
+
+    def application_environment(self):
+        """The agent may start at login before GNOME exports its display; ask systemd."""
+        environment = super().application_environment()
+        executable = shutil.which('systemctl')
+        if not executable:
+            return environment
+        try:
+            result = subprocess.run([executable, '--user', 'show-environment'], stdin=subprocess.DEVNULL,
+                                    capture_output=True, text=True, timeout=5, check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            return environment
+        for line in result.stdout.splitlines() if result.returncode == 0 else []:
+            key, _separator, value = line.partition('=')
+            # Values with special characters are shell-quoted ($'…'); display names never are.
+            if key in self.SESSION_VARIABLES and value and not value.startswith("$'"):
+                environment[key] = value
+        return environment
 
     def notifications_available(self):
         return shutil.which('notify-send') is not None
@@ -115,40 +198,6 @@ class LinuxBackend(PlatformBackend):
         elif any(c in PYTHON_MODULES for c in wanted):
             commands.append(self.python_requirements_command())
         return commands
-
-    @staticmethod
-    def _notify(command):
-        try:
-            return subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                  stderr=subprocess.DEVNULL, timeout=5, check=False).returncode == 0
-        except (OSError, subprocess.TimeoutExpired):
-            return False
-
-    @staticmethod
-    def _notify_with_action(command, on_open):
-        """notify-send waits with actions; answer in a thread once it was shown."""
-        import threading
-        try:
-            process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                       stderr=subprocess.DEVNULL, text=True)
-        except OSError:
-            return False
-        try:
-            if process.wait(timeout=2) != 0:
-                process.stdout.close()
-                return False
-        except subprocess.TimeoutExpired:
-            pass  # shown and waiting for the user
-
-        def answer():
-            with process.stdout:
-                choice = process.stdout.read().strip()
-            process.wait()
-            if choice in ('default', 'open'):
-                on_open()
-
-        threading.Thread(target=answer, name='notification-action', daemon=True).start()
-        return True
 
     def _user_directory(self, name, fallback):
         import shlex

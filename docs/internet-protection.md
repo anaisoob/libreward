@@ -237,7 +237,7 @@ automated tests never change the development computer's system DNS.
 Internet protection works like the firewall: once turned on, the filter service
 runs independently of the LibreWard window. It keeps blocking when LibreWard is
 closed, after logging out and after restarts, until it is turned off on the
-Internet protection page. LibreWard needs no tray icon or login autostart for
+Live protection page (Websites). LibreWard needs no tray icon or login autostart for
 this; closing the window simply closes it.
 
 So that this is never a surprise, LibreWard explains it three times: in the

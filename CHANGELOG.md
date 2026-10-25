@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Live protection page (formerly Internet protection): protection for new files and
+  downloads is one Turn on / Turn off switch at the top, finds the Downloads folders by
+  itself, and folders can be changed with Choose folders…; website blocking follows
+  below. Folder monitoring is no longer in Settings.
+- A dangerous file found in the background opens LibreWard if it is closed (an open
+  window asks by itself) and asks what to do: Move to quarantine, Delete or Keep file.
+  Open LibreWard in the notification shows the Virus scan page and brings the window
+  forward on GNOME Wayland using the notification's activation token (libnotify 0.8.4+).
+
 - Missing components are explained with the install command for the distribution
   (dnf, zypper, apt, pacman; uv or pip when running from a virtual environment):
   missing PySide6 opens an error dialog (zenity or kdialog, otherwise a notification)

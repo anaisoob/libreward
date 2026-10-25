@@ -14,9 +14,10 @@ ClamAV, Linux firewall management and Linux domain blocking.
   exceptions, optional adult-site blocking, and disk-backed local DNS filtering on supported NetworkManager/systemd setups.
   On systemd-resolved systems the filter forwards allowed names over TLS to a chosen DNS service (AdGuard DNS, Quad9, Cloudflare).
 - Folder scans and Quick system scans with configurable exclusions.
-- Optional monitoring of selected and browser download folders for new and changed
-  files, as a background service that keeps running when the window is closed and
-  notifies the desktop (GNOME, KDE and others; no tray icon needed).
+- Live protection: one switch checks new downloads (system and browser Downloads
+  folders) for viruses in the background, also when the window is closed, with
+  desktop notifications (GNOME, KDE and others; no tray icon needed). A dangerous
+  file opens LibreWard and asks whether to quarantine or delete it.
 - Parallel scanning with `clamd` and standard scanning with `clamscan`.
 - Live progress, current-file information, cancellation and scan reports.
 - Threat detection and warnings for files that could not be fully checked.

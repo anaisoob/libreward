@@ -38,6 +38,7 @@ class QtFrontendTests(unittest.TestCase):
         self.patch('ui.main_window.load_config', return_value={'unrelated_setting': 'preserved'})
         self.patch('ui.main_window.save_config')
         self.patch('ui.internet_page.save_config')
+        self.patch('ui.file_protection.save_config')
         # Never touch the developer's login autostart.
         self.autostart = self.patch('ui.main_window.backend.remove_autostart')
         self.online = self.patch('ui.internet_page.internet_available', return_value=True)
@@ -51,6 +52,7 @@ class QtFrontendTests(unittest.TestCase):
         self.monitor_service = self.patch('ui.main_window.backend.set_monitor_service')
         self.agent_running = self.patch('ui.main_window.backend.monitor_agent_running', return_value=False)
         self.monitor_state = self.patch('ui.main_window.read_state', return_value={})
+        self.patch('ui.file_protection.read_state', new=self.monitor_state)
         self.window = QtMainWindow()
         self.wait_idle()
 
@@ -93,94 +95,132 @@ class QtFrontendTests(unittest.TestCase):
         self.assertTrue(condition())
 
     def enable_monitoring(self, folder='/selected/folder'):
-        self.window.watch_enabled.setChecked(True)
-        self.window.watched_folders.addItem(folder)
-        self.assertTrue(self.window.save_settings())
+        section = self.window.file_protection
+        with patch('ui.file_protection.default_folders', return_value=[folder]):
+            section.toggle()
+            self.wait_for(lambda: not section.busy)
+        self.assertTrue(self.window.config.get('watch_folders_enabled'))
+        return section
 
-    def test_saving_monitoring_settings_starts_and_removes_the_background_service(self):
+    def test_live_protection_replaces_the_internet_page_entry(self):
+        self.assertEqual(self.window.nav_buttons['internet'].text(), 'Live protection')
+        self.assertFalse(hasattr(self.window, 'watch_enabled'))  # no longer hidden in Settings
+
+    def test_turning_on_protects_downloads_and_starts_the_service_off_the_gui_thread(self):
+        section = self.window.file_protection
         self.wait_for(lambda: self.monitor_service.call_count == 1)
         self.monitor_service.assert_called_with(False)  # startup matches the saved settings
+        self.assertEqual(section.status.text(), 'Off')
         main_thread = threading.get_ident()
         threads = []
         self.monitor_service.side_effect = lambda _enabled: threads.append(threading.get_ident())
-        self.enable_monitoring()
-        self.wait_for(lambda: self.monitor_service.call_count == 2)
+        self.enable_monitoring(str(Path.home() / 'Downloads'))
         self.monitor_service.assert_called_with(True)
-        self.assertNotEqual(threads, [main_thread])
-        self.assertEqual(self.window.config['watched_folders'], ['/selected/folder'])
-        self.assertTrue(self.window.config['watch_folders_enabled'])
+        self.assertNotIn(main_thread, threads)
+        self.assertEqual(self.window.config['watched_folders'], [str(Path.home() / 'Downloads')])
         self.assertEqual(self.window.config['unrelated_setting'], 'preserved')
-        # Folder changes reach the running agent through the saved settings.
-        self.agent_running.return_value = True
-        self.window.watched_folders.addItem('/another/folder')
-        self.assertTrue(self.window.save_settings())
-        self.app.processEvents()
-        self.assertEqual(self.monitor_service.call_count, 2)
-        self.window.watch_enabled.setChecked(False)
-        self.assertTrue(self.window.save_settings())
+        self.assertIn('~/Downloads', section.folders_label.text())
+        self.assertEqual(section.toggle_button.text(), 'Turn off')
+        section.toggle()
         self.wait_for(lambda: self.monitor_service.call_count == 3)
         self.monitor_service.assert_called_with(False)
+        self.assertFalse(self.window.config['watch_folders_enabled'])
+        self.assertEqual(self.window.config['watched_folders'], [str(Path.home() / 'Downloads')])
 
-    def test_service_failure_is_shown_and_retried_on_save(self):
+    def test_service_failure_needs_attention_and_settings_save_retries(self):
         self.monitor_service.side_effect = OSError('Background folder monitoring needs systemd (systemctl --user).')
-        self.enable_monitoring()
-        self.wait_for(lambda: 'needs systemd' in self.window.watch_status.text())
-        self.assertIn('could not start', self.window.watch_status.text())
+        section = self.enable_monitoring()
+        self.wait_for(lambda: 'needs systemd' in section.info.text())
+        self.assertEqual(section.status.text(), 'Needs attention')
         self.monitor_service.side_effect = None
         calls = self.monitor_service.call_count
         self.assertTrue(self.window.save_settings())
         self.wait_for(lambda: self.monitor_service.call_count == calls + 1)
 
-    def test_agent_state_and_background_threats_are_shown(self):
-        with tempfile.TemporaryDirectory() as folder:
-            infected = Path(folder) / 'eicar.com'
-            infected.write_text('sample')
-            gone = Path(folder) / 'quarantined.exe'
-            self.enable_monitoring(folder)
-            self.agent_running.return_value = True
-            self.monitor_state.return_value = {
-                'updated': 1, 'message': 'Monitoring 1 folder(s), including subfolders.',
-                'last_scan': {'time': 0, 'outcome': 'Infected files found!', 'names': 'eicar.com'},
-                'threats': [{'path': str(infected), 'threat': 'Eicar-Signature FOUND'},
-                            {'path': str(gone), 'threat': 'Other FOUND'}]}
-            self.window.poll_monitor_state()
-            self.assertIn('Monitoring 1 folder', self.window.watch_status.text())
-            self.assertIn('Infected files found! (eicar.com)', self.window.watch_status.text())
-            self.assertEqual(self.window.results.rowCount(), 1)
-            self.assertEqual(self.window.results.item(0, 0).text(), str(infected))
-            self.assertFalse(self.window.findings_card.isHidden())
-            self.window.poll_monitor_state()
-            self.assertEqual(self.window.results.rowCount(), 1)
-            self.agent_running.return_value = False
-            self.window.poll_monitor_state()
-            self.assertIn('not running', self.window.watch_status.text())
-
     def test_missing_watchdog_is_explained_and_service_not_started(self):
-        with patch('ui.main_window.missing_components', return_value={'watchdog': 'No module'}), \
+        with patch('ui.file_protection.missing_components', return_value={'watchdog': 'No module'}), \
                 patch('core.dependencies.backend.dependency_install_commands',
                       return_value=['sudo dnf install python3-watchdog']):
-            self.enable_monitoring()
+            section = self.enable_monitoring()
         self.app.processEvents()
         self.assertNotIn(((True,),), [call[:1] for call in self.monitor_service.call_args_list])
-        self.assertIn('needs watchdog', self.window.watch_status.text())
-        self.assertIn('sudo dnf install python3-watchdog', self.window.watch_status.text())
+        self.assertEqual(section.status.text(), 'Needs attention')
+        self.assertIn('needs watchdog', section.info.text())
+        self.assertIn('sudo dnf install python3-watchdog', section.info.text())
 
-    def test_agent_errors_and_missing_notifications_are_shown(self):
-        self.enable_monitoring()
+    def test_agent_state_is_shown_in_plain_words(self):
+        section = self.enable_monitoring()
         self.monitor_state.return_value = {'status': 'error', 'message': 'Folder monitoring needs watchdog.'}
-        self.window.poll_monitor_state()
-        self.assertIn('stopped: Folder monitoring needs watchdog.', self.window.watch_status.text())
+        section.started_at = float('-inf')
+        section.refresh()
+        self.assertEqual(section.status.text(), 'Needs attention')
+        self.assertIn('needs watchdog', section.info.text())
         self.agent_running.return_value = True
-        self.monitor_state.return_value = {'status': 'watching', 'message': 'Monitoring 1 folder(s).',
-                                           'notifications': False}
-        with patch('ui.main_window.backend.notifications_available', return_value=False), \
+        self.monitor_state.return_value = {'status': 'watching', 'notifications': False, 'updated': 1,
+                                           'last_scan': {'time': 0, 'outcome': 'No threats found',
+                                                         'names': 'report.pdf'}}
+        with patch('ui.file_protection.backend.notifications_available', return_value=False), \
                 patch('core.dependencies.backend.dependency_install_commands',
                       return_value=['sudo dnf install libnotify']):
-            self.window.poll_monitor_state()
-        self.assertIn('Desktop notifications are unavailable', self.window.watch_status.text())
-        self.assertIn('sudo dnf install libnotify', self.window.watch_status.text())
+            section.refresh()
+        self.assertEqual(section.status.text(), 'On')
+        self.assertIn('No threats found (report.pdf)', section.info.text())
+        self.assertIn('sudo dnf install libnotify', section.info.text())
 
-    def test_closing_explains_once_that_monitoring_keeps_running(self):
+    def background_threat(self, folder, *, found=10):
+        infected = Path(folder) / 'eicar.com'
+        infected.write_text('sample')
+        self.monitor_state.return_value = {'updated': found, 'threats': [
+            {'path': str(infected), 'threat': 'Eicar-Signature FOUND', 'time': found},
+            {'path': str(Path(folder) / 'already-gone.exe'), 'threat': 'Other FOUND', 'time': found}]}
+        return infected
+
+    def test_new_background_threat_asks_once_and_quarantines_without_second_question(self):
+        from ui.dialogs import ThreatsFoundDialog
+        with tempfile.TemporaryDirectory() as folder:
+            infected = self.background_threat(folder)
+            question = self.patch('ui.main_window.QMessageBox.question')
+            with patch.object(ThreatsFoundDialog, 'exec', return_value=ThreatsFoundDialog.QUARANTINE) as asked, \
+                    patch('ui.main_window.quarantine_file', return_value='Quarantined: eicar.com') as quarantine:
+                self.window.file_protection.refresh()
+                self.wait_idle()
+                asked.assert_called_once()
+                quarantine.assert_called_once_with(str(infected), 'Eicar-Signature FOUND')
+                question.assert_not_called()
+                self.assertEqual(self.window.pages.currentIndex(), self.window.page_indices['scan'])
+                self.assertEqual(self.window.config['threats_reviewed_at'], 10)
+                self.window.monitor_state_mtime = None
+                self.window.file_protection.refresh()
+                asked.assert_called_once()
+
+    def test_closing_the_threat_question_asks_again_and_keep_does_not(self):
+        from ui.dialogs import ThreatsFoundDialog
+        with tempfile.TemporaryDirectory() as folder:
+            self.background_threat(folder)
+            with patch.object(ThreatsFoundDialog, 'exec', return_value=QDialog.DialogCode.Rejected) as asked:
+                self.window.open_background_threats()
+                self.window.open_background_threats()
+            self.assertEqual(asked.call_count, 2)
+            self.assertNotIn('threats_reviewed_at', self.window.config)
+            with patch.object(ThreatsFoundDialog, 'exec', return_value=ThreatsFoundDialog.KEEP), \
+                    patch('ui.main_window.quarantine_file') as quarantine:
+                self.window.open_background_threats()
+            quarantine.assert_not_called()
+            self.assertEqual(self.window.config['threats_reviewed_at'], 10)
+            self.assertEqual(self.window.results.rowCount(), 0)  # rows come from the page poll
+
+    def test_delete_from_threat_question_still_confirms(self):
+        from ui.dialogs import ThreatsFoundDialog
+        with tempfile.TemporaryDirectory() as folder:
+            self.background_threat(folder)
+            self.patch('ui.main_window.QMessageBox.question', return_value=QMessageBox.StandardButton.No)
+            with patch.object(ThreatsFoundDialog, 'exec', return_value=ThreatsFoundDialog.DELETE), \
+                    patch('ui.main_window.delete_file') as delete:
+                self.window.open_background_threats()
+            delete.assert_not_called()
+            self.assertNotIn('threats_reviewed_at', self.window.config)
+
+    def test_closing_explains_once_that_live_protection_keeps_working(self):
         from PySide6.QtGui import QCloseEvent
         info = self.patch('ui.internet_page.QMessageBox.information')
         self.patch('ui.main_window.backend.internet_protection_enabled', return_value=False)
@@ -189,9 +229,9 @@ class QtFrontendTests(unittest.TestCase):
         event = QCloseEvent()
         self.window.closeEvent(event)
         self.assertTrue(event.isAccepted())
-        self.assertFalse(self.window.monitor_timer.isActive())
+        self.assertFalse(self.window.file_protection.timer.isActive())
         self.assertEqual(info.call_count, 1)
-        self.assertIn('keeps checking new files', info.call_args.args[2])
+        self.assertIn('still checked for viruses', info.call_args.args[2])
         self.window.closeEvent(QCloseEvent())
         self.assertEqual(info.call_count, 1)
 
@@ -201,71 +241,58 @@ class QtFrontendTests(unittest.TestCase):
         self.agent_running.return_value = True
         self.assertFalse(self.window.maybe_auto_update_database())
 
-    def test_notification_test_reports_delivery(self):
-        with patch('ui.main_window.backend.send_desktop_notification', return_value=False) as send, \
-                patch('ui.main_window.backend.notifications_available', return_value=False), \
+    def test_test_notification_reports_delivery_with_install_hint(self):
+        section = self.window.file_protection
+        with patch('ui.file_protection.backend.send_desktop_notification', return_value=False) as send, \
+                patch('ui.file_protection.backend.notifications_available', return_value=False), \
                 patch('core.dependencies.backend.dependency_install_commands',
                       return_value=['sudo dnf install libnotify']):
-            self.window.notify_desktop('Test', 'Hello')
-            self.wait_for(lambda: 'unavailable' in self.window.notification_status.text())
-        send.assert_called_once_with('Test', 'Hello')
-        self.assertIn('sudo dnf install libnotify', self.window.notification_status.text())
-        self.window.events.put(('__NOTIFICATION__', True))
-        self.window.poll_events()
-        self.assertIn('Notification sent', self.window.notification_status.text())
+            section.test_notification()
+            self.wait_for(lambda: 'unavailable' in section.notification_status.text())
+        send.assert_called_once_with('LibreWard — notification test', 'Desktop notifications are working.')
+        self.assertIn('sudo dnf install libnotify', section.notification_status.text())
 
-    def test_second_launch_shows_the_running_window(self):
+    def test_second_launch_brings_window_forward_with_the_activation_token(self):
         from PySide6.QtNetwork import QLocalServer
         from ui.main_window import listen_for_instances, show_running_instance
         name = f'libreward-test-{os.getpid()}'
         server = listen_for_instances(self.window, name)
         try:
             self.window.hide()
-            self.assertTrue(show_running_instance(name))
-            self.wait_for(self.window.isVisible)
+            with patch.dict(os.environ, {}), \
+                    patch.object(self.window, 'open_background_threats') as threats:
+                self.assertTrue(show_running_instance(name, 'threats token-123'))
+                self.wait_for(lambda: threats.called)
+                self.assertEqual(os.environ.get('XDG_ACTIVATION_TOKEN'), 'token-123')
+            threats.assert_called_once_with(activated=True)
+            self.assertTrue(self.window.isVisible())
         finally:
             server.close()
             QLocalServer.removeServer(name)
-        self.assertFalse(show_running_instance(name))
+        self.assertFalse(show_running_instance(name, 'show'))
 
-    def test_download_folder_selection_adds_only_checked_new_folders(self):
-        from core.download_folders import DownloadFolder
-        from ui.dialogs import DownloadFoldersDialog
-        from PySide6.QtCore import Qt
-        with tempfile.TemporaryDirectory() as folder:
-            existing = str(Path(folder) / 'existing')
-            selected = str(Path(folder) / 'chosen')
-            skipped = str(Path(folder) / 'skipped')
-            self.window.watched_folders.addItem(existing)
-            suggestions = [DownloadFolder(existing, ('System Downloads',)),
-                           DownloadFolder(selected, ('Chrome',)), DownloadFolder(skipped, ('Firefox',))]
+    def test_instance_request_carries_the_token(self):
+        from ui.main_window import instance_request
+        with patch.dict(os.environ, {'XDG_ACTIVATION_TOKEN': 'abc'}):
+            self.assertEqual(instance_request(threats=True), 'threats abc')
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(instance_request(), 'show')
 
-            def accept(dialog):
-                dialog.folders.item(2).setCheckState(Qt.CheckState.Unchecked)
-                return QDialog.DialogCode.Accepted
-
-            with patch.object(DownloadFoldersDialog, 'exec', accept):
-                self.window.choose_download_folders(suggestions)
-            paths = [self.window.watched_folders.item(i).text() for i in range(self.window.watched_folders.count())]
-            self.assertEqual(paths, [existing, selected])
-            self.assertTrue(self.window.watch_enabled.isChecked())
-            self.assertIn('Save settings', self.window.watch_status.text())
-            self.assertNotIn('watched_folders', self.window.config)
-
-    def test_download_folder_search_runs_on_worker(self):
+    def test_protected_folders_dialog_finds_downloads_off_the_gui_thread(self):
+        from ui.dialogs import ProtectedFoldersDialog
         main_thread = threading.get_ident()
         observed = []
 
         def discover():
             observed.append(threading.get_ident())
-            return []
+            return ['/home/user/Downloads', '/home/user/Downloads']
 
-        with patch('ui.main_window.discover_download_folders', side_effect=discover):
-            self.window.find_download_folders()
-            self.wait_idle()
-        self.assertEqual(len(observed), 1)
-        self.assertNotEqual(observed[0], main_thread)
-        self.assertIn('No existing download folders', self.window.watch_status.text())
+        dialog = ProtectedFoldersDialog(self.window, ['/home/user/Documents'], discover=discover)
+        dialog.find()
+        self.wait_for(lambda: dialog.find_button.isEnabled())
+        self.assertEqual(dialog.folders(), ['/home/user/Documents', '/home/user/Downloads'])
+        self.assertNotEqual(observed, [main_thread])
+        dialog.deleteLater()
 
     def test_startup_populates_sidebar_pages_and_readiness(self):
         self.assertEqual(self.window.pages.count(), 6)

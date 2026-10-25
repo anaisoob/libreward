@@ -52,6 +52,11 @@ def state_file():
     return monitor_dir() / 'state.json'
 
 
+def gui_lock_file():
+    """Held by an open LibreWard window."""
+    return monitor_dir() / 'gui.lock'
+
+
 def monitor_settings(config):
     """(roots, exclude patterns) to watch, or None when monitoring is off."""
     if not config.get('watch_folders_enabled', False):
@@ -108,9 +113,10 @@ class _Discard:
 
 
 class MonitorAgent:
-    def __init__(self, *, notify=None, open_application=None, log=None):
+    def __init__(self, *, notify=None, open_application=None, gui_running=None, log=None):
         self.notify = notify or backend.send_desktop_notification
         self.open_application = open_application or backend.open_application
+        self.gui_running = gui_running or backend.gui_running
         self.log = log or _log
         self.stopped = threading.Event()
         self.config = {}
@@ -321,12 +327,21 @@ class MonitorAgent:
             'names': file_names(paths)})
         self.log(f"Automatic scan of {len(paths)} file(s): {scan_outcome(result)}")
         self.send(*scan_notification(result, paths))
+        if result.get('infected') and not self.gui_running():
+            # An open window asks what to do by itself; otherwise LibreWard opens to ask.
+            self.show_threats()
+
+    def show_threats(self, activation_token=None):
+        try:
+            self.open_application('--threats', activation_token=activation_token)
+        except OSError as exc:
+            self.log(f'Cannot open LibreWard: {exc}')
 
     # ── notifications ───────────────────────────────────────────────
 
     def send(self, title, message, warning):
         delivered = self.notify(title, message, warning=warning,
-                                on_open=self.open_application if warning else None)
+                                on_open=self.show_threats if warning else None)
         if not delivered and warning:
             # Threats and failures must reach the user, for example when the
             # desktop's notification service starts later than this agent.
@@ -341,7 +356,7 @@ class MonitorAgent:
                 continue
             if now < next_try:
                 self.undelivered.append((queued, next_try, title, message))
-            elif not self.notify(title, message, warning=True, on_open=self.open_application):
+            elif not self.notify(title, message, warning=True, on_open=self.show_threats):
                 self.undelivered.append((queued, now + NOTIFICATION_RETRY, title, message))
 
     # ── virus database ──────────────────────────────────────────────

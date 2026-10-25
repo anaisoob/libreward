@@ -24,7 +24,8 @@ class InternetProtectionPage:
         self.cancel_requested = False
         self.backend_started = False
         self.store = DomainLists(backend.data_dir())
-        self.page, outer = window.page('Internet protection', 'Block connections to unwanted website domains.')
+        self.page, outer = window.page('Live protection', 'Protection that keeps working in the background, '
+                                                          'also when LibreWard is closed.')
         self.page.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.health_timer = QTimer(self.page)
         self.health_timer.setInterval(30000)
@@ -43,7 +44,12 @@ class InternetProtectionPage:
         layout.setContentsMargins(0, 0, 0, 0)
         scroll.setWidget(content)
         outer.addWidget(scroll)
+        # Protection for new files (ui/file_protection.py) goes first.
+        self.header_layout = QVBoxLayout()
+        self.header_layout.setContentsMargins(0, 0, 0, 0)
+        layout.addLayout(self.header_layout)
         card, box = window.card()
+        box.addWidget(window.label('WEBSITES', 'eyebrow'))
         self.status = window.label('Checking Internet protection…', 'statusValue')
         box.addWidget(self.status)
         self.info = window.label('', 'muted')

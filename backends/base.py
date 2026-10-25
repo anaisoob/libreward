@@ -278,8 +278,9 @@ class PlatformBackend(ABC):
     def send_desktop_notification(self, title, message, *, warning=False, on_open=None):
         """Send without a tray; called from a worker. True when the desktop accepted it.
 
-        `on_open`, when given, adds an "Open LibreWard" action and is called from
-        a background thread if the user chooses it.
+        `on_open`, when given, adds an "Open LibreWard" action. It is called from a
+        background thread with the desktop's activation token (or None) when the
+        user chooses it; the token lets the opened window come to the front.
         """
         return False
 
@@ -323,29 +324,46 @@ class PlatformBackend(ABC):
         # variables cannot replace application modules.
         return [sys.executable, '-s', '-E', str(main), *arguments]
 
-    def open_application(self):
+    def application_environment(self):
+        """Environment for starting the GUI from the background agent."""
+        import os
+        return dict(os.environ)
+
+    def open_application(self, *arguments, activation_token=None):
         """Start the GUI; a running window comes to the front instead."""
         import subprocess
-        subprocess.Popen(self.application_command(), stdin=subprocess.DEVNULL,
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                         start_new_session=True)
+        environment = self.application_environment()
+        if activation_token:
+            # Wayland (xdg-activation) and X11 startup notification use the same token.
+            environment.update(XDG_ACTIVATION_TOKEN=activation_token, DESKTOP_STARTUP_ID=activation_token)
+        subprocess.Popen(self.application_command(*arguments), env=environment, stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
 
     @abstractmethod
     def acquire_instance_lock(self, path):
         """Exclusive lock held until the returned file is closed; None when taken."""
         ...
 
-    def monitor_agent_running(self):
-        """True while a monitoring agent of this user holds its lock."""
-        from core.monitor_agent import lock_file
+    def instance_running(self, path):
+        """True while another process holds the instance lock at `path`."""
         try:
-            lock = self.acquire_instance_lock(lock_file())
+            lock = self.acquire_instance_lock(path)
         except OSError:
             return False
         if lock is None:
             return True
         lock.close()
         return False
+
+    def monitor_agent_running(self):
+        """True while a monitoring agent of this user holds its lock."""
+        from core.monitor_agent import lock_file
+        return self.instance_running(lock_file())
+
+    def gui_running(self):
+        """True while a LibreWard window of this user is open."""
+        from core.monitor_agent import gui_lock_file
+        return self.instance_running(gui_lock_file())
 
     def set_monitor_service(self, enabled):
         """Start the agent at login and now, or remove it. Raises OSError with a message."""

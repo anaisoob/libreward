@@ -111,27 +111,27 @@ restoration and permanent deletion, retains restore metadata and does not
 overwrite an existing file at the original location. Failed actions remain
 available for retry.
 
-## Automatic folder monitoring
+## Live protection for new files
 
-In Settings, enable **Automatically scan new and changed files**, add folders
-(**Find download folders** suggests the system Downloads folder and the folders
-configured in Firefox, Chrome, Chromium, Edge, Brave, Vivaldi and Opera), and
-select **Save settings**. LibreWard includes subfolders, applies scan exclusions,
-and records existing files as a baseline when monitoring starts. Only new or
-changed files are queued; use a manual scan to check existing files. LibreWard’s
-own application data, configuration and log folders are excluded. Files wait until
-their size and modification time settle, and incomplete browser downloads until
-the final file is ready. Filesystem notifications are supplemented by a check every
-minute, which also covers network folders without notifications. Monitoring scans
-after a change and does not block opening or executing a file.
+Open **Live protection** and select **Turn on** under **New files and downloads**.
+LibreWard finds the Downloads folders of the system and of Firefox, Chrome,
+Chromium, Edge, Brave, Vivaldi and Opera by itself and checks new and changed files
+there, including subfolders. **Choose folders…** adds or removes folders. Scan
+exclusions from Settings apply. Existing files form a baseline; use a manual scan to
+check them. LibreWard’s own application data, configuration and log folders are
+excluded. Files wait until their size and modification time settle, and incomplete
+browser downloads until the final file is ready. Filesystem notifications are
+supplemented by a check every minute, which also covers network folders without
+notifications. Protection scans after a change and does not block opening or
+executing a file.
 
 ### Background service
 
 Monitoring runs in the background, independently of the window, like Internet
 protection: it keeps working when LibreWard is closed and starts again when you log
-in. Closing the window explains this once. To stop monitoring, turn it off in
-Settings and save. Saving folder or exclusion changes applies them to the running
-service within a few seconds.
+in. Closing the window explains this once. To stop it, select **Turn off** on the
+Live protection page. Folder and exclusion changes reach the running service within
+a few seconds.
 
 On Linux, LibreWard writes the systemd user service
 `~/.config/systemd/user/libreward-monitor.service`, which runs `libreward --monitor`
@@ -157,20 +157,27 @@ updated. A failed scan is retried every minute, with one notification after
 repeated failures. Files still waiting when you log out are checked after the next
 login.
 
-### Notifications and results
+### Notifications and dangerous files
 
-Each automatic batch sends a desktop notification with its result and file names.
-Results without threats are not kept in the notification list. A threat notification
-stays until dismissed and offers **Open LibreWard**; the threat also appears in
-Detected files while the file is still at its location. Deletion and quarantine
-still require confirmation. Starting LibreWard again while its window is open
-brings that window to the front.
+Each automatic check sends a desktop notification with its result and file names.
+Results without threats are not kept in the notification list. When a file is
+dangerous, the notification stays until dismissed and offers **Open LibreWard**, and:
+
+- if LibreWard is closed, it opens by itself;
+- if it is open, it comes forward (with the desktop’s activation token, so GNOME on
+  Wayland shows the window instead of a “LibreWard is ready” notice; this needs
+  libnotify 0.8.4 or newer);
+
+and asks what to do: **Move to quarantine** (recommended), **Delete** (after a
+confirmation) or **Keep file**. Closing the question asks again next time while the
+file is still there. The file is also listed under Detected files on the Virus scan
+page. Starting LibreWard again while its window is open brings that window forward.
 
 Linux notifications use `notify-send` (libnotify), which talks to the desktop’s
 notification service directly. Install your distribution’s package providing
 `notify-send` if needed (`libnotify` on Arch and Fedora, `libnotify-bin` on Debian
-and Ubuntu, `libnotify-tools` on openSUSE). Use **Test notification** in Settings
-to check delivery. A successful send means the desktop accepted the notification;
+and Ubuntu, `libnotify-tools` on openSUSE). Use **Send a test notification** on the
+Live protection page to check delivery. A successful send means the desktop accepted the notification;
 desktop notification settings and Do Not Disturb can still suppress banners.
 
 Monitoring requires `watchdog`, included in the packages and in `requirements.txt`.
@@ -178,8 +185,8 @@ When running from source, install dependencies in the Python environment used to
 launch LibreWard; the service uses the same interpreter.
 
 LibreWard checks these components and shows the install command for your
-distribution under Folder monitoring: a missing `watchdog` keeps the service from
-starting (it is not restarted in a loop), and missing `notify-send` is noted next to
-the monitoring status. After installing, select **Save settings** to start
-monitoring again. If PySide6 itself is missing, starting LibreWard from the menu
+distribution on the Live protection page: a missing `watchdog` keeps the service
+from starting (it is not restarted in a loop), and missing `notify-send` is noted
+next to the status. After installing, select **Turn off** and **Turn on** to start
+protection again. If PySide6 itself is missing, starting LibreWard from the menu
 shows an error dialog with the command instead of the window.

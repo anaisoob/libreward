@@ -64,11 +64,12 @@ Verify on Windows and a desktop Linux installation:
 - Linux firewall detection, cancelled authorization, activation and LAN/all-address rules
   in a disposable VM. Verify matching traffic and UFW/firewalld persistence.
 - Themes, exclusions and reopening resized or maximized windows.
-- Folder monitoring on GNOME (Wayland) and KDE: turn it on, close the window, add a
-  clean file and an EICAR test file to a watched folder, check both notifications and
-  **Open LibreWard**, log out and in, then turn monitoring off and confirm
-  `systemctl --user status libreward-monitor.service` shows no service. Start
-  LibreWard twice and confirm the open window comes to the front.
+- Live protection for new files on GNOME (Wayland) and KDE: turn it on, close the
+  window, download a clean file and the EICAR test file, check both notifications,
+  that LibreWard opens by itself with the threat question, and that **Open LibreWard**
+  brings an open window forward on the Virus scan page (no “is ready” notice). Log out
+  and in, turn it off and confirm `systemctl --user status libreward-monitor.service`
+  shows no service. Start LibreWard twice and confirm the open window comes forward.
 - Linux Internet protection in a disposable VM: enable, cancel authorization,
   allow/block an exact domain, update lists, pause, restart, and check IPv4/IPv6
   resolution. Verify VPN/DNS connection settings remain intact.

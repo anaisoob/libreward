@@ -82,34 +82,86 @@ class MonitorServiceTests(unittest.TestCase):
 
 @unittest.skipIf(sys.platform == 'win32', 'Linux backend')
 class NotificationActionTests(unittest.TestCase):
-    def test_open_action_runs_when_chosen(self):
+    def test_open_action_passes_the_activation_token(self):
         import subprocess
         import threading
-        chosen = threading.Event()
-        process = Mock()
-        process.wait.side_effect = [subprocess.TimeoutExpired('notify-send', 2), 0]
-        process.stdout.read.return_value = 'open\n'
-        process.stdout.__enter__ = Mock(return_value=process.stdout)
-        process.stdout.__exit__ = Mock(return_value=False)
+        chosen = []
+        answered = threading.Event()
+
+        def started(command, **kwargs):
+            # notify-send writes the action and the token to the inherited descriptors.
+            action_fd, token_fd = kwargs['pass_fds']
+            os.write(action_fd, b'open\n')
+            os.write(token_fd, b'activation-123\n')
+            process = Mock()
+            process.wait.side_effect = [subprocess.TimeoutExpired('notify-send', 2), 0]
+            process.stdout.read.return_value = ''
+            process.stdout.__enter__ = Mock(return_value=process.stdout)
+            process.stdout.__exit__ = Mock(return_value=False)
+            return process
+
+        def on_open(token):
+            chosen.append(token)
+            answered.set()
+
         with patch('backends.linux.shutil.which', return_value='/usr/bin/notify-send'), \
-                patch('backends.linux.subprocess.Popen', return_value=process) as popen:
+                patch('backends.linux.subprocess.Popen', side_effect=started) as popen:
             self.assertTrue(LinuxBackend().send_desktop_notification(
-                'LibreWard — threat found', 'eicar.com', warning=True, on_open=chosen.set))
-            self.assertTrue(chosen.wait(3))
+                'LibreWard — threat found', 'eicar.com', warning=True, on_open=on_open))
+            self.assertTrue(answered.wait(3))
+        self.assertEqual(chosen, ['activation-123'])
         command = popen.call_args.args[0]
         self.assertIn('--action=open=Open LibreWard', command)
         self.assertIn('--hint=string:desktop-entry:libreward', command)
         self.assertIn('--urgency=critical', command)
+        self.assertTrue(any(argument.startswith('--activation-token-fd=') for argument in command))
+
+    def test_notify_send_without_token_support_still_reports_the_action(self):
+        import subprocess
+        import threading
+        chosen = []
+        answered = threading.Event()
+        rejected = Mock()
+        rejected.wait.return_value = 1  # unknown option
+        waiting = Mock()
+        waiting.wait.side_effect = [subprocess.TimeoutExpired('notify-send', 2), 0]
+        waiting.stdout.read.return_value = 'default\n'
+        waiting.stdout.__enter__ = Mock(return_value=waiting.stdout)
+        waiting.stdout.__exit__ = Mock(return_value=False)
+        with patch('backends.linux.shutil.which', return_value='/usr/bin/notify-send'), \
+                patch('backends.linux.subprocess.Popen', side_effect=[rejected, waiting]) as popen:
+            self.assertTrue(LinuxBackend().send_desktop_notification(
+                'Title', 'Text', warning=True, on_open=lambda token: (chosen.append(token), answered.set())))
+            self.assertTrue(answered.wait(3))
+        self.assertEqual(chosen, [None])
+        self.assertFalse(any('--activation-token-fd' in argument for argument in popen.call_args.args[0]))
+
+    def test_gui_started_by_the_agent_gets_the_session_display(self):
+        backend = LinuxBackend()
+        shown = Mock(returncode=0, stdout="WAYLAND_DISPLAY=wayland-0\nDISPLAY=:0\nOTHER=x\nXAUTHORITY=$'odd\\n'\n")
+        with patch.dict(os.environ, {}, clear=True), \
+                patch('backends.linux.shutil.which', return_value='/usr/bin/systemctl'), \
+                patch('backends.linux.subprocess.run', return_value=shown), \
+                patch('subprocess.Popen') as popen:
+            backend.open_application('--threats', activation_token='token-9')
+        environment = popen.call_args.kwargs['env']
+        self.assertEqual(environment['WAYLAND_DISPLAY'], 'wayland-0')
+        self.assertEqual(environment['DISPLAY'], ':0')
+        self.assertNotIn('OTHER', environment)
+        self.assertNotIn('XAUTHORITY', environment)
+        self.assertEqual(environment['XDG_ACTIVATION_TOKEN'], 'token-9')
+        self.assertEqual(popen.call_args.args[0][-1], '--threats')
 
     def test_old_notify_send_falls_back_to_plain_notification(self):
         failed = Mock()
         failed.wait.return_value = 1
         with patch('backends.linux.shutil.which', return_value='/usr/bin/notify-send'), \
-                patch('backends.linux.subprocess.Popen', return_value=failed), \
+                patch('backends.linux.subprocess.Popen', return_value=failed) as popen, \
                 patch('backends.linux.subprocess.run',
                       side_effect=[Mock(returncode=1), Mock(returncode=0)]) as run:
             self.assertTrue(LinuxBackend().send_desktop_notification('Title', 'Text', warning=True,
-                                                                     on_open=lambda: None))
+                                                                     on_open=lambda _token: None))
+        self.assertEqual(popen.call_count, 2)  # with and without the token descriptor
         plain = run.call_args.args[0]
         self.assertNotIn('--hint=string:desktop-entry:libreward', plain)
         self.assertEqual(plain[-2:], ['Title', 'Text'])

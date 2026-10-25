@@ -1,59 +1,138 @@
 """Qt dialogs shared by setup and background update flows."""
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QPlainTextEdit,
     QProgressBar, QPushButton, QVBoxLayout, QWidget, QListWidget, QListWidgetItem,
 )
 
 
-class DownloadFoldersDialog(QDialog):
-    def __init__(self, parent, folders, existing=()):
+class _Relay(QObject):
+    """Delivers a worker thread's result on the GUI thread."""
+    done = Signal(object)
+
+
+class ProtectedFoldersDialog(QDialog):
+    """Folders checked by Live protection; Downloads folders are found automatically."""
+    def __init__(self, parent, folders, *, discover):
         super().__init__(parent)
-        import os
-        self.setWindowTitle('Download folders')
-        self.resize(720, 440)
+        self.discover = discover
+        self.setWindowTitle('Protected folders')
+        self.resize(620, 420)
         layout = QVBoxLayout(self)
-        note = QLabel('Select folders to monitor for new and changed files. Browser names show where '
-                      'a setting was found; they do not identify which app downloaded each file. '
-                      'Save settings after adding your selection.')
+        note = QLabel('LibreWard checks new files in these folders and their subfolders. '
+                      'Downloads folders of the system and of web browsers are usually enough.')
         note.setWordWrap(True)
         layout.addWidget(note)
-        self.folders = QListWidget()
-        existing = {os.path.normcase(os.path.realpath(path)) for path in existing}
+        self.listing = QListWidget()
+        self.listing.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
         for folder in folders:
-            item = QListWidgetItem(', '.join(folder.sources) + '\n' + folder.path)
-            item.setData(Qt.ItemDataRole.UserRole, folder.path)
-            item.setToolTip(folder.path)
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            if os.path.normcase(folder.path) in existing:
-                item.setText(item.text() + '\nAlready monitored')
-                item.setCheckState(Qt.CheckState.Unchecked)
-                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
-            else:
-                item.setCheckState(Qt.CheckState.Checked)
-            self.folders.addItem(item)
-        layout.addWidget(self.folders, 1)
-        help_text = QLabel('Browsers using “Ask where to save” can download elsewhere. Custom portable '
-                           'profiles and other applications can be added with Add folder.')
-        help_text.setWordWrap(True)
-        layout.addWidget(help_text)
-        buttons = QDialogButtonBox()
-        self.add_button = buttons.addButton('Add selected folders', QDialogButtonBox.ButtonRole.AcceptRole)
-        buttons.addButton(QDialogButtonBox.StandardButton.Cancel)
+            self.add(folder)
+        layout.addWidget(self.listing, 1)
+        row = QHBoxLayout()
+        self.find_button = QPushButton('Add Downloads folders')
+        self.find_button.clicked.connect(self.find)
+        row.addWidget(self.find_button)
+        add = QPushButton('Add folder…')
+        add.clicked.connect(self.choose)
+        row.addWidget(add)
+        remove = QPushButton('Remove')
+        remove.clicked.connect(self.remove)
+        row.addWidget(remove)
+        row.addStretch()
+        layout.addLayout(row)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Save).setObjectName('primaryButton')
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
-        self.folders.itemChanged.connect(lambda _item: self.update_selection())
-        self.update_selection()
+        self.relay = _Relay(self)
+        self.relay.done.connect(self.found)
 
-    def selected_paths(self):
-        return [self.folders.item(i).data(Qt.ItemDataRole.UserRole)
-                for i in range(self.folders.count())
-                if self.folders.item(i).checkState() == Qt.CheckState.Checked
-                and self.folders.item(i).flags() & Qt.ItemFlag.ItemIsEnabled]
+    def add(self, folder):
+        import os
+        key = os.path.normcase(os.path.realpath(folder))
+        if any(os.path.normcase(os.path.realpath(path)) == key for path in self.folders()):
+            return
+        self.listing.addItem(folder)
 
-    def update_selection(self):
-        self.add_button.setEnabled(bool(self.selected_paths()))
+    def folders(self):
+        return [self.listing.item(i).text() for i in range(self.listing.count())]
+
+    def choose(self):
+        from PySide6.QtWidgets import QFileDialog
+        folder = QFileDialog.getExistingDirectory(self, 'Choose a folder to protect')
+        if folder:
+            self.add(folder)
+
+    def remove(self):
+        for item in self.listing.selectedItems():
+            self.listing.takeItem(self.listing.row(item))
+
+    def find(self):
+        import threading
+        self.find_button.setEnabled(False)
+
+        def run():
+            try:
+                folders = self.discover()
+            except OSError:
+                folders = []
+            self.relay.done.emit(folders)
+
+        threading.Thread(target=run, name='download-folders', daemon=True).start()
+
+    def found(self, folders):
+        for folder in folders:
+            self.add(folder)
+        self.find_button.setEnabled(True)
+
+
+class ThreatsFoundDialog(QDialog):
+    """One clear decision for files found by Live protection."""
+    QUARANTINE = 2
+    DELETE = 3
+    KEEP = 4
+
+    def __init__(self, parent, threats):
+        import os
+        from html import escape
+        super().__init__(parent)
+        self.setWindowTitle('Dangerous file found' if len(threats) == 1 else 'Dangerous files found')
+        self.setMinimumWidth(520)
+        layout = QVBoxLayout(self)
+        title = QLabel('LibreWard found a dangerous file' if len(threats) == 1 else
+                       f'LibreWard found {len(threats)} dangerous files')
+        title.setObjectName('statusValue')
+        title.setProperty('severity', 'danger')
+        title.setStyleSheet('font-size: 22px;')
+        layout.addWidget(title)
+        text = QLabel('It contains a virus or other harmful software. Do not open it.')
+        text.setWordWrap(True)
+        layout.addWidget(text)
+        for path, threat in threats[:8]:
+            row = QLabel(f'<b>{escape(os.path.basename(path))}</b> &nbsp;·&nbsp; {escape(threat.removesuffix(" FOUND"))}<br>'
+                         f'<span style="font-size: 11px;">{escape(os.path.dirname(path))}</span>')
+            row.setTextFormat(Qt.TextFormat.RichText)
+            row.setWordWrap(True)
+            layout.addWidget(row)
+        if len(threats) > 8:
+            layout.addWidget(QLabel(f'…and {len(threats) - 8} more, listed on the Virus scan page.'))
+        note = QLabel('Quarantine moves it to a safe place where it cannot do harm. '
+                      'If it was a mistake, you can restore it later from Quarantine.')
+        note.setObjectName('muted')
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        buttons = QDialogButtonBox()
+        keep = buttons.addButton('Keep file', QDialogButtonBox.ButtonRole.RejectRole)
+        keep.clicked.connect(lambda: self.done(self.KEEP))
+        delete = buttons.addButton('Delete', QDialogButtonBox.ButtonRole.DestructiveRole)
+        delete.setObjectName('dangerButton')
+        delete.clicked.connect(lambda: self.done(self.DELETE))
+        quarantine = buttons.addButton('Move to quarantine', QDialogButtonBox.ButtonRole.AcceptRole)
+        quarantine.setObjectName('primaryButton')
+        quarantine.setDefault(True)
+        quarantine.clicked.connect(lambda: self.done(self.QUARANTINE))
+        layout.addWidget(buttons)
 
 
 class ClamAVConsentDialog(QDialog):

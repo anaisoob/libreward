@@ -9,6 +9,8 @@ def main():
     parser.add_argument("--qt", action="store_true", help=argparse.SUPPRESS)  # older launch commands
     # Login autostart entries of earlier versions: removed on launch, nothing is shown.
     parser.add_argument("--autostart", action="store_true", help=argparse.SUPPRESS)
+    # From a threat notification: show the dangerous files and ask what to do.
+    parser.add_argument("--threats", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--monitor", action="store_true",
                         help="run folder monitoring in the background (started by the user service)")
     args = parser.parse_args()
@@ -29,7 +31,7 @@ def main():
             backend.show_error_without_gui("LibreWard cannot start", message)
         return 1
     from ui.main_window import run
-    return run(autostart=args.autostart)
+    return run(autostart=args.autostart, threats=args.threats)
 
 
 if __name__ == "__main__":
