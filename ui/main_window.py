@@ -156,8 +156,14 @@ class QtMainWindow(QMainWindow):
         if self.threat_dialog is not None:
             self.add_to_open_question()
             return  # already asking, or confirming the answer
-        threats = [(path, threat, found) for path, threat, found, new in self.background_threats() if new]
+        listed = self.background_threats()
+        threats = [(path, threat, found) for path, threat, found, new in listed if new]
         if not threats:
+            if listed:
+                # Diagnosis: listed under Detected files, but already decided on.
+                self.log.appendPlainText(
+                    f"Not asking about {len(listed)} listed file(s): decided at "
+                    f"{self.config.get('threats_reviewed_at')}, found at {max(found for *_rest, found, _new in listed)}.")
             return
         self.threat_found = {path: found for path, _threat, found in threats}
         # Set for the question and the confirmation that may follow: status updates
