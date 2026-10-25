@@ -392,25 +392,20 @@ class QtFrontendTests(unittest.TestCase):
                              sorted([str(first), str(second)]))
             self.assertEqual(self.window.config['threats_reviewed_at'], 20)
 
-    def test_in_the_background_the_question_is_a_window_of_its_own(self):
+    def test_a_file_added_to_the_shown_question_is_never_cut_off(self):
+        from PySide6.QtWidgets import QLabel as Label
         from ui.dialogs import ThreatsFoundDialog
-        from PySide6.QtCore import Qt as QtCore
-        with tempfile.TemporaryDirectory() as folder:
-            self.background_threat(folder)
-            created = []
-
-            def answer(dialog):
-                created.append((dialog.parent(), dialog.windowModality()))
-                return QDialog.DialogCode.Rejected
-
-            with patch.object(self.window, 'isActiveWindow', return_value=False), \
-                    patch.object(ThreatsFoundDialog, 'exec', answer):
-                self.window.open_background_threats()
-            self.assertEqual(created, [(None, QtCore.WindowModality.ApplicationModal)])
-            with patch.object(self.window, 'isActiveWindow', return_value=True), \
-                    patch.object(ThreatsFoundDialog, 'exec', answer):
-                self.window.open_background_threats()
-            self.assertIs(created[1][0], self.window)
+        dialog = ThreatsFoundDialog(self.window, [('/home/user/a.zip', 'Eicar FOUND')])
+        dialog.show()
+        self.app.processEvents()
+        long_folder = '/home/user/Documents/projects/a rather long folder name/downloads'
+        dialog.add_threats([(f'{long_folder}/second-file-with-a-long-name.exe', 'Other FOUND')])
+        self.app.processEvents()
+        for row in (label for label in dialog.findChildren(Label) if label.objectName() == 'dangerFile'):
+            self.assertGreaterEqual(row.width(), row.sizeHint().width())
+            self.assertGreaterEqual(row.height(), row.sizeHint().height())
+        self.assertGreaterEqual(dialog.minimumSizeHint().width(), dialog.findChildren(Label)[0].sizeHint().width())
+        dialog.deleteLater()
 
     def test_threat_question_stands_out_from_ordinary_dialogs(self):
         from ui.dialogs import ThreatsFoundDialog

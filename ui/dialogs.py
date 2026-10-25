@@ -203,7 +203,9 @@ class ThreatsFoundDialog(QDialog):
             row.setObjectName('dangerFile')
             row.setTextFormat(Qt.TextFormat.RichText)
             row.setToolTip(path)
-            row.setMinimumHeight(row.sizeHint().height())  # never squeezed
+            # Its full size is the minimum, so the window grows for it (also when a file
+            # is added while it is shown) instead of cutting the folder off.
+            row.setMinimumSize(row.sizeHint())
             self.files.addWidget(row)
         if count > 8:
             self.files.addWidget(QLabel(f'…and {count - 8} more, listed on the Virus scan page.'))

@@ -160,16 +160,9 @@ class QtMainWindow(QMainWindow):
         if not threats:
             return
         self.threat_found = {path: found for path, _threat, found in threats}
-        # While LibreWard is in the background, the question is a window of its own:
-        # GNOME shows a new window, but does not raise an existing one (or a dialog
-        # attached to it) without a click. It still blocks the main window.
-        parent = self if self.isActiveWindow() else None
         # Set for the question and the confirmation that may follow: status updates
         # meanwhile must not ask about the same files a second time.
-        self.threat_dialog = ThreatsFoundDialog(parent, [(path, threat) for path, threat, _found in threats])
-        if parent is None:
-            self.threat_dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
-            self.threat_dialog.setWindowIcon(self.windowIcon())
+        self.threat_dialog = ThreatsFoundDialog(self, [(path, threat) for path, threat, _found in threats])
         try:
             self.switch_page('scan')
             self.restore_window()  # the question never appears without its window
