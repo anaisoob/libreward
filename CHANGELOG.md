@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Protection for new files follows download folders chosen later in a browser (can be
+  turned off in Choose folders…), shows downloads in progress (“Waiting for a download
+  to finish”) and checks a finished download at once, usually within a second instead
+  of four to seven seconds. A roadmap lists planned work, starting with blocking files
+  until they are checked.
+
 - Fix LibreWard not starting (and Open LibreWard in a threat notification doing nothing)
   while a threat found in the background was still waiting for a decision.
 

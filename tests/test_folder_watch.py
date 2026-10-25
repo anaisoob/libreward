@@ -93,6 +93,52 @@ class FolderMonitorTests(unittest.TestCase):
             finally:
                 monitor.stop()
 
+    def test_downloads_in_progress_are_named_and_finished_ones_need_no_waiting(self):
+        with tempfile.TemporaryDirectory() as folder:
+            monitor = FolderMonitor([folder], [], settle=3)
+            partial = Path(folder) / 'setup.zip.part'
+            partial.write_text('half')
+            chrome = Path(folder) / 'Unconfirmed 4711.crdownload'
+            chrome.write_text('half')
+            monitor.started(str(partial))
+            monitor.started(str(chrome))
+            self.assertEqual(sorted(monitor.downloads()), ['a download', 'setup.zip'])
+            final = Path(folder) / 'setup.zip'
+            partial.rename(final)
+            monitor.finished(str(partial))
+            monitor.changed(str(final), finished=True)
+            self.assertEqual(monitor.ready(), [str(final)])  # no 3 second settling
+            chrome.unlink()
+            self.assertEqual(monitor.downloads(), [])
+
+    def test_native_rename_of_a_partial_download_is_checked_at_once(self):
+        try:
+            import watchdog  # noqa: F401
+        except ImportError:
+            self.skipTest('watchdog required')
+        with tempfile.TemporaryDirectory() as folder:
+            monitor = FolderMonitor([folder], [], settle=30)
+            monitor.start()
+            try:
+                self.assertTrue(monitor.baseline_ready.wait(3))
+                partial = Path(folder) / 'report.pdf.crdownload'
+                partial.write_text('downloading')
+                deadline = time.monotonic() + 3
+                while time.monotonic() < deadline and not monitor.downloads():
+                    time.sleep(.02)
+                self.assertEqual(monitor.downloads(), ['report.pdf'])
+                final = Path(folder) / 'report.pdf'
+                partial.rename(final)
+                found = []
+                deadline = time.monotonic() + 3
+                while time.monotonic() < deadline and not found:
+                    found.extend(monitor.ready())
+                    time.sleep(.02)
+                self.assertEqual(found, [str(final)])  # well before the 30 second settling
+                self.assertEqual(monitor.downloads(), [])
+            finally:
+                monitor.stop()
+
     def test_file_targets_work_with_parallel_discovery(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / 'sample'

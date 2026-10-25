@@ -199,6 +199,32 @@ class QtFrontendTests(unittest.TestCase):
         self.wait_idle()
         self.assertTrue(self.window.activity.isHidden())
 
+    def test_browser_folders_and_downloads_in_progress_are_shown(self):
+        section = self.enable_monitoring(str(Path.home() / 'Downloads'))
+        self.agent_running.return_value = True
+        self.monitor_state.return_value = {'status': 'watching', 'downloading': ['setup.zip'],
+                                           'discovered_folders': [str(Path.home() / 'Browser')]}
+        section.refresh()
+        self.assertEqual(section.folders_label.text(), 'Protected folders: ~/Downloads, ~/Browser')
+        self.assertIn('Waiting for a download to finish, then checking it: setup.zip', section.info.text())
+        self.monitor_state.return_value = {'status': 'watching', 'checking': 'setup.zip'}
+        section.refresh()
+        self.assertIn('Checking setup.zip…', section.info.text())
+
+    def test_folders_dialog_can_stop_following_browsers(self):
+        from ui.dialogs import ProtectedFoldersDialog
+        section = self.enable_monitoring('/home/user/Downloads')
+
+        def choose(dialog):
+            self.assertTrue(dialog.follow_browsers.isChecked())
+            dialog.follow_browsers.setChecked(False)
+            return QDialog.DialogCode.Accepted
+
+        with patch.object(ProtectedFoldersDialog, 'exec', choose):
+            section.choose_folders()
+        self.assertIs(self.window.config['follow_download_folders'], False)
+        self.assertEqual(self.window.config['watched_folders'], ['/home/user/Downloads'])
+
     def test_service_failure_needs_attention_and_settings_save_retries(self):
         self.monitor_service.side_effect = OSError('Background folder monitoring needs systemd (systemctl --user).')
         section = self.enable_monitoring()

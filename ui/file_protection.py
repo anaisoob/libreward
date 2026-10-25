@@ -10,7 +10,12 @@ from backends import backend
 from config import save_config
 from core.dependencies import install_hint, missing_components, missing_message
 from core.download_folders import discover_download_folders
-from core.monitor_agent import monitor_dir, monitor_settings, read_state
+from core.monitor_agent import (
+    follows_browsers,
+    monitor_dir,
+    monitoring_enabled,
+    read_state,
+)
 
 from .dialogs import ProtectedFoldersDialog
 
@@ -85,7 +90,7 @@ class FileProtectionSection:
 
     @property
     def enabled(self):
-        return monitor_settings(self.window.config) is not None
+        return monitoring_enabled(self.window.config)
 
     def folders(self):
         return [path for path in self.window.config.get('watched_folders', []) if isinstance(path, str) and path]
@@ -126,12 +131,14 @@ class FileProtectionSection:
             self.apply_service()
 
     def choose_folders(self):
-        dialog = ProtectedFoldersDialog(self.window, self.folders(), discover=default_folders)
+        dialog = ProtectedFoldersDialog(self.window, self.folders(), discover=default_folders,
+                                        follow=follows_browsers(self.window.config))
         if dialog.exec() == ProtectedFoldersDialog.DialogCode.Accepted:
             folders = dialog.folders()
+            follow = dialog.follow()
             was_enabled = self.enabled
-            if self.save(watched_folders=folders, watch_folders_enabled=bool(folders) and (
-                    was_enabled or not self.folders())):
+            if self.save(watched_folders=folders, follow_download_folders=follow,
+                         watch_folders_enabled=bool(folders or follow) and (was_enabled or not self.folders())):
                 # A running agent follows the saved folders by itself.
                 if self.enabled != was_enabled or not backend.monitor_agent_running():
                     self.apply_service()
@@ -231,8 +238,13 @@ class FileProtectionSection:
             status, severity = 'On', 'success'
             info = ('New files are checked as soon as they arrive, also when LibreWard is closed. '
                     'You get a notification for each check, and LibreWard opens if a file is dangerous.')
+            downloading = [name for name in state.get('downloading') or [] if isinstance(name, str)]
             last = state.get('last_scan')
-            if isinstance(last, dict) and last.get('outcome'):
+            if state.get('checking'):
+                info += f"\nChecking {state['checking']}…"
+            elif downloading:
+                info += f"\nWaiting for a download to finish, then checking it: {', '.join(downloading)}"
+            elif isinstance(last, dict) and last.get('outcome'):
                 checked = time.strftime('%H:%M', time.localtime(last.get('time', 0)))
                 info += f"\nLast check at {checked}: {last['outcome']} ({last.get('names', '')})."
             if state.get('notifications') is False:
@@ -249,6 +261,10 @@ class FileProtectionSection:
         self.toggle_button.style().unpolish(self.toggle_button)
         self.toggle_button.style().polish(self.toggle_button)
         self.toggle_button.setEnabled(not self.busy)
+        if enabled and follows_browsers(self.window.config):
+            # Download folders the agent found in browser settings, also ones chosen later.
+            folders = list(dict.fromkeys(folders + [path for path in state.get('discovered_folders') or []
+                                                    if isinstance(path, str)]))
         names = ', '.join(folder_name(path) for path in folders)
         self.folders_label.setText('' if not folders else
                                    f'Protected folders: {names}' if self.is_on else

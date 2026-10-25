@@ -11,6 +11,7 @@ commands to run the app.
 | [Scanning](scanning.md) | Quick scans, parallelism, exclusions, progress and results |
 | [Development](development.md) | Architecture, tests and release checks |
 | [Packaging](packaging.md) | Linux packages, install layout and releases |
+| [Roadmap](roadmap.md) | Planned work, such as blocking files until they are checked |
 
 Antivirus scanning, Linux firewall management and Linux domain blocking are available.
 Traffic monitoring and browsing-history recording are not implemented.

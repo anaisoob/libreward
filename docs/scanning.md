@@ -116,11 +116,23 @@ available for retry.
 Open **Live protection** and select **Turn on** under **New files and downloads**.
 LibreWard finds the Downloads folders of the system and of Firefox, Chrome,
 Chromium, Edge, Brave, Vivaldi and Opera by itself and checks new and changed files
-there, including subfolders. **Choose folders…** adds or removes folders. Scan
+there, including subfolders. **Choose folders…** adds or removes folders. When a
+download folder is changed in a browser (or in the system's user folders) later,
+the service notices it within seconds and protects the new folder too; turn off
+**Also protect the folders my web browsers download to** in **Choose folders…** to
+protect only the listed folders. Browsers set to ask where to save each download
+can save elsewhere; add such folders yourself.
+
+While a browser downloads, the page shows **Waiting for a download to finish**
+with the file name. The file is checked as soon as the browser finishes it (when
+it renames its `.part` or `.crdownload` file, or removes the `.aria2` file), usually
+within a second, then **Checking …** and the result appear. Unfinished downloads are
+not checked: a partial file cannot be checked reliably. Scan
 exclusions from Settings apply. Existing files form a baseline; use a manual scan to
 check them. LibreWard’s own application data, configuration and log folders are
 excluded. Files wait until their size and modification time settle, and incomplete
-browser downloads until the final file is ready. Filesystem notifications are
+browser downloads until the final file is ready; other files wait about three
+seconds after their last change. Filesystem notifications are
 supplemented by a check every minute, which also covers network folders without
 notifications. Protection scans after a change and does not block opening or
 executing a file.

@@ -274,6 +274,10 @@ class PlatformBackend(ABC):
     def desktop_directory(self):
         return Path.home() / 'Desktop'
 
+    def user_directories_file(self):
+        """File naming the system Downloads folder, when the platform has one."""
+        return None
+
     def browser_profile_locations(self):
         """(Browser label, configuration root, 'chromium' or 'firefox')."""
         return []

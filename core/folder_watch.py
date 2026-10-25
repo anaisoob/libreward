@@ -21,6 +21,8 @@ class FolderMonitor:
         self.excludes = list(excludes)
         self.settle = settle
         self.pending = {}
+        # Unfinished browser downloads (partial file -> when it was last seen).
+        self.downloading = {}
         self.snapshot = {}
         self.dispatched = {}
         self.baseline_ready = threading.Event()
@@ -42,14 +44,23 @@ class FolderMonitor:
                     # an existing final file (Firefox / aria2).
                     if incomplete_download(event.src_path):
                         suffix = next(s for s in DOWNLOAD_SUFFIXES if event.src_path.lower().endswith(s))
-                        monitor.changed(event.src_path[:-len(suffix)])
+                        monitor.finished(event.src_path)
+                        monitor.changed(event.src_path[:-len(suffix)], finished=True)
                     return
                 if event.event_type not in ('created', 'modified', 'moved'):
                     return
-                if not event.is_directory:
-                    monitor.changed(getattr(event, 'dest_path', '') or event.src_path)
-                else:
+                if event.is_directory:
                     monitor.reconcile.set()
+                    return
+                destination = getattr(event, 'dest_path', '') or event.src_path
+                if event.event_type == 'moved' and incomplete_download(event.src_path):
+                    # The browser renamed its partial file: the download is complete.
+                    monitor.finished(event.src_path)
+                    monitor.changed(destination, finished=True)
+                elif incomplete_download(destination):
+                    monitor.started(destination)
+                else:
+                    monitor.changed(destination)
 
         self.reconcile = threading.Event()
         self.thread = threading.Thread(target=self._observe, args=(Handler(),), name='folder-monitor', daemon=True)
@@ -74,13 +85,48 @@ class FolderMonitor:
                 if self.observer.is_alive():
                     self.observer.join()
 
-    def changed(self, path, *, retry=False):
+    def changed(self, path, *, retry=False, finished=False):
+        """Queue a new or changed file; a finished download needs no settling time."""
         path = os.path.abspath(path)
         if not incomplete_download(path) and not path_is_excluded(path, self.excludes):
             with self.lock:
                 if retry:
                     self.dispatched.pop(path, None)
-                self.pending[path] = (time.monotonic(), None)
+                try:
+                    signature = self._signature(os.stat(path))
+                except OSError:
+                    signature = None
+                waiting = self.pending.get(path)
+                if finished:
+                    self.pending[path] = (time.monotonic() - self.settle, signature)
+                elif waiting is None or waiting[1] is None or waiting[1] != signature:
+                    self.pending[path] = (time.monotonic(), None)
+                # Otherwise unchanged since it was queued, e.g. the folder check after a
+                # finished download: keep its place instead of waiting again.
+
+    def started(self, partial):
+        partial = os.path.abspath(partial)
+        if not path_is_excluded(partial, self.excludes):
+            with self.lock:
+                self.downloading[partial] = time.monotonic()
+
+    def finished(self, partial):
+        with self.lock:
+            self.downloading.pop(os.path.abspath(partial), None)
+
+    def downloads(self):
+        """Names of downloads still in progress, for the status shown to the user."""
+        with self.lock:
+            for partial in [path for path in self.downloading if not os.path.exists(path)]:
+                del self.downloading[partial]
+            partials = sorted(self.downloading, key=self.downloading.get)
+        names = []
+        for partial in partials:
+            suffix = next(s for s in DOWNLOAD_SUFFIXES if partial.lower().endswith(s))
+            name = os.path.basename(partial[:-len(suffix)])
+            # Chrome names a download "Unconfirmed 12345" until it is saved.
+            names.append('a download' if name.startswith('Unconfirmed ') else name)
+        return names
 
     def _run(self):
         # Establish a baseline; watching is separate from a full folder scan.

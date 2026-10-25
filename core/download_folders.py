@@ -103,6 +103,34 @@ def _firefox_folders(root, default, desktop):
             yield folder, profile.name
 
 
+def settings_signature(platform_backend=None):
+    """Modification times of the files that name download folders.
+
+    Cheap enough to check every few seconds; folders are searched again only when
+    it changes, for example after choosing another download folder in a browser.
+    """
+    platform_backend = platform_backend or backend
+    files = [platform_backend.user_directories_file()]
+    for _label, root, kind in platform_backend.browser_profile_locations():
+        root = Path(root)
+        files += [root / 'profiles.ini'] if kind == 'firefox' else [root / 'Preferences']
+        try:
+            profiles = [child for child in root.iterdir() if child.is_dir()]
+        except OSError:
+            continue
+        for profile in profiles:
+            files += [profile / 'prefs.js', profile / 'user.js'] if kind == 'firefox' else [profile / 'Preferences']
+    signature = []
+    for path in files:
+        if path is None:
+            continue
+        try:
+            signature.append((str(path), path.stat().st_mtime_ns))
+        except OSError:
+            continue
+    return tuple(signature)
+
+
 def discover_download_folders(platform_backend=None):
     """Return existing folders with combined source labels, without duplicates."""
     platform_backend = platform_backend or backend

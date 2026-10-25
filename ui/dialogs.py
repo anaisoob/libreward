@@ -13,7 +13,7 @@ class _Relay(QObject):
 
 class ProtectedFoldersDialog(QDialog):
     """Folders checked by Live protection; Downloads folders are found automatically."""
-    def __init__(self, parent, folders, *, discover):
+    def __init__(self, parent, folders, *, discover, follow=True):
         super().__init__(parent)
         self.discover = discover
         self.setWindowTitle('Protected folders')
@@ -40,6 +40,10 @@ class ProtectedFoldersDialog(QDialog):
         row.addWidget(remove)
         row.addStretch()
         layout.addLayout(row)
+        self.follow_browsers = QCheckBox('Also protect the folders my web browsers download to, '
+                                         'also when I change them later')
+        self.follow_browsers.setChecked(follow)
+        layout.addWidget(self.follow_browsers)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
         buttons.button(QDialogButtonBox.StandardButton.Save).setObjectName('primaryButton')
         buttons.accepted.connect(self.accept)
@@ -57,6 +61,9 @@ class ProtectedFoldersDialog(QDialog):
 
     def folders(self):
         return [self.listing.item(i).text() for i in range(self.listing.count())]
+
+    def follow(self):
+        return self.follow_browsers.isChecked()
 
     def choose(self):
         from PySide6.QtWidgets import QFileDialog

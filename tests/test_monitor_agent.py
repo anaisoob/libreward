@@ -68,11 +68,38 @@ class MonitorAgentTests(unittest.TestCase):
 
     def test_settings_follow_switch_and_exclude_own_folders(self):
         self.assertIsNone(monitor_settings({'watched_folders': [str(self.watched)]}))
-        self.assertIsNone(monitor_settings({'watch_folders_enabled': True, 'watched_folders': []}))
+        self.assertIsNone(monitor_settings({'watch_folders_enabled': True, 'watched_folders': [],
+                                            'follow_download_folders': False}))
         roots, patterns = monitor_settings({'watch_folders_enabled': True, 'watched_folders': [str(self.watched), 3]})
         self.assertEqual(roots, [str(self.watched)])
         self.assertIn(str(self.root / 'data'), patterns)
         self.assertIn(str(self.root / 'config'), patterns)
+        # Browser download folders join the chosen ones, unless following browsers is off.
+        browser = str(self.root / 'Browser downloads')
+        config = {'watch_folders_enabled': True, 'watched_folders': [str(self.watched)]}
+        self.assertEqual(monitor_settings(config, [browser, str(self.watched)])[0], [str(self.watched), browser])
+        self.assertEqual(monitor_settings(dict(config, follow_download_folders=False), [browser])[0],
+                         [str(self.watched)])
+
+    def test_download_folder_chosen_later_in_a_browser_is_protected(self):
+        from core.download_folders import DownloadFolder
+        agent = self.agent()
+        agent.config = {'watch_folders_enabled': True, 'watched_folders': [str(self.watched)]}
+        later = str(self.root / 'Chosen later')
+        with patch('core.download_folders.settings_signature', return_value=(('prefs', 1),)), \
+                patch('core.download_folders.discover_download_folders',
+                      return_value=[DownloadFolder(str(self.watched), ('Firefox',))]) as discover:
+            agent.follow_browsers(100)
+            agent.follow_browsers(200)  # unchanged browser settings: not searched again
+        self.assertEqual(discover.call_count, 1)
+        with patch('core.download_folders.settings_signature', return_value=(('prefs', 2),)), \
+                patch('core.download_folders.discover_download_folders',
+                      return_value=[DownloadFolder(str(self.watched), ('Firefox',)), DownloadFolder(later, ('Chrome',))]):
+            agent.follow_browsers(300)
+        self.assertEqual(agent.discovered, [str(self.watched), later])
+        self.assertIn(later, monitor_settings(agent.config, agent.discovered)[0])
+        self.assertEqual(read_state()['discovered_folders'], [str(self.watched), later])
+        self.assertIn('download folder(s) chosen in a browser', self.logged[-1])
 
     def test_clean_files_notify_quietly_with_names(self):
         agent, scan = self.scanning_agent({'infected': [], 'infected_found': False, 'errors': False,

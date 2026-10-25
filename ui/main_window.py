@@ -18,7 +18,7 @@ from backends import backend
 from config import load_config, save_config
 from core.authorization import AuthorizationError
 from core.constants import APP_NAME, APP_VERSION, CLAMAV_HOMEPAGE, CLAMAV_SOURCE
-from core.monitor_agent import monitor_settings, read_state
+from core.monitor_agent import monitoring_enabled, read_state
 from core.db_manager import auto_update_due, database_summary, own_database_needs_refresh, run_freshclam_update
 from core.quarantine import (
     delete_file, delete_quarantined_file, list_quarantined_files,
@@ -1566,7 +1566,7 @@ class QtMainWindow(QMainWindow):
             self.internet_page.explain_once('internet_protection_close_notice', 'Internet protection stays on',
                 'LibreWard is closing, but Internet protection keeps blocking websites, like the firewall. '
                 'To turn it off, open LibreWard and choose Turn off under Websites on the Live protection page.')
-        if monitor_settings(self.config) is not None and backend.monitor_agent_running():
+        if monitoring_enabled(self.config) and backend.monitor_agent_running():
             self.internet_page.explain_once('folder_monitoring_close_notice', 'Live protection keeps working',
                 'LibreWard is closing, but new files and downloads are still checked for viruses. '
                 'If a file is dangerous, LibreWard tells you and opens. '

@@ -26,6 +26,7 @@ from core.scan_service import ScanService, scan_outcome
 from excludes import get_active_exclude_patterns
 
 CONFIG_INTERVAL = 2
+BROWSER_INTERVAL = 10
 STATUS_INTERVAL = 10 * 60
 RETRY_INTERVAL = 60
 DATABASE_INTERVAL = 10 * 60
@@ -57,14 +58,25 @@ def gui_lock_file():
     return monitor_dir() / 'gui.lock'
 
 
-def monitor_settings(config):
+def chosen_folders(config):
+    return [os.path.abspath(root) for root in config.get('watched_folders', []) if isinstance(root, str) and root]
+
+
+def follows_browsers(config):
+    """Also protect the folders browsers download to, including ones chosen later."""
+    return config.get('follow_download_folders', True) is not False
+
+
+def monitoring_enabled(config):
+    return bool(config.get('watch_folders_enabled', False)) and bool(chosen_folders(config) or follows_browsers(config))
+
+
+def monitor_settings(config, discovered=()):
     """(roots, exclude patterns) to watch, or None when monitoring is off."""
-    if not config.get('watch_folders_enabled', False):
+    if not monitoring_enabled(config):
         return None
-    roots = [os.path.abspath(root) for root in config.get('watched_folders', [])
-             if isinstance(root, str) and root]
-    if not roots:
-        return None
+    roots = list(dict.fromkeys(chosen_folders(config) + (
+        [os.path.abspath(path) for path in discovered] if follows_browsers(config) else [])))
     patterns = get_active_exclude_patterns(set(config.get('enabled_common_excludes', [])),
                                            config.get('user_excludes', []))
     # LibreWard's own runtime, database and config changes must not feed back
@@ -123,6 +135,9 @@ class MonitorAgent:
         self.config_mtime = None
         self.config_checked = float('-inf')
         self.settings = None
+        self.discovered = []
+        self.browser_signature = None
+        self.browser_checked = float('-inf')
         self.monitor = None
         self.monitor_retry_at = 0
         self.status = None
@@ -184,7 +199,8 @@ class MonitorAgent:
             if now - self.config_checked >= CONFIG_INTERVAL:
                 self.config_checked = now
                 self.reload_config()
-                settings = monitor_settings(self.config)
+                self.follow_browsers(now)
+                settings = monitor_settings(self.config, self.discovered)
                 if settings is None:
                     self.update_state(status='off', message='Folder monitoring is off.')
                     self.log('Folder monitoring is turned off in the settings.')
@@ -197,6 +213,27 @@ class MonitorAgent:
             self.retry_notifications()
             self.stopped.wait(1)
         return 0
+
+    def follow_browsers(self, now):
+        """Pick up a download folder chosen in a browser after protection was turned on."""
+        from core.download_folders import discover_download_folders, settings_signature
+        if not follows_browsers(self.config) or now - self.browser_checked < BROWSER_INTERVAL:
+            return
+        self.browser_checked = now
+        try:
+            signature = settings_signature()
+            if signature == self.browser_signature:
+                return
+            self.browser_signature = signature
+            discovered = [folder.path for folder in discover_download_folders()]
+        except OSError:
+            return
+        if discovered != self.discovered:
+            added = set(discovered) - set(self.discovered)
+            if self.discovered and added:
+                self.log(f'Now also protecting {len(added)} download folder(s) chosen in a browser.')
+            self.discovered = discovered
+            self.update_state(discovered_folders=discovered)
 
     def reload_config(self):
         try:
@@ -280,14 +317,21 @@ class MonitorAgent:
             return
         if monitor.error:
             self.update_state(status='error', message=f'Monitoring needs attention: {monitor.error}')
+        elif not self.settings[0]:
+            self.update_state(status='error', message='No folder to protect was found. Choose folders to protect.')
         else:
             self.update_state(status='watching',
                               message=f'Monitoring {len(self.settings[0])} folder(s), including subfolders.')
+        self.update_state(downloading=monitor.downloads()[:5])
         if time.monotonic() < self.retry_at:
             return
         paths = [path for path in monitor.ready(BATCH_SIZE) if os.path.isfile(path)]
         if paths:
-            self.scan(paths)
+            self.update_state(checking=file_names(paths))
+            try:
+                self.scan(paths)
+            finally:
+                self.update_state(checking=None)
 
     def scan(self, paths):
         _roots, patterns = self.settings

@@ -267,6 +267,9 @@ class LinuxBackend(PlatformBackend):
     def downloads_directory(self):
         return self._user_directory('DOWNLOAD', 'Downloads')
 
+    def user_directories_file(self):
+        return Path(os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.config') / 'user-dirs.dirs'
+
     def desktop_directory(self):
         return self._user_directory('DESKTOP', 'Desktop')
 
