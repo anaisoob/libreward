@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fix the dangerous file question opening a second time while its delete confirmation was
+  open, which asked to delete an already deleted file. Files already gone are removed from
+  Detected files without a question or error, and the window comes forward with the question.
+
 - Fix “Checking…” replacing the dangerous file notification when a check finished at
   about two seconds, which also kept that notification from closing.
 

@@ -152,34 +152,39 @@ class QtMainWindow(QMainWindow):
         if activated:
             self.switch_page('scan')
         self.list_background_threats()
+        if self.threat_dialog is not None:
+            return  # already asking, or confirming the answer
         threats = [(path, threat, found) for path, threat, found, new in self.background_threats() if new]
-        if not threats or self.threat_dialog is not None:
+        if not threats:
             return
-        self.switch_page('scan')
-        QApplication.alert(self)
+        # Set for the question and the confirmation that may follow: status updates
+        # meanwhile must not ask about the same files a second time.
         self.threat_dialog = ThreatsFoundDialog(self, [(path, threat) for path, threat, _found in threats])
         try:
+            self.switch_page('scan')
+            self.restore_window()  # the question never appears without its window
+            QApplication.alert(self)
             choice = self.threat_dialog.exec()
+            if choice not in (ThreatsFoundDialog.QUARANTINE, ThreatsFoundDialog.DELETE, ThreatsFoundDialog.KEEP):
+                return  # closed: asked again next time
+            files = [(path, threat) for path, threat, _found in threats]
+            if choice != ThreatsFoundDialog.KEEP and not self.handle_findings(
+                    'quarantine' if choice == ThreatsFoundDialog.QUARANTINE else 'delete', files,
+                    confirmed=choice == ThreatsFoundDialog.QUARANTINE):
+                if self.operation is not None:
+                    QMessageBox.information(self, 'Dangerous file found',
+                                            'LibreWard is busy. The file is listed under Detected files; '
+                                            'choose what to do with it when the current task has finished.')
+                return
+            updated = dict(self.config, threats_reviewed_at=max(found for _path, _threat, found in threats))
+            try:
+                save_config(updated)
+            except OSError:
+                pass
+            self.config = updated
         finally:
             self.threat_dialog.deleteLater()
             self.threat_dialog = None
-        if choice not in (ThreatsFoundDialog.QUARANTINE, ThreatsFoundDialog.DELETE, ThreatsFoundDialog.KEEP):
-            return  # closed: asked again next time
-        files = [(path, threat) for path, threat, _found in threats]
-        if choice != ThreatsFoundDialog.KEEP and not self.handle_findings(
-                'quarantine' if choice == ThreatsFoundDialog.QUARANTINE else 'delete', files,
-                confirmed=choice == ThreatsFoundDialog.QUARANTINE):
-            if self.operation is not None:
-                QMessageBox.information(self, 'Dangerous file found',
-                                        'LibreWard is busy. The file is listed under Detected files; '
-                                        'choose what to do with it when the current task has finished.')
-            return
-        updated = dict(self.config, threats_reviewed_at=max(found for _path, _threat, found in threats))
-        try:
-            save_config(updated)
-        except OSError:
-            pass
-        self.config = updated
 
     def setup_window_icon(self):
         self.setWindowIcon(app_icon())
@@ -1318,6 +1323,16 @@ class QtMainWindow(QMainWindow):
         if files is None:
             files = [(self.results.item(row, 0).text(), self.results.item(row, 1).text())
                      for row in self.selected_rows(self.results)]
+        # Files already gone (deleted or moved meanwhile) need no question and no error.
+        gone = {path for path, _threat in files if not os.path.lexists(path)}
+        if gone:
+            for row in reversed(range(self.results.rowCount())):
+                if self.results.item(row, 0).text() in gone:
+                    self.results.removeRow(row)
+            self.findings_card.setVisible(self.results.rowCount() > 0)
+            files = [(path, threat) for path, threat in files if path not in gone]
+            if not files:
+                return True
         if not files:
             return False
         message = f"Move {len(files)} selected file(s) into quarantine?" if action == "quarantine" else f"Permanently delete {len(files)} selected file(s)? This cannot be undone."

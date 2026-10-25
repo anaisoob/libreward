@@ -86,8 +86,12 @@ class QtFrontendTests(unittest.TestCase):
         self.assertIsNone(self.window.operation)
 
     def findings(self):
+        # An existing file: findings whose file is already gone are dropped without asking.
+        sample = tempfile.NamedTemporaryFile(prefix='libreward-finding-', delete=False)
+        sample.close()
+        self.addCleanup(lambda: Path(sample.name).unlink(missing_ok=True))
         self.window.results.setRowCount(1)
-        self.window.results.setItem(0, 0, QTableWidgetItem('/sample'))
+        self.window.results.setItem(0, 0, QTableWidgetItem(sample.name))
         self.window.results.setItem(0, 1, QTableWidgetItem('Test FOUND'))
         self.window.results.selectRow(0)
 
@@ -1094,6 +1098,38 @@ class QtFrontendTests(unittest.TestCase):
         release.set()
         self.wait_idle()
         self.assertTrue(self.window.scan_button.isEnabled())
+
+    def test_findings_already_gone_are_removed_without_a_question_or_error(self):
+        self.window.results.setRowCount(1)
+        self.window.results.setItem(0, 0, QTableWidgetItem('/no/longer/here.exe'))
+        self.window.results.setItem(0, 1, QTableWidgetItem('Test FOUND'))
+        self.window.results.selectRow(0)
+        delete = self.patch('ui.main_window.delete_file')
+        with patch.object(self.window, 'confirm') as confirm:
+            self.assertTrue(self.window.handle_findings('delete'))
+        confirm.assert_not_called()
+        delete.assert_not_called()
+        self.assertEqual(self.window.results.rowCount(), 0)
+        self.warning.assert_not_called()
+
+    def test_threat_question_is_not_asked_again_while_confirming(self):
+        from ui.dialogs import ThreatsFoundDialog
+        with tempfile.TemporaryDirectory() as folder:
+            self.background_threat(folder)
+            asked = []
+
+            def confirm_delete(*_args):
+                # A status update arrives while the confirmation is open.
+                self.window.monitor_state_mtime = None
+                self.window.file_protection.refresh()
+                self.window.open_background_threats()
+                return QMessageBox.StandardButton.No
+
+            self.patch('ui.main_window.QMessageBox.question', side_effect=confirm_delete)
+            with patch.object(ThreatsFoundDialog, 'exec',
+                              side_effect=lambda: asked.append(1) or ThreatsFoundDialog.DELETE):
+                self.window.open_background_threats()
+            self.assertEqual(asked, [1])
 
     def test_cancelled_quarantine_does_not_move_file(self):
         self.findings()
