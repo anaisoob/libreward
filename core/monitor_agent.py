@@ -27,6 +27,9 @@ from excludes import get_active_exclude_patterns
 
 CONFIG_INTERVAL = 2
 BROWSER_INTERVAL = 10
+HISTORY_INTERVAL = 10
+# A clamd started by the agent keeps the database loaded this long after a check.
+CLAMD_IDLE = 10 * 60
 STATUS_INTERVAL = 10 * 60
 RETRY_INTERVAL = 60
 DATABASE_INTERVAL = 10 * 60
@@ -145,6 +148,10 @@ class MonitorAgent:
         self.discovered = []
         self.browser_signature = None
         self.browser_checked = float('-inf')
+        self.history = None
+        self.history_checked = float('-inf')
+        self.clamd = None
+        self.clamd_used = 0
         self.monitor = None
         self.monitor_retry_at = 0
         self.status = None
@@ -185,6 +192,7 @@ class MonitorAgent:
             return self._loop()
         finally:
             self._stop_monitor()
+            self.release_clamd(force=True)
             thread = self.database_thread
             if thread is not None:
                 thread.join(timeout=5)
@@ -219,7 +227,9 @@ class MonitorAgent:
                     self.start_monitor(settings)
             self.check_status()
             self.maybe_update_database()
+            self.follow_downloads(now)
             self.scan_ready()
+            self.release_clamd()
             self.retry_notifications()
             self.stopped.wait(1)
         return 0
@@ -244,6 +254,29 @@ class MonitorAgent:
                 self.log(f'Now also protecting {len(added)} download folder(s) chosen in a browser.')
             self.discovered = discovered
             self.update_state(discovered_folders=discovered)
+
+    def follow_downloads(self, now):
+        """Files saved anywhere with "Save as", from the browsers' lists of downloads."""
+        from core.browser_downloads import DownloadHistory
+        if (self.monitor is None or not follows_browsers(self.config)
+                or now - self.history_checked < HISTORY_INTERVAL):
+            return
+        self.history_checked = now
+        if self.history is None:
+            self.history = DownloadHistory()  # downloads from before are not checked
+            return
+        for path in self.history.new_downloads():
+            if os.path.isfile(path):
+                # Already checked when it was in a watched folder: not checked twice.
+                self.monitor.changed(path, finished=True)
+
+    def release_clamd(self, force=False):
+        if self.clamd is not None and (force or time.monotonic() - self.clamd_used > CLAMD_IDLE):
+            try:
+                self.clamd.close()
+            except OSError as exc:
+                self.log(f'Cannot stop the faster scanner: {exc}')
+            self.clamd = None
 
     def reload_config(self):
         try:
@@ -384,12 +417,25 @@ class MonitorAgent:
         service = ScanService(_Discard(), scan_profile=self.config.get('scan_profile', 'standard'),
                               workers=self.config.get('scan_workers', 'auto'))
         self.service = service
-        # Reuse a running clamd; starting one per batch would load the database each time.
-        parallel = bool(self.config.get('parallel_scanning', True) and self.status.clamd_running)
+        # clamscan loads the whole database for every check. With clamd installed, a
+        # running system daemon is used, or the agent starts its own and keeps it for
+        # CLAMD_IDLE after the last check, so a series of downloads is checked quickly.
+        parallel = bool(self.config.get('parallel_scanning', True)
+                        and (self.status.clamd_running or self.status.clamd_path))
+        from core.scan_policy import scan_limits
+        limits = scan_limits(self.config.get('scan_profile', 'standard'), self.config.get('scan_workers', 'auto'))
+        if self.clamd is not None and (not parallel or self.clamd.limits != limits):
+            self.release_clamd(force=True)  # settings changed since it started
+        if parallel and self.clamd is None:
+            from core.clamd import ClamdSession
+            self.clamd = ClamdSession(backend, self.config.get('scan_profile', 'standard'),
+                                      self.config.get('scan_workers', 'auto'))
         try:
-            service.run(paths, patterns, self.status.runtime.clamscan, parallel=parallel)
+            service.run(paths, patterns, self.status.runtime.clamscan, parallel=parallel,
+                        session=self.clamd if parallel else None)
         finally:
             self.service = None
+            self.clamd_used = time.monotonic()
         result = service.result or {'errors': True}
         if self.stopped.is_set():
             return  # self.scanning is saved as pending for the next start

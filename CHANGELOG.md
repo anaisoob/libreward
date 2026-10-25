@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Files saved anywhere with Save as are checked too: the service reads the browsers'
+  lists of finished downloads (only the downloads, never visited websites). With clamd
+  installed, the service keeps its own clamd running for ten minutes after a check, so
+  a series of downloads is checked in a fraction of a second.
+
 - One notification follows each download: “Waiting for … to finish downloading”, then
   “Checking …” for large files, then the result. Dangerous files show a warning sign.
   New option: Notify me only when a dangerous file is found.

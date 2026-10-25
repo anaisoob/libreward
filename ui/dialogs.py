@@ -40,10 +40,16 @@ class ProtectedFoldersDialog(QDialog):
         row.addWidget(remove)
         row.addStretch()
         layout.addLayout(row)
-        self.follow_browsers = QCheckBox('Also protect the folders my web browsers download to, '
-                                         'also when I change them later')
+        self.follow_browsers = QCheckBox('Also protect everything my web browsers download, '
+                                         'wherever I save it')
         self.follow_browsers.setChecked(follow)
         layout.addWidget(self.follow_browsers)
+        privacy = QLabel('LibreWard follows the download folders set in your browsers and reads their lists of '
+                         'finished downloads. It does not read which websites you visit, and nothing leaves '
+                         'this computer.')
+        privacy.setObjectName('muted')
+        privacy.setWordWrap(True)
+        layout.addWidget(privacy)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
         buttons.button(QDialogButtonBox.StandardButton.Save).setObjectName('primaryButton')
         buttons.accepted.connect(self.accept)

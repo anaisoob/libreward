@@ -82,6 +82,22 @@ class ClamdTests(unittest.TestCase):
         backend.start_process.assert_not_called()
         backend.stop_process.assert_not_called()
 
+    def test_owned_daemon_is_reused_while_running_and_restarted_after_it_stops(self):
+        backend = Mock()
+        backend.clamd_endpoints.return_value = []
+        session = ClamdSession(backend)
+        process = Mock()
+        process.poll.return_value = None
+        session.process, session.endpoint = process, self.endpoint
+        # Already running: no new daemon, the loaded database is used again.
+        self.assertEqual(session.acquire('clamscan', None, lambda: False), self.endpoint)
+        backend.start_process.assert_not_called()
+        process.poll.return_value = 0  # it exited
+        backend.find_clamd.return_value = None
+        with self.assertRaisesRegex(OSError, 'not installed'):
+            session.acquire('clamscan', None, lambda: False)
+        self.assertIsNone(session.process)
+
     def test_stream_protocol_reports_detection(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'file'

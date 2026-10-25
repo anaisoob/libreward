@@ -186,6 +186,57 @@ class MonitorAgentTests(unittest.TestCase):
             agent.scan([path])
         self.assertEqual(self.notify.call_args.args[0], '⚠ LibreWard — dangerous file found')
 
+    def test_files_saved_anywhere_by_a_browser_are_checked(self):
+        agent = self.agent()
+        agent.config = {'watch_folders_enabled': True, 'watched_folders': [str(self.watched)]}
+        agent.monitor = Mock()
+        saved = self.root / 'Elsewhere' / 'setup.zip'
+        saved.parent.mkdir()
+        saved.write_text('data')
+        history = Mock()
+        history.new_downloads.return_value = [str(saved), str(self.root / 'gone.zip')]
+        with patch('core.browser_downloads.DownloadHistory', return_value=history):
+            agent.follow_downloads(100)  # starts from now: earlier downloads are not checked
+            history.new_downloads.assert_not_called()
+            agent.follow_downloads(105)  # within the interval
+            history.new_downloads.assert_not_called()
+            agent.follow_downloads(111)
+        agent.monitor.changed.assert_called_once_with(str(saved), finished=True)
+        agent.config['follow_download_folders'] = False
+        agent.follow_downloads(200)
+        self.assertEqual(history.new_downloads.call_count, 1)
+
+    def test_agent_keeps_its_own_clamd_between_checks_and_releases_it(self):
+        from backends.base import RuntimeInfo
+        installed = StartupStatus(RuntimeInfo('system-path', 'clamscan', 'freshclam', 'ClamAV 1.5.2', '1.5.2'),
+                                  True, True, False, True, clamd_path='/usr/sbin/clamd')
+        sessions = []
+
+        def run(service, *_args, parallel=False, session=None, **_kwargs):
+            sessions.append((parallel, session))
+            service.result = {'infected': [], 'errors': False, 'warnings': False, 'stopped': False, 'scanned': 1}
+
+        agent, _scan = self.scanning_agent({})
+        agent.status = installed
+        with patch('core.monitor_agent.ScanService.run', autospec=True, side_effect=run), \
+                patch('core.clamd.ClamdSession.close') as close:
+            agent.scan([str(self.watched / 'a')])
+            agent.scan([str(self.watched / 'b')])
+            self.assertTrue(all(parallel for parallel, _session in sessions))
+            self.assertIs(sessions[0][1], sessions[1][1])  # the database stays loaded
+            agent.release_clamd()
+            close.assert_not_called()
+            agent.clamd_used -= monitor_agent.CLAMD_IDLE + 1
+            agent.release_clamd()
+            close.assert_called_once()
+            self.assertIsNone(agent.clamd)
+            # Changed scan limits start a new daemon.
+            agent.scan([str(self.watched / 'c')])
+            first = agent.clamd
+            agent.config['scan_profile'] = 'extended'
+            agent.scan([str(self.watched / 'd')])
+            self.assertIsNot(agent.clamd, first)
+
     def test_failed_scans_retry_and_notify_once(self):
         agent, scan = self.scanning_agent({'infected': [], 'errors': True, 'stopped': False, 'scanned': 0})
         path = str(self.watched / 'file')

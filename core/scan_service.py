@@ -47,7 +47,8 @@ class ScanService:
             except ProcessLookupError:
                 pass  # process exited between poll and termination
 
-    def run(self, scan_root, exclude_patterns, clamscan_path, *, parallel=False):
+    def run(self, scan_root, exclude_patterns, clamscan_path, *, parallel=False, session=None):
+        """`session`: a ClamdSession the caller keeps running between scans and closes itself."""
         started = None
         infected_found = False
         errors_found = False
@@ -68,7 +69,7 @@ class ScanService:
         try:
             exclude_patterns = list(dict.fromkeys([*exclude_patterns, *mandatory_exclude_patterns()]))
             if parallel:
-                daemon = ClamdSession(backend, self.scan_profile, self.workers)
+                daemon = session or ClamdSession(backend, self.scan_profile, self.workers)
                 self.output_queue.put(("__STATUS__", "Preparing parallel scanner…"))
                 try:
                     endpoint = daemon.acquire(clamscan_path, _first_database_dir(),
@@ -279,7 +280,7 @@ class ScanService:
             if discovery is not None:
                 discovery.__exit__()
                 total = discovery.total
-            if daemon is not None:
+            if daemon is not None and daemon is not session:
                 try:
                     daemon.close()
                 except OSError as exc:

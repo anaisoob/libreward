@@ -113,6 +113,11 @@ class ClamdSession:
         self.reused = False
 
     def acquire(self, clamscan, database, stopped):
+        # A daemon this session started earlier keeps its database loaded.
+        if self.process is not None and self.process.poll() is None and ping(self.endpoint):
+            return self.endpoint
+        if self.process is not None:
+            self.close()  # it stopped meanwhile; start over
         for endpoint in self.backend.clamd_endpoints():
             if stopped():
                 raise ScanCancelled()
@@ -163,3 +168,6 @@ class ClamdSession:
                 self.log.close()
             if self.directory is not None:
                 self.directory.cleanup()
+            # The session can start a daemon again later.
+            self.process = self.log = self.directory = self.endpoint = None
+            self.reused = False

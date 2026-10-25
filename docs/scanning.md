@@ -120,8 +120,15 @@ there, including subfolders. **Choose folders…** adds or removes folders. When
 download folder is changed in a browser (or in the system's user folders) later,
 the service notices it within seconds and protects the new folder too; turn off
 **Also protect the folders my web browsers download to** in **Choose folders…** to
-protect only the listed folders. Browsers set to ask where to save each download
-can save elsewhere; add such folders yourself.
+protect only the listed folders.
+
+Files saved anywhere else, with **Save as** or a browser set to ask where to save,
+are found in the browsers' lists of finished downloads (Firefox, and Chrome,
+Chromium, Edge, Brave, Vivaldi and Opera) and checked within about ten seconds after
+the download finishes. LibreWard reads a private copy of each browser's history
+database after it changed, and from it only the downloads, never visited websites;
+nothing leaves the computer. Downloads made by other programs outside the protected
+folders are not checked.
 
 While a browser downloads, the page shows **Waiting for a download to finish**
 with the file name. The file is checked as soon as the browser finishes it (when
@@ -163,8 +170,12 @@ On Windows, LibreWard starts the same agent at login through the
 `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run`, and logs
 to `%APPDATA%\LibreWard\logs\monitor.log`.
 
-The service uses a running `clamd` when parallel scanning is enabled; otherwise it
-starts `clamscan` for each batch of files. While it runs, it also refreshes
+With parallel scanning enabled (the default) and `clamd` installed, the service uses
+a running system `clamd`, or starts its own and keeps it running for ten minutes
+after the last check: the virus database stays loaded (about 1 GB of memory while it
+runs), so a series of downloads is checked in a fraction of a second. Without
+`clamd`, it starts `clamscan` for each batch of files, which loads the database every
+time. Install `clamd` from **Settings → Enable antivirus protection / setup**. While it runs, it also refreshes
 LibreWard’s own virus database (when automatic updates are enabled). It pauses
 while the antivirus engine or virus database is missing and while ClamAV is being
 updated. A failed scan is retried every minute, with one notification after
