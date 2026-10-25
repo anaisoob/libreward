@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- When LibreWard was opened only to ask about a dangerous file, it closes itself after
+  the answer. The window behind the question is shaded while it is open.
+
 - Dangerous files found while the question is open join it (“LibreWard found 2
   dangerous files”), and one answer covers them all; added files are never cut off.
 

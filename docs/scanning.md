@@ -202,7 +202,10 @@ seconds; every notification is one short `notify-send` call and nothing waits fo
 click. LibreWard opens by itself if it is closed (if it is open, it asks right away)
 and asks what to do: **Move to quarantine** (recommended), **Delete** (after a
 confirmation) or **Keep file**. Dangerous files found while the question is open are
-added to it, and the answer applies to all of them. While LibreWard is open in the
+added to it, and the answer applies to all of them. While the question is open, the
+window behind it is shaded. If LibreWard was opened only to ask (by the background
+service), it closes itself after the answer and the chosen action; it stays open when
+you started it yourself, used it meanwhile, or closed the question without answering. While LibreWard is open in the
 background, GNOME does not bring its window forward without a click; the notification
 reports the file and the question waits in LibreWard. Closing the question asks again next time while the
 file is still there. The file is also listed under Detected files on the Virus scan

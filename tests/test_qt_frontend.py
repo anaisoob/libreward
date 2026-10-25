@@ -407,6 +407,54 @@ class QtFrontendTests(unittest.TestCase):
         self.assertGreaterEqual(dialog.minimumSizeHint().width(), dialog.findChildren(Label)[0].sizeHint().width())
         dialog.deleteLater()
 
+    def test_the_window_is_shaded_while_the_question_is_open(self):
+        from ui.dialogs import ThreatsFoundDialog
+        self.window.show()
+        with tempfile.TemporaryDirectory() as folder:
+            self.background_threat(folder)
+            shaded = []
+
+            def answer(_dialog):
+                layer = self.window.dim_layer
+                shaded.append(layer is not None and layer.isVisible() and layer.geometry() == self.window.rect())
+                return QDialog.DialogCode.Rejected
+
+            with patch.object(ThreatsFoundDialog, 'exec', answer):
+                self.window.open_background_threats()
+        self.assertEqual(shaded, [True])
+        self.assertFalse(self.window.dim_layer.isVisible())
+
+    def answer_threat_question(self, choice, *, opened_for_threats=True, before=None):
+        from ui.dialogs import ThreatsFoundDialog
+        with tempfile.TemporaryDirectory() as folder:
+            self.background_threat(folder)
+            self.window.config.pop('threats_reviewed_at', None)  # each case is a new detection
+            self.window.opened_for_threats = opened_for_threats
+            if before:
+                before()
+            with patch.object(ThreatsFoundDialog, 'exec', return_value=choice), \
+                    patch('ui.main_window.quarantine_file', return_value='Quarantined'), \
+                    patch.object(self.window, 'close') as close:
+                self.window.open_background_threats()
+                self.wait_idle()
+                deadline = time.monotonic() + 2
+                while not close.called and time.monotonic() < deadline:
+                    self.app.processEvents()
+                    time.sleep(.01)
+            return close.called
+
+    def test_opened_only_for_the_question_it_closes_after_the_answer(self):
+        from ui.dialogs import ThreatsFoundDialog
+        self.assertTrue(self.answer_threat_question(ThreatsFoundDialog.QUARANTINE))
+        self.assertTrue(self.answer_threat_question(ThreatsFoundDialog.KEEP))
+
+    def test_it_stays_open_when_started_or_used_by_the_user_or_not_answered(self):
+        from ui.dialogs import ThreatsFoundDialog
+        self.assertFalse(self.answer_threat_question(ThreatsFoundDialog.QUARANTINE, opened_for_threats=False))
+        self.assertFalse(self.answer_threat_question(QDialog.DialogCode.Rejected))  # closed without an answer
+        self.assertFalse(self.answer_threat_question(ThreatsFoundDialog.KEEP,
+                                                     before=lambda: self.window.user_switch_page('settings')))
+
     def test_threat_question_stands_out_from_ordinary_dialogs(self):
         from ui.dialogs import ThreatsFoundDialog
         from PySide6.QtWidgets import QWidget

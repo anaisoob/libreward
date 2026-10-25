@@ -58,6 +58,10 @@ class QtMainWindow(QMainWindow):
         self.monitor_state_mtime = None
         self.threat_dialog = None
         self.threat_found = {}
+        # Opened by the background service only to ask about a dangerous file: closes
+        # itself after the answer, unless the user did something else in it.
+        self.opened_for_threats = False
+        self.dim_layer = None
         self.quarantine_items = 0
         # Pages built earlier (Live protection) may report state before later ones exist.
         self.shell_ready = False
@@ -169,11 +173,16 @@ class QtMainWindow(QMainWindow):
         # Set for the question and the confirmation that may follow: status updates
         # meanwhile must not ask about the same files a second time.
         self.threat_dialog = ThreatsFoundDialog(self, [(path, threat) for path, threat, _found in threats])
+        answered = False
         try:
             self.switch_page('scan')
             self.restore_window()  # the question never appears without its window
             QApplication.alert(self)
-            choice = self.threat_dialog.exec()
+            self.dim(True)
+            try:
+                choice = self.threat_dialog.exec()
+            finally:
+                self.dim(False)
             # Files added while the question was open are part of the decision.
             threats = [(path, threat, self.threat_found[path]) for path, threat in self.threat_dialog.threats]
             if choice not in (ThreatsFoundDialog.QUARANTINE, ThreatsFoundDialog.DELETE, ThreatsFoundDialog.KEEP):
@@ -193,12 +202,13 @@ class QtMainWindow(QMainWindow):
             except OSError:
                 pass
             self.config = updated
+            answered = True
         finally:
             self.threat_dialog.deleteLater()
             self.threat_dialog = None
             # Files found during the confirmation were not in the question: ask about them next.
             shown = {path for path, _threat, _found in threats}
-            QTimer.singleShot(0, self, lambda: self.ask_about_threats_found_meanwhile(shown))
+            QTimer.singleShot(0, self, lambda: self.ask_about_threats_found_meanwhile(shown, answered))
 
     def add_to_open_question(self):
         """New dangerous files join the question that is already open."""
@@ -213,9 +223,39 @@ class QtMainWindow(QMainWindow):
             dialog.add_threats([(path, threat) for path, threat, _found in new])
             QApplication.alert(dialog)
 
-    def ask_about_threats_found_meanwhile(self, shown):
+    def ask_about_threats_found_meanwhile(self, shown, answered=False):
         if any(new and path not in shown for path, _threat, _found, new in self.background_threats()):
             self.open_background_threats()
+        elif answered and self.opened_for_threats:
+            self.close_when_idle()
+
+    def close_when_idle(self):
+        """Close once the chosen quarantine or deletion has finished."""
+        if not self.opened_for_threats or self.threat_dialog is not None:
+            return
+        if self.operation is not None or QApplication.activeModalWidget() is not None:
+            QTimer.singleShot(200, self, self.close_when_idle)
+            return
+        self.close()
+
+    def dim(self, on):
+        """A soft shadow over the window while the dangerous file question is open."""
+        if on:
+            if self.dim_layer is None:
+                self.dim_layer = QWidget(self)
+                self.dim_layer.setObjectName('dimLayer')
+                self.dim_layer.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+                self.dim_layer.setStyleSheet('QWidget#dimLayer { background: rgba(0, 0, 0, 140); }')
+            self.dim_layer.setGeometry(self.rect())
+            self.dim_layer.raise_()
+            self.dim_layer.show()
+        elif self.dim_layer is not None:
+            self.dim_layer.hide()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self.dim_layer is not None and self.dim_layer.isVisible():
+            self.dim_layer.setGeometry(self.rect())
 
     def setup_window_icon(self):
         self.setWindowIcon(app_icon())
@@ -262,7 +302,7 @@ class QtMainWindow(QMainWindow):
             nav.setCheckable(True)
             nav.setMinimumHeight(46)
             nav.setIconSize(QSize(20, 20))
-            nav.clicked.connect(lambda checked=False, k=key: self.switch_page(k))
+            nav.clicked.connect(lambda checked=False, k=key: self.user_switch_page(k))
             self.nav_buttons[key] = nav
             if key == "about":
                 side.addStretch()
@@ -304,6 +344,10 @@ class QtMainWindow(QMainWindow):
             if self.operation:
                 self.firewall_status.setText('Waiting for the current operation before checking firewall…')
             self.maybe_refresh_firewall()
+
+    def user_switch_page(self, key):
+        self.opened_for_threats = False  # the user is using LibreWard: keep it open
+        self.switch_page(key)
 
     def update_protection_badge(self):
         """How many Live protection parts are on, next to its navigation entry."""
@@ -1139,6 +1183,7 @@ class QtMainWindow(QMainWindow):
     def start_scan(self, roots):
         if self.operation is not None:
             return
+        self.opened_for_threats = False
         if not roots or any(not root or not os.path.isdir(root) for root in roots):
             QMessageBox.information(self, "Scan folder", "Choose an existing folder to scan.")
             return
@@ -1677,6 +1722,8 @@ def handle_instance_request(window, request):
     window.log.appendPlainText('Brought forward by another start of LibreWard '
                                f"({'with' if token else 'without'} an activation token from the desktop).")
     window.restore_window()
+    if action != 'threats':
+        window.opened_for_threats = False  # started by the user: stays open
     if action == 'threats':
         QTimer.singleShot(0, lambda: window.open_background_threats(activated=True))
 
@@ -1732,6 +1779,7 @@ def run(autostart=False, threats=False):
     window.instance_server = listen_for_instances(window, name)
     window.show()
     if threats:
+        window.opened_for_threats = True
         window.when_shown(lambda: window.open_background_threats(activated=True))
     try:
         return app.exec()
