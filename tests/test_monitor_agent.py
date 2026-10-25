@@ -250,6 +250,19 @@ class MonitorAgentTests(unittest.TestCase):
             agent.scan([str(self.watched / 'd')])
             self.assertIsNot(agent.clamd, first)
 
+    def test_threat_notification_numbers_are_shared_with_the_window(self):
+        path = str(self.watched / 'eicar.com')
+        Path(path).write_text('sample')
+        agent, scan = self.scanning_agent({'infected': [(path, 'Eicar FOUND')], 'infected_found': True,
+                                           'errors': False, 'warnings': False, 'stopped': False, 'scanned': 1})
+        with scan, patch.object(monitor_agent.backend, 'notification_number', return_value=57):
+            agent.scan([path])
+        self.assertEqual(read_state()['threat_notifications'], {path: 57})
+        self.assertIn('Threat notification 57 for eicar.com.', self.logged)
+        Path(path).unlink()
+        agent.forget_handled_threats()
+        self.assertEqual(read_state()['threat_notifications'], {})
+
     def test_threat_notification_is_removed_once_the_file_is_handled(self):
         quarantined = self.watched / 'eicar.com'
         kept = self.watched / 'kept.exe'

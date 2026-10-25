@@ -413,10 +413,14 @@ class MonitorAgent:
             # Quarantined or deleted, or kept with "Keep file".
             if not os.path.lexists(path) or found <= reviewed:
                 del self.threat_notices[path]
+                notices = dict(self.state.get('threat_notifications') or {})
+                notices.pop(path, None)
+                self.update_state(threat_notifications=notices)
                 if all(other != key for other, _found in self.threat_notices.values()):
+                    number = backend.notification_number(key)
                     closed = self.close_notification(key)
-                    self.log(f'{os.path.basename(path)} was handled; its notification was '
-                             f"{'closed' if closed else 'not closed (the desktop did not confirm it)'}.")
+                    self.log(f'{os.path.basename(path)} was handled; notification {number} was '
+                             f"{'closed' if closed else 'not closed (already closed, or the desktop did not confirm it)'}.")
 
     def scan(self, paths):
         _roots, patterns = self.settings
@@ -513,8 +517,15 @@ class MonitorAgent:
                 self.send(title, message, warning, replace=key)
             if not dangerous:
                 self.forget_notification(key)  # finished; a later check starts a new one
+        number = backend.notification_number(key)
+        if dangerous:
+            self.log(f'Threat notification {number or "(number unknown)"} for {file_names(paths)}.')
         for path, _threat in result.get('infected', []):
             self.threat_notices[path] = (key, found)
+        # The window closes the notification once it shows the question.
+        notices = dict(self.state.get('threat_notifications') or {})
+        notices.update({path: number for path, _threat in result.get('infected', []) if number})
+        self.update_state(threat_notifications=notices)
         if result.get('infected') and not self.gui_running():
             # An open window asks what to do by itself; otherwise LibreWard opens to ask.
             self.show_threats()

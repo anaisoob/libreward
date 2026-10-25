@@ -111,8 +111,10 @@ class LinuxBackend(PlatformBackend):
         icon = Path(__file__).resolve().parent.parent / 'assets/icons/libreward-256.png'
         # Warnings (dangerous files, failed checks) show the theme's exclamation mark icon.
         icon = 'dialog-warning' if warning else icon if icon.is_file() else 'libreward'
-        basic = [executable, '--app-name=LibreWard', f'--icon={icon}',
-                 '--urgency=' + ('critical' if warning else 'normal')]
+        # Normal urgency also for warnings: GNOME moves the banner to the notification
+        # list after a few seconds. LibreWard opens and asks about a dangerous file
+        # anyway, and critical banners stayed on screen and piled up.
+        basic = [executable, '--app-name=LibreWard', f'--icon={icon}', '--urgency=normal']
         # No desktop-entry hint and no --transient: with either, GNOME Shell
         # removes the banner almost at once (for the hint, while LibreWard has
         # focus, as when testing notifications from the window).
@@ -258,11 +260,18 @@ class LinuxBackend(PlatformBackend):
         with self._notification_lock:
             self._notification_ids.pop(replace, None)
 
+    def notification_number(self, replace):
+        with self._notification_lock:
+            return self._notification_ids.get(replace)
+
     def close_desktop_notification(self, replace):
         with self._notification_lock:
             number = self._notification_ids.pop(replace, None)
+        return self.close_notification_number(number) if number else False
+
+    def close_notification_number(self, number):
         gdbus = shutil.which('gdbus')
-        if not number or not gdbus:
+        if not gdbus or not isinstance(number, int) or number <= 0:
             return False
         try:
             return subprocess.run(

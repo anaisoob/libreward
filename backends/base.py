@@ -301,6 +301,14 @@ class PlatformBackend(ABC):
     def forget_desktop_notification(self, replace):
         """The notification of this key is final: a later one with the key starts anew."""
 
+    def notification_number(self, replace):
+        """The desktop's number of the notification last sent with this key, or None."""
+        return None
+
+    def close_notification_number(self, number):
+        """Close a notification by the desktop's number (also from another process)."""
+        return False
+
     def close_desktop_notification(self, replace):
         """Remove the notification last sent with this `replace` key; True when closed."""
         return False

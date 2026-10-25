@@ -13,7 +13,9 @@ class DesktopNotificationTests(unittest.TestCase):
             self.assertTrue(LinuxBackend().send_desktop_notification(
                 'LibreWard', 'file <test> & other', warning=True))
         args = run.call_args.args[0]
-        self.assertIn('--urgency=critical', args)
+        # Warnings are not critical: their banners must not stay and pile up on screen.
+        self.assertIn('--urgency=normal', args)
+        self.assertIn('--icon=dialog-warning', args)
         self.assertEqual(args[-2:], ['LibreWard', 'file &lt;test&gt; &amp; other'])
         self.assertEqual(run.call_args.kwargs['timeout'], 5)
 

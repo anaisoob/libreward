@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Dangerous file notifications are no longer critical: GNOME moves them to the
+  notification list after a few seconds instead of keeping them on screen. LibreWard
+  closes the notification as soon as its window asks about the file, and the service log
+  names each notification's number.
+
 - A dangerous file notification is now one notification from one process (its number is
   read at once through `stdbuf`), so no identical duplicates pile up and it closes once
   the file is handled.

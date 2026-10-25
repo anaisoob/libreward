@@ -322,6 +322,16 @@ class QtFrontendTests(unittest.TestCase):
                     window.close()
                     window.deleteLater()
 
+    def test_the_question_replaces_the_threat_notification(self):
+        from ui.dialogs import ThreatsFoundDialog
+        with tempfile.TemporaryDirectory() as folder:
+            infected = self.background_threat(folder)
+            self.monitor_state.return_value['threat_notifications'] = {str(infected): 57}
+            with patch.object(ThreatsFoundDialog, 'exec', return_value=QDialog.DialogCode.Rejected), \
+                    patch('ui.main_window.backend.close_notification_number') as close:
+                self.window.open_background_threats()
+            close.assert_called_once_with(57)
+
     def test_closing_the_threat_question_asks_again_and_keep_does_not(self):
         from ui.dialogs import ThreatsFoundDialog
         with tempfile.TemporaryDirectory() as folder:

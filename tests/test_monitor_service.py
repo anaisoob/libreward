@@ -159,7 +159,7 @@ class NotificationActionTests(unittest.TestCase):
         command = popen.call_args.args[0]
         self.assertIn('--action=open=Open LibreWard', command)
         self.assertNotIn('--hint=string:desktop-entry:libreward', command)
-        self.assertIn('--urgency=critical', command)
+        self.assertIn('--urgency=normal', command)
         self.assertTrue(any(argument.startswith('--activation-token-fd=') for argument in command))
 
     def test_notify_send_without_token_support_still_reports_the_action(self):
