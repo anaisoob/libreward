@@ -248,6 +248,24 @@ class NotificationActionTests(unittest.TestCase):
             self.assertFalse(backend.close_desktop_notification('check:eicar.com'))  # already closed
         LinuxBackend._notification_ids.clear()
 
+    def test_a_number_of_an_already_closed_notification_is_not_kept(self):
+        import subprocess
+        LinuxBackend._notification_ids.clear()
+        LinuxBackend._notification_ids['check:/d/eicar.com'] = 5  # from an earlier test, already dismissed
+        waiting = Mock()
+        waiting.wait.side_effect = subprocess.TimeoutExpired('notify-send', 2)
+        with patch('backends.linux.shutil.which', side_effect=lambda name: f'/usr/bin/{name}'), \
+                patch('backends.linux.subprocess.run', return_value=Mock(returncode=0, stdout='31\n')) as run, \
+                patch('backends.linux.subprocess.Popen', return_value=waiting) as popen, \
+                patch('backends.linux.threading.Thread'):
+            LinuxBackend().send_desktop_notification('Threat', 'eicar.com', warning=True,
+                                                     on_open=lambda _token: None, replace='check:/d/eicar.com')
+        self.assertIn('--replace-id=5', run.call_args.args[0])  # asked to replace the old one…
+        self.assertIn('--replace-id=31', popen.call_args.args[0])  # …but the desktop's new number is used
+        self.assertEqual(LinuxBackend._notification_ids['check:/d/eicar.com'], 31)
+        LinuxBackend().forget_desktop_notification('check:/d/eicar.com')
+        self.assertNotIn('check:/d/eicar.com', LinuxBackend._notification_ids)
+
     def test_firefox_based_browsers_are_found(self):
         labels = {label for label, _root, kind in LinuxBackend().browser_profile_locations() if kind == 'firefox'}
         self.assertTrue({'Firefox', 'LibreWolf', 'Waterfox', 'Floorp', 'Zen', 'LibreWolf (Flatpak)'} <= labels)

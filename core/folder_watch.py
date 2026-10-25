@@ -21,8 +21,10 @@ class FolderMonitor:
         self.excludes = list(excludes)
         self.settle = settle
         self.pending = {}
-        # Unfinished browser downloads (partial file -> when it was last seen).
+        # Unfinished browser downloads (partial file -> when it was last seen), and
+        # finished files with the partial file they came from.
         self.downloading = {}
+        self.completed = {}
         self.snapshot = {}
         self.dispatched = {}
         self.baseline_ready = threading.Event()
@@ -44,8 +46,9 @@ class FolderMonitor:
                     # an existing final file (Firefox / aria2).
                     if incomplete_download(event.src_path):
                         suffix = next(s for s in DOWNLOAD_SUFFIXES if event.src_path.lower().endswith(s))
-                        monitor.finished(event.src_path)
-                        monitor.changed(event.src_path[:-len(suffix)], finished=True)
+                        final = event.src_path[:-len(suffix)]
+                        monitor.finished(event.src_path, final)
+                        monitor.changed(final, finished=True)
                     return
                 if event.event_type not in ('created', 'modified', 'moved'):
                     return
@@ -53,12 +56,16 @@ class FolderMonitor:
                     monitor.reconcile.set()
                     return
                 destination = getattr(event, 'dest_path', '') or event.src_path
-                if event.event_type == 'moved' and incomplete_download(event.src_path):
-                    # The browser renamed its partial file: the download is complete.
-                    monitor.finished(event.src_path)
-                    monitor.changed(destination, finished=True)
-                elif incomplete_download(destination):
+                renamed_partial = event.event_type == 'moved' and incomplete_download(event.src_path)
+                if incomplete_download(destination):
+                    # Chrome renames "Unconfirmed 123.crdownload" to "name.crdownload".
+                    if renamed_partial:
+                        monitor.finished(event.src_path)
                     monitor.started(destination)
+                elif renamed_partial:
+                    # The browser renamed its partial file: the download is complete.
+                    monitor.finished(event.src_path, destination)
+                    monitor.changed(destination, finished=True)
                 else:
                     monitor.changed(destination)
 
@@ -110,23 +117,28 @@ class FolderMonitor:
             with self.lock:
                 self.downloading[partial] = time.monotonic()
 
-    def finished(self, partial):
+    def finished(self, partial, final=None):
+        partial = os.path.abspath(partial)
         with self.lock:
-            self.downloading.pop(os.path.abspath(partial), None)
+            self.downloading.pop(partial, None)
+            if final is not None:
+                self.completed[os.path.abspath(final)] = partial
+                while len(self.completed) > 256:
+                    self.completed.pop(next(iter(self.completed)))
+
+    def came_from(self, final):
+        """The partial file a finished download had, once; None for other files."""
+        with self.lock:
+            return self.completed.pop(os.path.abspath(final), None)
 
     def downloads(self):
-        """Names of downloads still in progress, for the status shown to the user."""
+        """(partial file, name or None) of downloads in progress, for the status shown to the user."""
         with self.lock:
             for partial in [path for path in self.downloading if not os.path.exists(path)]:
                 del self.downloading[partial]
             partials = sorted(self.downloading, key=self.downloading.get)
-        names = []
-        for partial in partials:
-            suffix = next(s for s in DOWNLOAD_SUFFIXES if partial.lower().endswith(s))
-            name = os.path.basename(partial[:-len(suffix)])
-            # Chrome names a download "Unconfirmed 12345" until it is saved.
-            names.append('a download' if name.startswith('Unconfirmed ') else name)
-        return names
+        return [(partial, download_name(partial)) for partial in partials]
+
 
     def _run(self):
         # Establish a baseline; watching is separate from a full folder scan.
@@ -201,3 +213,14 @@ class FolderMonitor:
             self.observer.stop()
         if self.thread:
             self.thread.join(timeout=.1)
+
+
+def download_name(partial):
+    """The file's real name, or None while the browser uses a temporary one."""
+    suffix = next(s for s in DOWNLOAD_SUFFIXES if partial.lower().endswith(s))
+    name = os.path.basename(partial[:-len(suffix)])
+    # Chrome says "Unconfirmed 12345" until the download is saved; Firefox uses a
+    # random name without extension while its save dialog is open.
+    if name.startswith('Unconfirmed ') or '.' not in name.strip('.'):
+        return None
+    return name

@@ -121,15 +121,18 @@ class LinuxBackend(PlatformBackend):
             previous = self._notification_ids.get(replace) if replace else None
         replacing = [f'--replace-id={previous}'] if previous else []
         if on_open is not None:
-            if replace and not previous:
+            if replace:
                 # notify-send waits for the user with actions and prints nothing until
                 # then; show it once without them to learn its number, so it can be
                 # closed later (for example after the file was moved to quarantine).
-                previous = self._notify(basic + ['--print-id'] + text, read_id=True)
-                replacing = [f'--replace-id={previous}'] if previous else []
-                if previous:
-                    with self._notification_lock:
-                        self._notification_ids[replace] = previous
+                # The desktop returns a new number if the earlier one was closed.
+                number = self._notify(basic + replacing + ['--print-id'] + text, read_id=True)
+                replacing = [f'--replace-id={number}'] if number else []
+                with self._notification_lock:
+                    if number:
+                        self._notification_ids[replace] = number
+                    else:
+                        self._notification_ids.pop(replace, None)
             actions = basic + replacing + ['--action=default=Open LibreWard', '--action=open=Open LibreWard']
             # libnotify 0.8.4+ hands over the activation token; older versions only the action.
             if self._notify_with_action(actions, text, on_open, token=True) or \
@@ -234,6 +237,10 @@ class LinuxBackend(PlatformBackend):
 
     def notifications_available(self):
         return shutil.which('notify-send') is not None
+
+    def forget_desktop_notification(self, replace):
+        with self._notification_lock:
+            self._notification_ids.pop(replace, None)
 
     def close_desktop_notification(self, replace):
         with self._notification_lock:

@@ -102,12 +102,14 @@ class FolderMonitorTests(unittest.TestCase):
             chrome.write_text('half')
             monitor.started(str(partial))
             monitor.started(str(chrome))
-            self.assertEqual(sorted(monitor.downloads()), ['a download', 'setup.zip'])
+            self.assertEqual(sorted(name or '' for _partial, name in monitor.downloads()), ['', 'setup.zip'])
             final = Path(folder) / 'setup.zip'
             partial.rename(final)
-            monitor.finished(str(partial))
+            monitor.finished(str(partial), str(final))
             monitor.changed(str(final), finished=True)
             self.assertEqual(monitor.ready(), [str(final)])  # no 3 second settling
+            self.assertEqual(monitor.came_from(str(final)), str(partial))
+            self.assertIsNone(monitor.came_from(str(final)))
             chrome.unlink()
             self.assertEqual(monitor.downloads(), [])
 
@@ -126,7 +128,7 @@ class FolderMonitorTests(unittest.TestCase):
                 deadline = time.monotonic() + 3
                 while time.monotonic() < deadline and not monitor.downloads():
                     time.sleep(.02)
-                self.assertEqual(monitor.downloads(), ['report.pdf'])
+                self.assertEqual([name for _partial, name in monitor.downloads()], ['report.pdf'])
                 final = Path(folder) / 'report.pdf'
                 partial.rename(final)
                 found = []
@@ -136,6 +138,36 @@ class FolderMonitorTests(unittest.TestCase):
                     time.sleep(.02)
                 self.assertEqual(found, [str(final)])  # well before the 30 second settling
                 self.assertEqual(monitor.downloads(), [])
+                self.assertEqual(monitor.came_from(str(final)), str(partial))
+            finally:
+                monitor.stop()
+
+    def test_temporary_download_names_are_not_shown(self):
+        from core.folder_watch import download_name
+        self.assertEqual(download_name('/d/setup.zip.part'), 'setup.zip')
+        self.assertEqual(download_name('/d/report.pdf.crdownload'), 'report.pdf')
+        self.assertIsNone(download_name('/d/Xq7Lp2.part'))  # Firefox while its save dialog is open
+        self.assertIsNone(download_name('/d/Unconfirmed 4711.crdownload'))
+
+    def test_chrome_naming_its_download_keeps_it_in_progress(self):
+        try:
+            import watchdog  # noqa: F401
+        except ImportError:
+            self.skipTest('watchdog required')
+        with tempfile.TemporaryDirectory() as folder:
+            monitor = FolderMonitor([folder], [], settle=30)
+            monitor.start()
+            try:
+                self.assertTrue(monitor.baseline_ready.wait(3))
+                unconfirmed = Path(folder) / 'Unconfirmed 4711.crdownload'
+                unconfirmed.write_text('downloading')
+                named = Path(folder) / 'setup.zip.crdownload'
+                unconfirmed.rename(named)
+                deadline = time.monotonic() + 3
+                while time.monotonic() < deadline and monitor.downloads() != [(str(named), 'setup.zip')]:
+                    time.sleep(.02)
+                self.assertEqual(monitor.downloads(), [(str(named), 'setup.zip')])
+                self.assertEqual(monitor.ready(), [])
             finally:
                 monitor.stop()
 

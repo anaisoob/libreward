@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Threat notifications close reliably after quarantine or delete, also after testing
+  the same file name several times. “Waiting” no longer shows the temporary random
+  name Firefox uses while its save dialog is open (“Waiting for a download…”), and a
+  Chrome download keeps its notification when Chrome gives it its real name.
+
 - Downloads in LibreWolf, Waterfox, Floorp and Zen are found too. A threat notification
   closes once the file is moved to quarantine, deleted or kept; a cancelled download
   loses its “Waiting” notification. A file is no longer checked a second time when the

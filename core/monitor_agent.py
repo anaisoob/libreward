@@ -143,6 +143,7 @@ class MonitorAgent:
                  log=None):
         self.notify = notify or backend.send_desktop_notification
         self.close_notification = close_notification or backend.close_desktop_notification
+        self.forget_notification = backend.forget_desktop_notification
         self.open_application = open_application or backend.open_application
         self.gui_running = gui_running or backend.gui_running
         self.log = log or _log
@@ -170,7 +171,7 @@ class MonitorAgent:
         self.database_checked = time.monotonic() - DATABASE_INTERVAL + 60
         self.undelivered = []
         # Downloads announced in a notification, which later shows their result:
-        # name -> None while downloading, or when it disappeared.
+        # partial file -> None while downloading, or when it disappeared.
         self.announced = {}
         # Threat notifications by file, removed once the file is gone (quarantined, deleted).
         self.threat_notices = {}
@@ -375,7 +376,7 @@ class MonitorAgent:
             self.update_state(status='watching',
                               message=f'Monitoring {len(self.settings[0])} folder(s), including subfolders.')
         downloads = monitor.downloads()
-        self.update_state(downloading=downloads[:5])
+        self.update_state(downloading=[name or 'a download' for _partial, name in downloads][:5])
         self.announce(downloads)
         self.forget_handled_threats()
         if time.monotonic() < self.retry_at:
@@ -389,21 +390,21 @@ class MonitorAgent:
                 self.update_state(checking=None)
 
     def announce(self, downloads):
+        """downloads: (partial file, real name or None) from FolderMonitor.downloads()."""
         now = time.monotonic()
-        # Chrome calls a download "Unconfirmed …" (shown as 'a download') until it
-        # has a name; announce it once it does.
-        for name in downloads:
-            if name != 'a download' and name not in self.announced and not threats_only(self.config):
-                self.send('LibreWard — download', f'Waiting for {name} to finish downloading. '
-                          'LibreWard checks it for viruses right after.', False, replace=f'download:{name}')
-            if name != 'a download':
-                self.announced[name] = None
-        for name, gone in list(self.announced.items()):
-            if name not in downloads and gone is None:
-                self.announced[name] = now
+        current = {partial for partial, _name in downloads}
+        for partial, name in downloads:
+            if partial not in self.announced and not threats_only(self.config):
+                what = name or 'a download'  # no temporary or random names
+                self.send('LibreWard — download', f'Waiting for {what} to finish downloading. '
+                          'LibreWard checks it for viruses right after.', False, replace=f'download:{partial}')
+            self.announced[partial] = None
+        for partial, gone in list(self.announced.items()):
+            if partial not in current and gone is None:
+                self.announced[partial] = now
             elif gone is not None and now - gone > STALE_DOWNLOAD:
-                del self.announced[name]
-                self.close_notification(f'download:{name}')
+                del self.announced[partial]
+                self.close_notification(f'download:{partial}')
 
     def forget_handled_threats(self):
         """Remove a threat notification once its file was handled in LibreWard."""
@@ -419,9 +420,12 @@ class MonitorAgent:
     def scan(self, paths):
         _roots, patterns = self.settings
         self.scanning = paths
-        name = os.path.basename(paths[0])
-        key = f'download:{name}' if len(paths) == 1 and name in self.announced else f'check:{name}'
-        self.announced.pop(name, None)
+        partial = self.monitor.came_from(paths[0]) if len(paths) == 1 and self.monitor is not None else None
+        if partial is not None and partial in self.announced:
+            del self.announced[partial]
+            key = f'download:{partial}'  # the download's own notification shows the result
+        else:
+            key = f'check:{paths[0]}'
         done = threading.Event()
 
         def slow():
@@ -494,6 +498,8 @@ class MonitorAgent:
         with self.notification_lock:
             if dangerous or not threats_only(self.config):
                 self.send(title, message, warning, replace=key)
+            if not dangerous:
+                self.forget_notification(key)  # finished; a later check starts a new one
         for path, _threat in result.get('infected', []):
             self.threat_notices[path] = (key, found)
         if result.get('infected') and not self.gui_running():
