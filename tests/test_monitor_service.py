@@ -81,6 +81,51 @@ class MonitorServiceTests(unittest.TestCase):
 
 
 @unittest.skipIf(sys.platform == 'win32', 'Linux backend')
+class RemovalTests(unittest.TestCase):
+    def test_uninstall_removes_the_invoking_users_service(self):
+        from backends.linux import remove_user_monitor_service
+        with tempfile.TemporaryDirectory() as home:
+            units = Path(home) / '.config/systemd/user'
+            (units / 'default.target.wants').mkdir(parents=True)
+            unit = units / MONITOR_UNIT
+            unit.write_text('[Unit]\n')
+            (units / 'default.target.wants' / MONITOR_UNIT).symlink_to(unit)
+            other = units / 'other.service'
+            other.write_text('[Unit]\n')
+            with patch('pwd.getpwnam', return_value=Mock(pw_dir=home)), \
+                    patch('backends.linux.shutil.which', return_value='/usr/bin/systemctl'), \
+                    patch('backends.linux.subprocess.run') as run:
+                self.assertIn('Removed', remove_user_monitor_service('anaisoob'))
+            self.assertFalse(unit.exists())
+            self.assertFalse((units / 'default.target.wants' / MONITOR_UNIT).is_symlink())
+            self.assertTrue(other.exists())
+            commands = [call.args[0] for call in run.call_args_list]
+            self.assertEqual(commands[0], ['/usr/bin/systemctl', '--user', '--machine=anaisoob@.host',
+                                           'disable', '--now', MONITOR_UNIT])
+            self.assertEqual(commands[1][-1], 'daemon-reload')
+            with patch('pwd.getpwnam', return_value=Mock(pw_dir=home)):
+                self.assertIsNone(remove_user_monitor_service('anaisoob'))  # nothing left
+        with patch('pwd.getpwnam', side_effect=KeyError('nobody')):
+            self.assertIsNone(remove_user_monitor_service('missing'))
+
+    def test_cleanup_script_finds_the_user_behind_sudo_or_pkexec(self):
+        import importlib.util
+        root = Path(__file__).resolve().parents[1]
+        spec = importlib.util.spec_from_file_location('system_cleanup_script', root / 'packaging/system_cleanup.py')
+        script = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(script)
+        with patch.dict(os.environ, {'SUDO_USER': 'anaisoob'}, clear=True):
+            self.assertEqual(script.invoking_user(), 'anaisoob')
+        with patch.dict(os.environ, {'SUDO_USER': 'root'}, clear=True):
+            self.assertIsNone(script.invoking_user())
+        with patch.dict(os.environ, {'PKEXEC_UID': '1000'}, clear=True), \
+                patch('pwd.getpwuid', return_value=Mock(pw_name='ana')):
+            self.assertEqual(script.invoking_user(), 'ana')
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertIsNone(script.invoking_user())
+
+
+@unittest.skipIf(sys.platform == 'win32', 'Linux backend')
 class NotificationActionTests(unittest.TestCase):
     def test_open_action_passes_the_activation_token(self):
         import subprocess

@@ -38,8 +38,11 @@ not on upgrades: RPM `%preun` when `$1` is 0, Debian `prerm remove`, Arch
 The cleanup uses the same transaction as **Turn off**, removes only files
 LibreWard wrote, keeps anything else in `/etc/libreward`, and never fails the
 removal; on errors it prints the manual steps. User data (settings, lists,
-quarantine) stays in the home directory. A user's folder monitoring service
-stays too, but is skipped (`ConditionPathExists`) once LibreWard is removed.
+quarantine) stays in the home directory. When the removal runs through `sudo`
+(`sudo make uninstall`, `sudo dnf remove`) or pkexec, the folder monitoring service
+of that user is stopped and deleted too. Other users' services, and removals without
+a known user (for example from a software center), leave the file behind; systemd
+then skips it (`ConditionPathExists`).
 Firewall rules belong to UFW or firewalld and are kept.
 
 ## Distribution support

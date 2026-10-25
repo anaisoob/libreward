@@ -57,6 +57,42 @@ SYSTEM_DATABASE = Path('/var/lib/clamav')
 SYSTEM_DATABASE_MAX_AGE = 3 * 24 * 3600
 
 
+def remove_user_monitor_service(user):
+    """Run as root on removal: stop and delete one user's folder monitoring service.
+
+    Never raises; returns a short message for the removal log, or None.
+    """
+    import pwd
+    try:
+        home = Path(pwd.getpwnam(user).pw_dir)
+    except KeyError:
+        return None
+    units = home / '.config' / 'systemd' / 'user'
+    unit = units / MONITOR_UNIT
+    if not unit.exists():
+        return None
+    systemctl = shutil.which('systemctl')
+
+    def user_systemctl(*arguments):
+        if not systemctl:
+            return
+        try:
+            # The user's own service manager, reached from root without their session.
+            subprocess.run([systemctl, '--user', f'--machine={user}@.host', *arguments],
+                           stdin=subprocess.DEVNULL, capture_output=True, timeout=30, check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            pass  # not logged in: the files below are enough
+
+    user_systemctl('disable', '--now', MONITOR_UNIT)
+    try:
+        unit.unlink(missing_ok=True)
+        (units / 'default.target.wants' / MONITOR_UNIT).unlink(missing_ok=True)
+    except OSError as exc:
+        return f'Could not remove {unit}: {exc}'
+    user_systemctl('daemon-reload')
+    return f'Removed the LibreWard folder monitoring service of {user}.'
+
+
 class LinuxBackend(PlatformBackend):
     """Platform backend for Linux."""
 

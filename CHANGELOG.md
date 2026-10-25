@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Uninstalling through sudo or pkexec (`sudo make uninstall`, `sudo dnf remove`) also
+  stops and deletes that user's Live protection service.
+
 - Fix the test notification and results without threats vanishing at once on GNOME:
   notifications are no longer sent as transient or with a desktop-entry hint (GNOME
   hides banners of the focused application).
