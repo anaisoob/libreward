@@ -11,7 +11,7 @@ from pathlib import Path
 from urllib.request import Request, urlopen
 
 CATEGORIES = {
-    'dangerous': ('Dangerous websites and phishing', ('malware', 'phishing')),
+    'dangerous': ('Dangerous websites and scams', ('malware', 'phishing')),
     'tracking': ('Tracking', ('tracking',)),
     'ads': ('Ads', ('ads',)),
     'adult': ('Adult websites', ('porn',)),

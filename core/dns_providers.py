@@ -17,7 +17,7 @@ from dataclasses import dataclass
 class DnsProvider:
     key: str
     name: str
-    blocks: str
+    about: str  # one plain sentence for the page
     addresses: tuple
     tls_name: str
     homepage: str
@@ -45,13 +45,13 @@ PROVIDERS = {provider.key: provider for provider in (
                 ('1.1.1.3', '1.0.0.3', '2606:4700:4700::1113', '2606:4700:4700::1003'),
                 'family.cloudflare-dns.com', 'https://one.one.one.one/family/'),
     # Services that block nothing, for LibreWard's own lists.
-    DnsProvider('quad9-unfiltered', 'Quad9 (no blocking)', 'Blocks nothing. Run by a non-profit foundation.',
+    DnsProvider('quad9-unfiltered', 'Quad9', 'Run by a non-profit foundation in Switzerland.',
                 ('9.9.9.10', '149.112.112.10', '2620:fe::10', '2620:fe::fe:10'),
                 'dns10.quad9.net', 'https://quad9.net/'),
-    DnsProvider('cloudflare', 'Cloudflare 1.1.1.1', 'Blocks nothing.',
+    DnsProvider('cloudflare', 'Cloudflare', 'Run by the company Cloudflare.',
                 ('1.1.1.1', '1.0.0.1', '2606:4700:4700::1111', '2606:4700:4700::1001'),
                 'cloudflare-dns.com', 'https://one.one.one.one/'),
-    DnsProvider('google', 'Google Public DNS 8.8.8.8', 'Blocks nothing.',
+    DnsProvider('google', 'Google', 'Run by Google.',
                 ('8.8.8.8', '8.8.4.4', '2001:4860:4860::8888', '2001:4860:4860::8844'),
                 'dns.google', 'https://developers.google.com/speed/public-dns'),
 )}
@@ -59,9 +59,9 @@ PROVIDERS = {provider.key: provider for provider in (
 # Simple protection: what the user wants blocked, and the service that does it:
 # (choice, description, what the active service blocks).
 PROTECTIVE = {
-    'quad9': ('Dangerous websites', 'Blocks malware and phishing websites.', 'dangerous websites'),
-    'adguard': ('Dangerous websites and ads', 'Also blocks ads and trackers.', 'dangerous websites and ads'),
-    'adguard-family': ('Family protection', 'Also blocks adult websites and turns on Safe Search.',
+    'quad9': ('Dangerous websites', 'Blocks websites with viruses and scams.', 'dangerous websites'),
+    'adguard': ('Dangerous websites and ads', 'Also blocks ads and tracking.', 'dangerous websites and ads'),
+    'adguard-family': ('Family protection', 'Also blocks adult websites and shows only safe search results.',
                        'dangerous and adult websites and ads'),
 }
 DEFAULT_PROTECTIVE = 'quad9'

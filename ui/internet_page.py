@@ -93,9 +93,10 @@ class InternetProtectionPage:
         self.level_group = QButtonGroup(self.page)
         self.levels = {}
         for key, title, text in (
-                ('simple', 'Simple (recommended)', ('A protective DNS service blocks unwanted websites for you. '
-                                                    'Nothing to maintain.')),
-                ('advanced', 'Advanced', 'LibreWard’s own block lists, with websites you allow or block yourself.')):
+                ('simple', 'Simple (recommended)', 'A trusted service blocks dangerous websites for you. '
+                                                   'Nothing to set up.'),
+                ('advanced', 'Advanced', 'Choose yourself what to block, and which websites always open '
+                                         'or are always blocked.')):
             radio = QRadioButton(title)
             radio.setChecked(saved['level'] == key)
             self.level_group.addButton(radio)
@@ -116,13 +117,12 @@ class InternetProtectionPage:
             self.simple_group.addButton(radio)
             self.simple_choices[key] = radio
             box.addWidget(radio)
-            note = window.label(f'{text} Uses {PROVIDERS[key].name}.', 'muted')
+            note = window.label(f'{text} Provided by {PROVIDERS[key].name}.', 'muted')
             note.setWordWrap(True)
             note.setContentsMargins(26, 0, 0, 4)
             box.addWidget(note)
-        note = window.label('Website names are looked up through this service over an encrypted connection. '
-                            'It is a third party with its own privacy policy and decides itself what it blocks.',
-                            'muted')
+        note = window.label('To find websites, LibreWard sends their names to this service, encrypted. '
+                            'The service is not part of LibreWard and has its own privacy policy.', 'muted')
         note.setWordWrap(True)
         box.addWidget(note)
         layout.addWidget(self.simple_card)
@@ -132,7 +132,11 @@ class InternetProtectionPage:
         advanced.setSpacing(layout.spacing())
         layout.addWidget(self.advanced_section)
         card, box = window.card()
-        box.addWidget(window.label('DNS SERVICE FOR ALLOWED WEBSITES', 'eyebrow'))
+        box.addWidget(window.label('SERVICE THAT FINDS WEBSITES', 'eyebrow'))
+        note = window.label('Only your choices below decide what is blocked, so websites you allow always open.',
+                            'muted')
+        note.setWordWrap(True)
+        box.addWidget(note)
         self.upstream = QComboBox()
         for key in NEUTRAL:
             self.upstream.addItem(PROVIDERS[key].name + (' (recommended)' if key == DEFAULT_NEUTRAL else ''), key)
@@ -152,8 +156,8 @@ class InternetProtectionPage:
             checkbox.toggled.connect(self.changed)
             self.categories[key] = checkbox
             box.addWidget(checkbox)
-        note = window.label('Ads and tracking lists can stop parts of a website from working. '
-                            'Add its exact domain to Allowed websites if needed.', 'muted')
+        note = window.label('Ad and tracking lists can stop parts of a website from working. '
+                            'If that happens, add the website to Allowed websites.', 'muted')
         note.setWordWrap(True)
         box.addWidget(note)
         box.addWidget(window.button('Update lists now', self.download))
@@ -164,8 +168,8 @@ class InternetProtectionPage:
         for key, title in (('allowed', 'Allowed websites'), ('blocked', 'Blocked websites')):
             card, box = window.card()
             box.addWidget(window.label(title, 'sectionTitle'))
-            note = window.label('Allow overrides LibreWard blocklists.' if key == 'allowed' else
-                                'Always block these domains unless allowed.', 'muted')
+            note = window.label('These websites always open, even if a list blocks them.' if key == 'allowed' else
+                                'These websites are always blocked.', 'muted')
             note.setWordWrap(True)
             box.addWidget(note)
             listing = QListWidget()
@@ -175,7 +179,7 @@ class InternetProtectionPage:
             box.addWidget(listing)
             field = QLineEdit()
             self.domain_fields.append(field)
-            field.setPlaceholderText('example.org (exact domain)')
+            field.setPlaceholderText('example.org')
             box.addWidget(field)
             add = window.button('Add website', lambda checked=False, k=key, f=field: self.add_domain(k, f))
             box.addWidget(add)
@@ -183,15 +187,13 @@ class InternetProtectionPage:
             box.addWidget(window.button('Remove selected', lambda checked=False, k=key: self.remove_domain(k)))
             lists_row.addWidget(card)
         advanced.addLayout(lists_row)
-        note = window.label('LibreWard’s lists block exact domain names, not page contents. '
-                            'Subdomains need their own entries. It cannot remove every ad. '
-                            'Allowed websites only removes LibreWard blocks; it cannot override other security tools.', 'muted')
+        note = window.label('Each website name counts on its own: example.org does not include shop.example.org. '
+                            'Lists cannot block every ad.', 'muted')
         note.setWordWrap(True)
         advanced.addWidget(note)
-        note = window.label('Apps using their own DNS, such as a browser with “Secure DNS” turned on, and '
-                            'already-open connections may bypass protection. LibreWard asks Firefox to keep '
-                            'its default Secure DNS off. No browsing history or blocked-request history is recorded.',
-                            'muted')
+        note = window.label('A browser with “Secure DNS” turned on in its settings can go around this protection. '
+                            'LibreWard asks Firefox not to turn it on by itself. '
+                            'LibreWard does not record which websites you visit.', 'muted')
         note.setWordWrap(True)
         layout.addWidget(note)
         self.advanced_toggle = QCheckBox('Show how protection works')
@@ -200,7 +202,7 @@ class InternetProtectionPage:
                                     'protection) and sends allowed requests to the selected DNS service over TLS. '
                                     'With systemd-resolved, resolved keeps sending VPN and local network names to their '
                                     'own servers. With NetworkManager, local network names go to the network’s DNS; '
-                                    'choose “Your network’s DNS” in Advanced if a VPN needs its own names. '
+                                    'choose “Your internet provider or router” in Advanced if a VPN needs its own names. '
                                     'VPN connection settings are unchanged. '
                                     'Protection is a system setting, like the firewall: it keeps working when LibreWard '
                                     'is closed and after restarts, until you turn it off here.\n\n'
@@ -239,7 +241,7 @@ class InternetProtectionPage:
 
     def explain_blocking(self):
         QMessageBox.information(self.window, 'Why is a website blocked?',
-            'With Simple protection, the protective DNS service you chose blocks dangerous websites '
+            'With Simple protection, the service you chose blocks dangerous websites '
             '(and, depending on your choice, ads or adult websites). With Advanced protection, LibreWard '
             'blocks websites from the lists you chose and the websites you added. '
             'A blocked website looks unavailable in the browser.\n\n'
@@ -267,7 +269,7 @@ class InternetProtectionPage:
         index = self.upstream.findData(NETWORK)
         if available and index < 0:
             self.upstream.blockSignals(True)
-            self.upstream.addItem('Your network’s DNS (keeps VPN names working)', NETWORK)
+            self.upstream.addItem('Your internet provider or router', NETWORK)
             if self.saved_upstream == NETWORK:
                 self.upstream.setCurrentIndex(self.upstream.count() - 1)
             self.upstream.blockSignals(False)
@@ -282,12 +284,11 @@ class InternetProtectionPage:
     def upstream_changed(self, *_args, notify=True):
         key = self.upstream.currentData()
         if key == NETWORK:
-            self.upstream_info.setText('Allowed lookups go to the DNS servers of your network or provider, '
-                                       'unencrypted. VPN and local network names keep working.')
+            self.upstream_info.setText('Not encrypted. Choose this if a work VPN does not work with the others.')
         else:
             provider = PROVIDERS[key]
-            self.upstream_info.setText(f'{provider.blocks} Encrypted where the network allows it.\n'
-                                       f'Provided by a third party under its own terms: {provider.homepage}')
+            self.upstream_info.setText(f'{provider.about} Encrypted. Not part of LibreWard; '
+                                       f'its own privacy policy applies: {provider.homepage}')
         if notify:
             self.saved_upstream = key
             self.changed()
@@ -381,7 +382,7 @@ class InternetProtectionPage:
     def refresh(self):
         if self.window.start_task('internet-status', backend.inspect_internet_protection, on_done=self.show_state):
             self.pending = False
-            self.status.setText('Checking domain protection…')
+            self.status.setText('Checking Internet protection…')
 
     def check_health(self):
         if self.state and self.state.get('active') and self.window.pages.currentIndex() == self.window.page_indices['internet']:
@@ -426,9 +427,7 @@ class InternetProtectionPage:
             if not count and upstream in PROTECTIVE:
                 text = f'{provider.name} blocks {PROTECTIVE[upstream][2]}.'
             else:
-                text = f"Blocking {count:,} website{'s' if count != 1 else ''}."
-                text += (' Other lookups go to your network’s DNS.' if upstream == NETWORK else
-                         f' Other lookups go to {provider.name}.' if provider is not None else '')
+                text = f"Blocking {count:,} website{'s' if count != 1 else ''} from your lists."
         elif active:
             text = 'Turn protection off to restore normal internet access, then turn it on again.'
         elif supported:
@@ -471,7 +470,7 @@ class InternetProtectionPage:
             return
         settings = self.settings()
         if not settings['categories']:
-            QMessageBox.information(self.window, 'Protection lists', 'Choose at least one protection category to download.')
+            QMessageBox.information(self.window, 'Protection lists', 'Choose at least one list to download.')
             return
         if not self.window.confirm('Update lists',
                 'Download the latest lists of unwanted websites from The Block List Project on GitHub?'):
@@ -499,11 +498,11 @@ class InternetProtectionPage:
         parts = []
         if upstream in PROVIDERS and (not changes or applied.get('upstream') != upstream):
             provider = PROVIDERS[upstream]
-            lookups = 'Website lookups' if settings['level'] == 'simple' else 'Website lookups that LibreWard allows'
-            parts.append(f'{lookups} go to {provider.name}, a third-party service that is '
-                         f'not part of LibreWard, with its own terms and privacy policy ({provider.homepage}). '
-                         f'{provider.blocks} It can see which websites this computer visits. '
-                         'Both are provided with no warranty, to the extent permitted by law.')
+            blocks = f' {provider.name} blocks {PROTECTIVE[upstream][2]}.' if settings['level'] == 'simple' else ''
+            parts.append(f'To find websites, LibreWard sends their names to {provider.name}, encrypted.{blocks} '
+                         f'{provider.name} is not part of LibreWard, has its own privacy policy '
+                         f'({provider.homepage}) and can see which websites this computer visits. '
+                         f'LibreWard and {provider.name} come with no warranty, to the extent permitted by law.')
         if self.state.get('needs_dns_install'):
             parts.append(f"LibreWard will install the {self.state.get('dns_package') or 'dnsmasq'} package from your "
                          'system’s software sources.')
@@ -551,12 +550,13 @@ class InternetProtectionPage:
             self.window.events.put('Preparing the domain database on disk…\n')
             with self.store.prepare(lists) as domains:
                 if settings['level'] == 'advanced' and not len(domains):
-                    raise ValueError('No domains remain to block after your allowed websites were applied.')
-                self.window.events.put(f'Applying {len(domains):,} blocked domains. Waiting for system authorization…\n')
+                    raise ValueError('Nothing is left to block: your allowed websites cover everything on the lists.')
+                self.window.events.put(f'Applying {len(domains):,} blocked websites. Waiting for system authorization…\n')
                 self.start_system_change()
                 state = backend.apply_internet_protection(domains, upstream=upstream)
-            name = 'your network’s DNS' if upstream == NETWORK else PROVIDERS[upstream].name
-            self.window.events.put(f"Applied {state['count']:,} exact-domain blocks; lookups go to {name}.\n")
+            name = 'your internet provider or router' if upstream == NETWORK else PROVIDERS[upstream].name
+            self.window.events.put(f"Protection is on: {state['count']:,} websites blocked by your lists; "
+                                   f"websites are found through {name}.\n")
             return state
         self.reset_cancel()
         if self.window.start_task('internet-apply', work,

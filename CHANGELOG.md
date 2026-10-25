@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Plain wording on the Websites part of Live protection: no technical terms such as
+  DNS service, domain or lookup outside “Show how protection works”.
+
 - Internet protection has Simple and Advanced. Simple (the default for new users)
   uses a protective DNS service and needs no lists: Dangerous websites (Quad9),
   Dangerous websites and ads (AdGuard DNS) or Family protection (AdGuard DNS Family).

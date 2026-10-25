@@ -374,8 +374,8 @@ class QtFrontendTests(unittest.TestCase):
                  patch.object(self.window, 'confirm', return_value=False) as confirm:
                 page.apply()
             consent = confirm.call_args.args[1]
-            for text in ('Cloudflare 1.1.1.1', 'that LibreWard allows', 'third-party service', 'Blocks nothing',
-                         'no warranty', 'even when LibreWard is closed'):
+            for text in ('sends their names to Cloudflare', 'not part of LibreWard', 'no warranty',
+                         'even when LibreWard is closed'):
                 self.assertIn(text, consent)
             self.assertEqual(calls, [])
             with patch('ui.internet_page.backend.apply_internet_protection', side_effect=apply), \
@@ -387,7 +387,7 @@ class QtFrontendTests(unittest.TestCase):
             dialog.accept()
             self.app.processEvents()
             self.assertTrue(page.state['active'])
-            self.assertEqual(page.info.text(), 'Blocking 1 website. Other lookups go to Cloudflare 1.1.1.1.')
+            self.assertEqual(page.info.text(), 'Blocking 1 website from your lists.')
             saved = self.window.config['internet_protection']
             self.assertEqual((saved['level'], saved['upstream']), ('advanced', 'cloudflare'))
 
@@ -413,7 +413,9 @@ class QtFrontendTests(unittest.TestCase):
                 page.apply()
                 dialog = self.window.update_dialog
                 self.wait_idle()
-            self.assertIn('Website lookups go to AdGuard DNS Family', confirm.call_args.args[1])
+            consent = confirm.call_args.args[1]
+            self.assertIn('sends their names to AdGuard DNS Family', consent)
+            self.assertIn('blocks dangerous and adult websites and ads', consent)
             self.assertEqual(calls, [('adguard-family', 0)])
             dialog.accept()
             self.app.processEvents()
@@ -482,6 +484,22 @@ class QtFrontendTests(unittest.TestCase):
         page.notice.setText('Other notice')
         page.show_state(recovered)
         self.assertEqual(page.notice.text(), 'Other notice')
+
+    def test_websites_section_avoids_technical_words(self):
+        from PySide6.QtWidgets import QAbstractButton, QComboBox, QLabel
+        page = self.window.internet_page
+        page.show_state({'supported': True, 'active': False, 'count': 0, 'engine': 'sqlite-setup',
+                         'mode': 'networkmanager'})
+        technical = {page.advanced, page.method_info}  # under "Show how protection works"
+        texts = [label.text() for label in page.page.findChildren(QLabel) if label not in technical]
+        texts += [button.text() for button in page.page.findChildren(QAbstractButton)]
+        texts += [combo.itemText(i) for combo in page.page.findChildren(QComboBox) for i in range(combo.count())]
+        for level in ('simple', 'advanced'):
+            page.levels[level].setChecked(True)
+            texts.append(page.upstream_info.text())
+        joined = ' '.join(texts).lower()
+        for word in ('blocks nothing', 'no blocking', 'domain', 'lookup', 'upstream', 'dns service', 'resolver'):
+            self.assertNotIn(word, joined)
 
     def test_status_checks_never_undo_unapplied_choices(self):
         page = self.window.internet_page
@@ -568,7 +586,7 @@ class QtFrontendTests(unittest.TestCase):
             dialog.accept()
             self.app.processEvents()
             self.assertTrue(page.state['active'])
-            self.assertEqual(page.info.text(), 'Blocking 1 website.')
+            self.assertEqual(page.info.text(), 'Blocking 1 website from your lists.')
             self.assertEqual(page.toggle_button.text(), 'Turn off')
 
     def test_internet_pause_only_removes_libreward_blocks(self):

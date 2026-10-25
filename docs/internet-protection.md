@@ -25,10 +25,10 @@ website really opens:
 
 | DNS service for allowed websites | |
 |---|---|
-| Quad9 (no blocking), 9.9.9.10 (default) | Non-profit |
-| Cloudflare 1.1.1.1 | |
-| Google Public DNS 8.8.8.8 | |
-| Your network's DNS | NetworkManager setups only; unencrypted, keeps VPN names working |
+| Quad9, 9.9.9.10 without blocking (default) | Non-profit |
+| Cloudflare, 1.1.1.1 | |
+| Google, 8.8.8.8 | |
+| Your internet provider or router | NetworkManager setups only; unencrypted, keeps VPN names working |
 
 Public services are always used over DNS-over-TLS (see
 [Encryption](#encryption)). Addresses and certificate names come from the services'
@@ -39,7 +39,7 @@ website names this computer looks up.
 
 Users of earlier versions, who always used the lists, continue with Advanced.
 Behind systemd-resolved their DNS service changes from a filtering service to
-Quad9 (no blocking), shown as a change to apply; with NetworkManager they keep
+Quad9 without blocking, shown as a change to apply; with NetworkManager they keep
 the network's DNS.
 
 ## Where the filter runs
@@ -53,8 +53,8 @@ automatically:
   Raspberry Pi OS, and Arch or Manjaro without systemd-resolved). Lookups go to
   the chosen DNS service over TLS, while local network names (single-label names,
   `.lan`, `.home`, `.home.arpa`, `.internal`, `.local`, reverse lookups) still go to
-  NetworkManager's dnsmasq. Names that only a VPN can answer need **Your network's
-  DNS** in Advanced.
+  NetworkManager's dnsmasq. Names that only a VPN can answer need **Your internet
+  provider or router** in Advanced.
 - **Behind systemd-resolved** (for example Ubuntu Desktop, Linux Mint, Fedora
   and Arch with resolved). Allowed names go to the chosen DNS service over TLS;
   resolved keeps sending VPN and local network names to their own servers. See
@@ -108,7 +108,7 @@ workers. The list is never expanded into a Python list or dnsmasq hosts records.
 Blocked A/AAAA queries return null IPv4/IPv6 addresses. Other blocked record types
 receive an empty answer. Allowed queries retain the original DNS request and are
 forwarded to the chosen DNS service over TLS, local network names to
-NetworkManager's dnsmasq on `127.0.0.1:5354`. With **Your network's DNS**, every
+NetworkManager's dnsmasq on `127.0.0.1:5354`. With **Your internet provider or router**, every
 allowed query goes to dnsmasq.
 
 NetworkManager retains upstream servers and conditional VPN forwarding. LibreWard
@@ -166,7 +166,7 @@ application -> systemd-resolved -> LibreWard DNS filter -> DNS service over TLS
 ```
 
 Allowed lookups go to the DNS service chosen in Simple or Advanced; **Your
-network's DNS** is not offered here.
+internet provider or router** is not offered here.
 
 The filter listens on `127.0.0.1:5354` and becomes resolved's only global server
 through one owned drop-in, `/etc/systemd/resolved.conf.d/90-libreward-filter.conf`:
