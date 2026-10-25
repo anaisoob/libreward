@@ -211,6 +211,12 @@ class QtFrontendTests(unittest.TestCase):
         section.refresh()
         self.assertIn('Checking setup.zip…', section.info.text())
 
+    def test_threats_only_notifications_are_saved_at_once(self):
+        section = self.window.file_protection
+        self.assertFalse(section.threats_only.isChecked())
+        section.threats_only.setChecked(True)
+        self.assertIs(self.window.config['notify_threats_only'], True)
+
     def test_folders_dialog_can_stop_following_browsers(self):
         from ui.dialogs import ProtectedFoldersDialog
         section = self.enable_monitoring('/home/user/Downloads')

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- One notification follows each download: “Waiting for … to finish downloading”, then
+  “Checking …” for large files, then the result. Dangerous files show a warning sign.
+  New option: Notify me only when a dangerous file is found.
+
 - Protection for new files follows download folders chosen later in a browser (can be
   turned off in Choose folders…), shows downloads in progress (“Waiting for a download
   to finish”) and checks a finished download at once, usually within a second instead

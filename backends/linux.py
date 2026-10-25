@@ -15,6 +15,7 @@ import re
 import shutil
 import signal
 import subprocess
+import threading
 from pathlib import Path
 
 from .base import PlatformBackend, RuntimeInfo, newest_database_time
@@ -96,7 +97,11 @@ def remove_user_monitor_service(user):
 class LinuxBackend(PlatformBackend):
     """Platform backend for Linux."""
 
-    def send_desktop_notification(self, title, message, *, warning=False, on_open=None):
+    # Desktop notification numbers by `replace` key, shared by the agent's threads.
+    _notification_lock = threading.Lock()
+    _notification_ids = {}
+
+    def send_desktop_notification(self, title, message, *, warning=False, on_open=None, replace=None):
         # libnotify sends to the desktop notification service (GNOME Shell,
         # Plasma, …) independently of status icons. Never wait for it on the GUI thread.
         from html import escape
@@ -104,27 +109,51 @@ class LinuxBackend(PlatformBackend):
         if not executable:
             return False
         icon = Path(__file__).resolve().parent.parent / 'assets/icons/libreward-256.png'
-        basic = [executable, '--app-name=LibreWard', f'--icon={icon if icon.is_file() else "libreward"}',
+        # Warnings (dangerous files, failed checks) show the theme's exclamation mark icon.
+        icon = 'dialog-warning' if warning else icon if icon.is_file() else 'libreward'
+        basic = [executable, '--app-name=LibreWard', f'--icon={icon}',
                  '--urgency=' + ('critical' if warning else 'normal')]
         # No desktop-entry hint and no --transient: with either, GNOME Shell
         # removes the banner almost at once (for the hint, while LibreWard has
         # focus, as when testing notifications from the window).
         text = ['--', title, escape(message)]
+        with self._notification_lock:
+            previous = self._notification_ids.get(replace) if replace else None
+        replacing = [f'--replace-id={previous}'] if previous else []
         if on_open is not None:
-            actions = basic + ['--action=default=Open LibreWard', '--action=open=Open LibreWard']
+            # The final notification of its kind; it waits for the user, so its own
+            # number is not read back.
+            actions = basic + replacing + ['--action=default=Open LibreWard', '--action=open=Open LibreWard']
+            with self._notification_lock:
+                self._notification_ids.pop(replace, None)
             # libnotify 0.8.4+ hands over the activation token; older versions only the action.
             if self._notify_with_action(actions, text, on_open, token=True) or \
                     self._notify_with_action(actions, text, on_open, token=False):
                 return True
-        return self._notify(basic + text)
+            return self._notify(basic + text)
+        if replace:
+            number = self._notify(basic + replacing + ['--print-id'] + text, read_id=True)
+            if number:
+                with self._notification_lock:
+                    self._notification_ids[replace] = number
+                return True
+        # Older libnotify versions reject the newer options.
+        return bool(self._notify(basic + text))
 
     @staticmethod
-    def _notify(command):
+    def _notify(command, read_id=False):
+        """True when shown; with read_id, the notification's number instead."""
         try:
-            return subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                  stderr=subprocess.DEVNULL, timeout=5, check=False).returncode == 0
+            result = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                                    timeout=5, check=False)
         except (OSError, subprocess.TimeoutExpired):
             return False
+        if result.returncode != 0:
+            return False
+        if not read_id:
+            return True
+        first = (result.stdout.strip().splitlines() or [''])[0]
+        return int(first) if first.isdigit() and int(first) > 0 else False
 
     @staticmethod
     def _read_all(descriptor):

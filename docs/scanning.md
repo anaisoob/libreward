@@ -173,9 +173,15 @@ login.
 
 ### Notifications and dangerous files
 
-Each automatic check sends a desktop notification with its result and file names.
-When a file is dangerous, the notification stays until dismissed and offers
-**Open LibreWard**, and:
+One desktop notification follows each download: **Waiting for … to finish
+downloading** when it starts, **Checking … for viruses** if the check takes more
+than two seconds (large files), then the result in the same notification. Other new
+files get the result only. Desktops whose `notify-send` cannot replace notifications
+(libnotify older than 0.8) show these as separate notifications. **Notify me only
+when a dangerous file is found** keeps all but dangerous files quiet.
+
+When a file is dangerous, the notification shows a warning sign, stays until
+dismissed and offers **Open LibreWard**, and:
 
 - if LibreWard is closed, it opens by itself;
 - if it is open, it comes forward (with the desktop’s activation token, so GNOME on

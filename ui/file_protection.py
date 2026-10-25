@@ -4,7 +4,7 @@ import threading
 import time
 
 from PySide6.QtCore import QFileSystemWatcher, Qt, QTimer
-from PySide6.QtWidgets import QHBoxLayout
+from PySide6.QtWidgets import QCheckBox, QHBoxLayout
 
 from backends import backend
 from config import save_config
@@ -15,6 +15,7 @@ from core.monitor_agent import (
     monitor_dir,
     monitoring_enabled,
     read_state,
+    threats_only,
 )
 
 from .dialogs import ProtectedFoldersDialog
@@ -64,6 +65,11 @@ class FileProtectionSection:
         self.folders_label = window.label('', 'muted')
         self.folders_label.setWordWrap(True)
         box.addWidget(self.folders_label)
+        # The running agent reads the saved setting within seconds.
+        self.threats_only = QCheckBox('Notify me only when a dangerous file is found')
+        self.threats_only.setChecked(threats_only(window.config))
+        self.threats_only.toggled.connect(lambda checked: self.save(notify_threats_only=checked))
+        box.addWidget(self.threats_only)
         self.notification_status = window.label('', 'muted')
         self.notification_status.setWordWrap(True)
         self.notification_status.hide()

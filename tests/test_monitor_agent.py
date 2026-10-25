@@ -110,7 +110,7 @@ class MonitorAgentTests(unittest.TestCase):
         _title, message = self.notify.call_args.args
         self.assertIn('No threats found', message)
         self.assertIn('clean.zip', message)
-        self.assertEqual(self.notify.call_args.kwargs, {'warning': False, 'on_open': None})
+        self.assertEqual(self.notify.call_args.kwargs, {'warning': False, 'on_open': None, 'replace': 'check:clean.zip'})
         state = read_state()
         self.assertEqual(state['last_scan']['outcome'], 'No threats found')
         self.assertEqual(state.get('threats', []), [])
@@ -122,7 +122,7 @@ class MonitorAgentTests(unittest.TestCase):
         with scan:
             agent.scan([path])
             agent.scan([path])  # the same file found again is listed once
-        self.assertEqual(self.notify.call_args.args[0], 'LibreWard — threat found')
+        self.assertEqual(self.notify.call_args.args[0], '⚠ LibreWard — dangerous file found')
         self.assertIn('eicar.com', self.notify.call_args.args[1])
         self.assertTrue(self.notify.call_args.kwargs['warning'])
         self.assertEqual(self.notify.call_args.kwargs['on_open'], agent.show_threats)
@@ -144,6 +144,48 @@ class MonitorAgentTests(unittest.TestCase):
         self.open_application.assert_not_called()
         self.notify.assert_called_once()
 
+    def test_one_notification_follows_a_download_from_waiting_to_result(self):
+        path = str(self.watched / 'setup.zip')
+        clean = {'infected': [], 'infected_found': False, 'errors': False, 'warnings': False,
+                 'stopped': False, 'scanned': 1}
+        agent, scan = self.scanning_agent(clean)
+        agent.announce(['setup.zip', 'a download'])
+        agent.announce(['setup.zip'])  # once per download
+        self.assertEqual(self.notify.call_count, 1)
+        self.assertIn('Waiting for setup.zip to finish downloading', self.notify.call_args.args[1])
+        self.assertEqual(self.notify.call_args.kwargs['replace'], 'download:setup.zip')
+
+        def slow_run(service, *_args, **_kwargs):
+            time.sleep(.3)
+            service.result = clean
+
+        with patch('core.monitor_agent.SLOW_CHECK', .05), \
+                patch('core.monitor_agent.ScanService.run', autospec=True, side_effect=slow_run):
+            agent.scan([path])
+        titles = [call.args[0] for call in self.notify.call_args_list[1:]]
+        self.assertEqual(titles, ['LibreWard — checking', 'LibreWard — new files checked'])
+        self.assertEqual({call.kwargs['replace'] for call in self.notify.call_args_list}, {'download:setup.zip'})
+        with scan:  # quick checks say nothing until the result
+            self.notify.reset_mock()
+            agent.scan([str(self.watched / 'small.txt')])
+        self.assertEqual([call.args[0] for call in self.notify.call_args_list], ['LibreWard — new files checked'])
+
+    def test_threats_only_mutes_everything_but_dangerous_files(self):
+        path = str(self.watched / 'file.zip')
+        agent, scan = self.scanning_agent({'infected': [], 'infected_found': False, 'errors': False,
+                                           'warnings': False, 'stopped': False, 'scanned': 1})
+        agent.config['notify_threats_only'] = True
+        agent.announce(['file.zip'])
+        with scan:
+            agent.scan([path])
+        self.notify.assert_not_called()
+        agent, scan = self.scanning_agent({'infected': [(path, 'Eicar FOUND')], 'infected_found': True,
+                                           'errors': False, 'warnings': False, 'stopped': False, 'scanned': 1})
+        agent.config['notify_threats_only'] = True
+        with scan:
+            agent.scan([path])
+        self.assertEqual(self.notify.call_args.args[0], '⚠ LibreWard — dangerous file found')
+
     def test_failed_scans_retry_and_notify_once(self):
         agent, scan = self.scanning_agent({'infected': [], 'errors': True, 'stopped': False, 'scanned': 0})
         path = str(self.watched / 'file')
@@ -154,12 +196,12 @@ class MonitorAgentTests(unittest.TestCase):
         self.assertEqual(agent.monitor.changed.call_count, 4)
         self.assertGreater(agent.retry_at, time.monotonic())
         self.assertEqual(self.notify.call_count, 1)
-        self.assertEqual(self.notify.call_args.args[0], 'LibreWard — automatic scan failed')
+        self.assertEqual(self.notify.call_args.args[0], '⚠ LibreWard — automatic scan failed')
 
     def test_undelivered_warnings_are_sent_again_later(self):
         agent = self.agent()
         self.notify.return_value = False
-        agent.send('LibreWard — threat found', 'eicar.com', True)
+        agent.send('⚠ LibreWard — dangerous file found', 'eicar.com', True)
         agent.send('LibreWard — new files checked', 'clean', False)
         self.assertEqual(len(agent.undelivered), 1)
         agent.retry_notifications()

@@ -36,6 +36,8 @@ NOTIFICATION_GIVE_UP = 30 * 60
 FAILURES_BEFORE_NOTICE = 3
 BATCH_SIZE = 64
 MAX_THREATS = 100
+# A check that takes longer than this says "Checking…" while it runs.
+SLOW_CHECK = 2
 MAX_LOG_BYTES = 1024 * 1024
 # EX_CONFIG: a component is missing; restarting does not help.
 MISSING_COMPONENT_EXIT = 78
@@ -65,6 +67,11 @@ def chosen_folders(config):
 def follows_browsers(config):
     """Also protect the folders browsers download to, including ones chosen later."""
     return config.get('follow_download_folders', True) is not False
+
+
+def threats_only(config):
+    """Notify only about dangerous files, not about downloads and clean results."""
+    return config.get('notify_threats_only', False) is True
 
 
 def monitoring_enabled(config):
@@ -110,7 +117,7 @@ def scan_notification(result, paths):
     """(title, message, warning) for a finished automatic scan."""
     threats = [path for path, _threat in result.get('infected', [])]
     if threats or result.get('infected_found'):
-        return ('LibreWard — threat found',
+        return ('⚠ LibreWard — dangerous file found',
                 (f'{scan_outcome(result)}\n{file_names(threats or paths)}\n'
                  'Open LibreWard to move it to quarantine or delete it.'), True)
     return ('LibreWard — new files checked',
@@ -149,6 +156,9 @@ class MonitorAgent:
         self.database_thread = None
         self.database_checked = time.monotonic() - DATABASE_INTERVAL + 60
         self.undelivered = []
+        # Downloads announced in a notification, which later shows their result.
+        self.announced = set()
+        self.notification_lock = threading.Lock()
         previous = read_state()
         self.state = {key: previous[key] for key in
                       ('threats', 'last_scan', 'pending', 'database_update_at', 'database_update_ok')
@@ -322,7 +332,9 @@ class MonitorAgent:
         else:
             self.update_state(status='watching',
                               message=f'Monitoring {len(self.settings[0])} folder(s), including subfolders.')
-        self.update_state(downloading=monitor.downloads()[:5])
+        downloads = monitor.downloads()
+        self.update_state(downloading=downloads[:5])
+        self.announce(downloads)
         if time.monotonic() < self.retry_at:
             return
         paths = [path for path in monitor.ready(BATCH_SIZE) if os.path.isfile(path)]
@@ -333,9 +345,42 @@ class MonitorAgent:
             finally:
                 self.update_state(checking=None)
 
+    def announce(self, downloads):
+        # Chrome calls a download "Unconfirmed …" (shown as 'a download') until it
+        # has a name; announce it once it does.
+        for name in downloads:
+            if name != 'a download' and name not in self.announced:
+                self.announced.add(name)
+                if not threats_only(self.config):
+                    self.send('LibreWard — download', f'Waiting for {name} to finish downloading. '
+                              'LibreWard checks it for viruses right after.', False, replace=f'download:{name}')
+
     def scan(self, paths):
         _roots, patterns = self.settings
         self.scanning = paths
+        name = os.path.basename(paths[0])
+        key = f'download:{name}' if len(paths) == 1 and name in self.announced else f'check:{name}'
+        self.announced.discard(name)
+        done = threading.Event()
+
+        def slow():
+            # Large files take a while; say that the check is running.
+            with self.notification_lock:
+                if not done.is_set() and not threats_only(self.config):
+                    self.send('LibreWard — checking', f'Checking {file_names(paths)} for viruses…',
+                              False, replace=key)
+
+        timer = threading.Timer(SLOW_CHECK, slow)
+        timer.daemon = True
+        timer.start()
+        try:
+            self._scan(paths, patterns, key)
+        finally:
+            with self.notification_lock:
+                done.set()
+            timer.cancel()
+
+    def _scan(self, paths, patterns, key):
         service = ScanService(_Discard(), scan_profile=self.config.get('scan_profile', 'standard'),
                               workers=self.config.get('scan_workers', 'auto'))
         self.service = service
@@ -357,7 +402,7 @@ class MonitorAgent:
                 self.monitor.changed(path, retry=True)
             self.log(f'Automatic scan of {len(paths)} file(s) failed; trying again in a minute.')
             if self.failures == FAILURES_BEFORE_NOTICE:
-                self.send('LibreWard — automatic scan failed',
+                self.send('⚠ LibreWard — automatic scan failed',
                           f'New files could not be checked: {file_names(paths)}\n'
                           'LibreWard keeps trying. Open LibreWard to check the antivirus setup.', True)
             return
@@ -370,7 +415,11 @@ class MonitorAgent:
             'time': found, 'outcome': scan_outcome(result), 'files': len(paths),
             'names': file_names(paths)})
         self.log(f"Automatic scan of {len(paths)} file(s): {scan_outcome(result)}")
-        self.send(*scan_notification(result, paths))
+        title, message, warning = scan_notification(result, paths)
+        dangerous = bool(result.get('infected') or result.get('infected_found'))
+        with self.notification_lock:
+            if dangerous or not threats_only(self.config):
+                self.send(title, message, warning, replace=key)
         if result.get('infected') and not self.gui_running():
             # An open window asks what to do by itself; otherwise LibreWard opens to ask.
             self.show_threats()
@@ -385,9 +434,9 @@ class MonitorAgent:
 
     # ── notifications ───────────────────────────────────────────────
 
-    def send(self, title, message, warning):
+    def send(self, title, message, warning, replace=None):
         delivered = self.notify(title, message, warning=warning,
-                                on_open=self.show_threats if warning else None)
+                                on_open=self.show_threats if warning else None, replace=replace)
         if not delivered and warning:
             # Threats and failures must reach the user, for example when the
             # desktop's notification service starts later than this agent.

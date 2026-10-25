@@ -287,12 +287,14 @@ class PlatformBackend(ABC):
         from watchdog.observers import Observer
         return Observer()
 
-    def send_desktop_notification(self, title, message, *, warning=False, on_open=None):
+    def send_desktop_notification(self, title, message, *, warning=False, on_open=None, replace=None):
         """Send without a tray; called from a worker. True when the desktop accepted it.
 
         `on_open`, when given, adds an "Open LibreWard" action. It is called from a
         background thread with the desktop's activation token (or None) when the
         user chooses it; the token lets the opened window come to the front.
+        Notifications sent with the same `replace` key update one notification
+        where the desktop supports it, for example from "Checking…" to the result.
         """
         return False
 

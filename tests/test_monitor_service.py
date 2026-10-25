@@ -152,7 +152,7 @@ class NotificationActionTests(unittest.TestCase):
         with patch('backends.linux.shutil.which', return_value='/usr/bin/notify-send'), \
                 patch('backends.linux.subprocess.Popen', side_effect=started) as popen:
             self.assertTrue(LinuxBackend().send_desktop_notification(
-                'LibreWard — threat found', 'eicar.com', warning=True, on_open=on_open))
+                '⚠ LibreWard — dangerous file found', 'eicar.com', warning=True, on_open=on_open))
             self.assertTrue(answered.wait(3))
         self.assertEqual(chosen, ['activation-123'])
         command = popen.call_args.args[0]
@@ -209,6 +209,30 @@ class NotificationActionTests(unittest.TestCase):
         plain = run.call_args.args[0]
         self.assertFalse(any(argument.startswith('--action') for argument in plain))
         self.assertEqual(plain[-2:], ['Title', 'Text'])
+
+    def test_notifications_with_one_key_replace_each_other(self):
+        backend = LinuxBackend()
+        LinuxBackend._notification_ids.clear()
+        with patch('backends.linux.shutil.which', return_value='/usr/bin/notify-send'), \
+                patch('backends.linux.subprocess.run', return_value=Mock(returncode=0, stdout='17\n')) as run:
+            self.assertTrue(backend.send_desktop_notification('Download', 'Waiting', replace='download:a.zip'))
+            self.assertIn('--print-id', run.call_args.args[0])
+            self.assertFalse(any(a.startswith('--replace-id') for a in run.call_args.args[0]))
+            self.assertTrue(backend.send_desktop_notification('Checked', 'Clean', replace='download:a.zip'))
+            self.assertIn('--replace-id=17', run.call_args.args[0])
+        # Without the newer options, a plain notification is still shown.
+        with patch('backends.linux.shutil.which', return_value='/usr/bin/notify-send'), \
+                patch('backends.linux.subprocess.run', side_effect=[Mock(returncode=1, stdout=''),
+                                                                    Mock(returncode=0, stdout='')]) as run:
+            self.assertTrue(backend.send_desktop_notification('Download', 'Waiting', replace='download:b.zip'))
+        self.assertNotIn('--print-id', run.call_args.args[0])
+        LinuxBackend._notification_ids.clear()
+
+    def test_warnings_use_the_exclamation_mark_icon(self):
+        with patch('backends.linux.shutil.which', return_value='/usr/bin/notify-send'), \
+                patch('backends.linux.subprocess.run', return_value=Mock(returncode=0, stdout='')) as run:
+            LinuxBackend().send_desktop_notification('Title', 'Text', warning=True)
+        self.assertIn('--icon=dialog-warning', run.call_args.args[0])
 
     def test_routine_results_stay_visible(self):
         with patch('backends.linux.shutil.which', return_value='/usr/bin/notify-send'), \
