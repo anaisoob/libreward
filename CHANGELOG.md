@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fix “Checking…” replacing the dangerous file notification when a check finished at
+  about two seconds, which also kept that notification from closing.
+
 - “Waiting” notifications no longer name the file (browsers use temporary names); the
   check and result show the real name. A dangerous file always gets a new notification
   instead of updating an earlier one in place, which GNOME could hide or leave a

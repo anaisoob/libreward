@@ -441,7 +441,7 @@ class MonitorAgent:
         timer.start()
         failed = True
         try:
-            failed = self._scan(paths, patterns, key)
+            failed = self._scan(paths, patterns, key, done)
         finally:
             with self.notification_lock:
                 done.set()
@@ -450,8 +450,12 @@ class MonitorAgent:
                 # No result to show: never leave "Checking…" behind (tried again later).
                 self.close_notification(key)
 
-    def _scan(self, paths, patterns, key):
-        """Check files and report the result; True when the check did not finish."""
+    def _scan(self, paths, patterns, key, done):
+        """Check files and report the result; True when the check did not finish.
+
+        `done` is set together with sending the result, so a "Checking…" that is
+        due at the same moment can never replace the result afterwards.
+        """
         for path in paths[:5]:
             self.log(f'Checking {os.path.basename(path)} ({self.monitor.reason(path)}).')
         service = ScanService(_Discard(), scan_profile=self.config.get('scan_profile', 'standard'),
@@ -504,6 +508,7 @@ class MonitorAgent:
         title, message, warning = scan_notification(result, paths)
         dangerous = bool(result.get('infected') or result.get('infected_found'))
         with self.notification_lock:
+            done.set()
             if dangerous or not threats_only(self.config):
                 self.send(title, message, warning, replace=key)
             if not dangerous:

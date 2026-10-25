@@ -293,6 +293,44 @@ class MonitorAgentTests(unittest.TestCase):
             agent.scan([str(self.watched / 'setup.zip')])
         self.assertIn("Checking setup.zip (in a browser's list of downloads).", self.logged)
 
+    def test_checking_due_at_the_same_moment_never_replaces_the_result(self):
+        # A check finishing right at the two-second mark: the "Checking…" timer fires
+        # while the result is sent and must find the check already done.
+        events, timers = [], []
+        make_event = threading.Event  # before it is patched below
+
+        def event():
+            events.append(make_event())
+            return events[-1]
+
+        class Timer:
+            def __init__(self, _delay, function):
+                timers.append(function)
+                self.daemon = True
+
+            def start(self):
+                pass
+
+            def cancel(self):
+                pass
+
+        path = str(self.watched / 'eicar.com')
+        agent, scan = self.scanning_agent({'infected': [(path, 'Eicar FOUND')], 'infected_found': True,
+                                           'errors': False, 'warnings': False, 'stopped': False, 'scanned': 1})
+        sent_while_running = []
+
+        def notify(title, *_args, **_kwargs):
+            sent_while_running.append((title, events[0].is_set()))
+            return True
+
+        self.notify.side_effect = notify
+        with patch('core.monitor_agent.threading.Event', side_effect=event), \
+                patch('core.monitor_agent.threading.Timer', Timer), scan:
+            agent.scan([path])
+        self.assertEqual(sent_while_running, [('⚠ LibreWard — dangerous file found', True)])
+        timers[0]()  # the late "Checking…"
+        self.assertEqual(len(sent_while_running), 1)
+
     def test_an_unfinished_check_never_leaves_checking_behind(self):
         agent, scan = self.scanning_agent({'infected': [], 'errors': True, 'stopped': False, 'scanned': 0})
         path = str(self.watched / 'gone.zip')  # deleted while it was checked
