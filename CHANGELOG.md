@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- A dangerous file notification is now one notification from one process (its number is
+  read at once through `stdbuf`), so no identical duplicates pile up and it closes once
+  the file is handled.
+
 - Fix a file downloaded again under the same name and with the same contents (like a
   test file) not being checked: unchanged contents are only recognized for the same file.
 

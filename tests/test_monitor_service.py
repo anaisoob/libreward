@@ -1,5 +1,6 @@
 """Linux user service for folder monitoring; systemctl is always mocked."""
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -228,62 +229,57 @@ class NotificationActionTests(unittest.TestCase):
         self.assertNotIn('--print-id', run.call_args.args[0])
         LinuxBackend._notification_ids.clear()
 
-    def test_threat_notifications_get_a_number_and_can_be_closed(self):
-        import subprocess
+    def fake_desktop(self, directory):
+        """notify-send and gdbus stand-ins that record their calls, run as real processes."""
+        log = Path(directory) / 'calls.log'
+        notify = Path(directory) / 'notify-send'
+        notify.write_text('#!/bin/sh\n'
+                          f'echo "notify-send $*" >> {log}\n'
+                          'case "$*" in *--print-id*) echo 31;; esac\n'
+                          'case "$*" in *--action*) sleep 1;; esac\n')
+        gdbus = Path(directory) / 'gdbus'
+        gdbus.write_text(f'#!/bin/sh\necho "gdbus $*" >> {log}\n')
+        for tool in (notify, gdbus):
+            tool.chmod(0o755)
+        tools = {'notify-send': str(notify), 'gdbus': str(gdbus), 'stdbuf': shutil.which('stdbuf')}
+        return log, patch('backends.linux.shutil.which', side_effect=tools.get)
+
+    def test_a_warning_is_one_notification_with_a_number_and_can_be_closed(self):
+        if not shutil.which('stdbuf'):
+            self.skipTest('stdbuf required')
         LinuxBackend._notification_ids.clear()
-        waiting = Mock()
-        waiting.wait.side_effect = subprocess.TimeoutExpired('notify-send', 2)
-        with patch('backends.linux.shutil.which', side_effect=lambda name: f'/usr/bin/{name}'), \
-                patch('backends.linux.subprocess.run', return_value=Mock(returncode=0, stdout='23\n')) as run, \
-                patch('backends.linux.subprocess.Popen', return_value=waiting) as popen, \
-                patch('backends.linux.threading.Thread'):
-            backend = LinuxBackend()
-            self.assertTrue(backend.send_desktop_notification('Threat', 'eicar.com', warning=True,
-                                                              on_open=lambda _token: None, replace='check:eicar.com'))
-            self.assertIn('--print-id', run.call_args.args[0])
-            self.assertIn('--replace-id=23', popen.call_args.args[0])
-            self.assertTrue(backend.close_desktop_notification('check:eicar.com'))
-            self.assertEqual(run.call_args.args[0][-1], '23')
-            self.assertIn('org.freedesktop.Notifications.CloseNotification', run.call_args.args[0])
-            self.assertFalse(backend.close_desktop_notification('check:eicar.com'))  # already closed
+        with tempfile.TemporaryDirectory() as directory:
+            log, which = self.fake_desktop(directory)
+            with which:
+                backend = LinuxBackend()
+                self.assertTrue(backend.send_desktop_notification(
+                    'Threat', 'eicar.com', warning=True, on_open=lambda _token: None, replace='check:/d/eicar.com'))
+                self.assertEqual(LinuxBackend._notification_ids['check:/d/eicar.com'], 31)
+                self.assertTrue(backend.close_desktop_notification('check:/d/eicar.com'))
+                self.assertFalse(backend.close_desktop_notification('check:/d/eicar.com'))  # already closed
+            calls = log.read_text().splitlines()
+        shown = [call for call in calls if call.startswith('notify-send')]
+        self.assertEqual(len(shown), 1)  # no second, identical notification
+        self.assertIn('--action=open=Open LibreWard', shown[0])
+        self.assertIn('--print-id', shown[0])
+        self.assertTrue(calls[-1].endswith('org.freedesktop.Notifications.CloseNotification 31'))
         LinuxBackend._notification_ids.clear()
 
     def test_a_warning_closes_the_earlier_notification_instead_of_replacing_it(self):
-        import subprocess
+        if not shutil.which('stdbuf'):
+            self.skipTest('stdbuf required')
         LinuxBackend._notification_ids.clear()
         LinuxBackend._notification_ids['download:/d/x.part'] = 12  # "Checking…"
-        waiting = Mock()
-        waiting.wait.side_effect = subprocess.TimeoutExpired('notify-send', 2)
-        with patch('backends.linux.shutil.which', side_effect=lambda name: f'/usr/bin/{name}'), \
-                patch('backends.linux.subprocess.run', return_value=Mock(returncode=0, stdout='40\n')) as run, \
-                patch('backends.linux.subprocess.Popen', return_value=waiting) as popen, \
-                patch('backends.linux.threading.Thread'):
-            LinuxBackend().send_desktop_notification('Threat', 'x.zip', warning=True,
-                                                     on_open=lambda _token: None, replace='download:/d/x.part')
-        commands = [call.args[0] for call in run.call_args_list]
-        self.assertIn('org.freedesktop.Notifications.CloseNotification', commands[0])
-        self.assertEqual(commands[0][-1], '12')
-        self.assertFalse(any(argument.startswith('--replace-id=12') for argument in commands[1]))
-        self.assertIn('--replace-id=40', popen.call_args.args[0])
-        self.assertEqual(LinuxBackend._notification_ids['download:/d/x.part'], 40)
+        with tempfile.TemporaryDirectory() as directory:
+            log, which = self.fake_desktop(directory)
+            with which:
+                LinuxBackend().send_desktop_notification('Threat', 'x.zip', warning=True,
+                                                         on_open=lambda _token: None, replace='download:/d/x.part')
+            calls = log.read_text().splitlines()
+        self.assertTrue(calls[0].endswith('CloseNotification 12'))
+        self.assertNotIn('--replace-id', calls[1])
+        self.assertEqual(LinuxBackend._notification_ids['download:/d/x.part'], 31)
         LinuxBackend._notification_ids.clear()
-
-    def test_a_number_of_an_already_closed_notification_is_not_kept(self):
-        import subprocess
-        LinuxBackend._notification_ids.clear()
-        LinuxBackend._notification_ids['check:/d/eicar.com'] = 5  # from an earlier test, already dismissed
-        waiting = Mock()
-        waiting.wait.side_effect = subprocess.TimeoutExpired('notify-send', 2)
-        with patch('backends.linux.shutil.which', side_effect=lambda name: f'/usr/bin/{name}'), \
-                patch('backends.linux.subprocess.run', return_value=Mock(returncode=0, stdout='31\n')) as run, \
-                patch('backends.linux.subprocess.Popen', return_value=waiting) as popen, \
-                patch('backends.linux.threading.Thread'):
-            LinuxBackend().send_desktop_notification('Threat', 'eicar.com', warning=True,
-                                                     on_open=lambda _token: None, replace='check:/d/eicar.com')
-        self.assertIn('--replace-id=31', popen.call_args.args[0])  # the desktop's new number is used
-        self.assertEqual(LinuxBackend._notification_ids['check:/d/eicar.com'], 31)
-        LinuxBackend().forget_desktop_notification('check:/d/eicar.com')
-        self.assertNotIn('check:/d/eicar.com', LinuxBackend._notification_ids)
 
     def test_firefox_based_browsers_are_found(self):
         labels = {label for label, _root, kind in LinuxBackend().browser_profile_locations() if kind == 'firefox'}

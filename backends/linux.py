@@ -127,24 +127,22 @@ class LinuxBackend(PlatformBackend):
             previous = None
         replacing = [f'--replace-id={previous}'] if previous else []
         if on_open is not None:
-            if replace:
-                # notify-send waits for the user with actions and prints nothing until
-                # then; show it once without them to learn its number, so it can be
-                # closed later (for example after the file was moved to quarantine).
-                # The desktop returns a new number if the earlier one was closed.
-                number = self._notify(basic + replacing + ['--print-id'] + text, read_id=True)
-                replacing = [f'--replace-id={number}'] if number else []
-                with self._notification_lock:
-                    if number:
-                        self._notification_ids[replace] = number
-                    else:
-                        self._notification_ids.pop(replace, None)
-            actions = basic + replacing + ['--action=default=Open LibreWard', '--action=open=Open LibreWard']
-            # libnotify 0.8.4+ hands over the activation token; older versions only the action.
-            if self._notify_with_action(actions, text, on_open, token=True) or \
-                    self._notify_with_action(actions, text, on_open, token=False):
-                return True
-            return self._notify(basic + text)
+            actions = basic + ['--action=default=Open LibreWard', '--action=open=Open LibreWard']
+            # One notify-send process shows the warning and waits for the user. Its
+            # number lets LibreWard close it once the file is handled; GNOME then tells
+            # that same process, which ends. (Showing it first without actions to learn
+            # the number left a second, identical notification whenever the
+            # replacement did not take effect.)
+            for token in (True, False):  # libnotify 0.8.4+ hands over the activation token
+                shown = self._notify_with_action(actions, text, on_open, token=token, read_id=bool(replace))
+                if shown:
+                    with self._notification_lock:
+                        if isinstance(shown, int) and shown is not True:
+                            self._notification_ids[replace] = shown
+                        elif replace:
+                            self._notification_ids.pop(replace, None)
+                    return True
+            return bool(self._notify(basic + text))
         if replace:
             number = self._notify(basic + replacing + ['--print-id'] + text, read_id=True)
             if number:
@@ -177,13 +175,21 @@ class LinuxBackend(PlatformBackend):
                 chunks.append(chunk)
         return b''.join(chunks).decode('utf-8', 'replace').strip()
 
-    def _notify_with_action(self, command, text, on_open, *, token):
-        """notify-send waits with actions; answer in a thread once it was shown."""
-        import threading
+    def _notify_with_action(self, command, text, on_open, *, token, read_id=False):
+        """notify-send waits with actions; answer in a thread once it was shown.
+
+        Returns False when not shown, otherwise the notification's number when
+        `read_id` and it could be read, else True.
+        """
+        import select
         pipes = [os.pipe(), os.pipe()] if token else []
         if pipes:
             # Written directly by notify-send, unlike its buffered standard output.
             command = command + [f'--selected-action-fd={pipes[0][1]}', f'--activation-token-fd={pipes[1][1]}']
+        stdbuf = shutil.which('stdbuf') if read_id else None
+        if stdbuf:
+            # Line-buffered output: the number arrives at once, not when it ends.
+            command = [stdbuf, '-oL', *command, '--print-id']
         try:
             process = subprocess.Popen(command + text, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                        stderr=subprocess.DEVNULL, text=True,
@@ -193,8 +199,12 @@ class LinuxBackend(PlatformBackend):
         finally:
             for _read, write in pipes:
                 os.close(write)
+        number = None
+        if process is not None and stdbuf and select.select([process.stdout], [], [], 3)[0]:
+            first = process.stdout.readline().strip()
+            number = int(first) if first.isdigit() and int(first) > 0 else None
         try:
-            if process is None or process.wait(timeout=2) != 0:
+            if process is None or process.wait(timeout=0 if number else 2) != 0:
                 raise ChildProcessError
         except subprocess.TimeoutExpired:
             pass  # shown and waiting for the user
@@ -217,7 +227,7 @@ class LinuxBackend(PlatformBackend):
                 on_open(activation)
 
         threading.Thread(target=answer, name='notification-action', daemon=True).start()
-        return True
+        return number or True
 
     # Display variables a session sets after the user manager started this agent.
     SESSION_VARIABLES = ('WAYLAND_DISPLAY', 'DISPLAY', 'XAUTHORITY', 'XDG_SESSION_TYPE',
