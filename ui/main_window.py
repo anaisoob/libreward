@@ -58,7 +58,10 @@ class QtMainWindow(QMainWindow):
         self.monitor_state_mtime = None
         self.threat_dialog = None
         self.quarantine_items = 0
+        # Pages built earlier (Live protection) may report state before later ones exist.
+        self.shell_ready = False
         self.build_shell()
+        self.shell_ready = True
         self.setup_window_icon()
         # Earlier versions started LibreWard at login; protection no longer needs it.
         backend.remove_autostart()
@@ -110,10 +113,17 @@ class QtMainWindow(QMainWindow):
 
     def show_monitor_threats(self, state):
         """List background threats on the scan page; new ones ask what to do."""
+        if not self.shell_ready:
+            return  # checked again once the window is complete, see open_background_threats
         updated = state.get('updated')
         if updated == self.monitor_state_mtime:
             return
         self.monitor_state_mtime = updated
+        if self.list_background_threats():
+            self.open_background_threats()
+
+    def list_background_threats(self):
+        """Add background threats to Detected files; True when one was new there."""
         added = False
         for path, threat, _found, _new in self.background_threats():
             if any(self.results.item(i, 0).text() == path for i in range(self.results.rowCount())):
@@ -126,12 +136,13 @@ class QtMainWindow(QMainWindow):
         if added:
             self.findings_card.show()
             self.set_status('Live protection found a dangerous file', 'danger')
-            self.open_background_threats()
+        return added
 
     def open_background_threats(self, *, activated=False):
         """Ask once what to do with new threats; opened from a notification, show the scan page."""
         if activated:
             self.switch_page('scan')
+        self.list_background_threats()
         threats = [(path, threat, found) for path, threat, found, new in self.background_threats() if new]
         if not threats or self.threat_dialog is not None:
             return
@@ -238,7 +249,7 @@ class QtMainWindow(QMainWindow):
         self.pages.setCurrentIndex(self.page_indices[key])
         for name, button in self.nav_buttons.items():
             button.setChecked(name == key)
-        if key != "quarantine" and not self.quarantine_items:
+        if key != "quarantine" and not self.quarantine_items and "quarantine" in self.nav_buttons:
             self.nav_buttons["quarantine"].hide()
         self.update_scan_indicator()
         if key == 'internet':

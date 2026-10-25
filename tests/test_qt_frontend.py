@@ -265,6 +265,23 @@ class QtFrontendTests(unittest.TestCase):
                 self.window.file_protection.refresh()
                 asked.assert_called_once()
 
+    def test_starting_with_an_unhandled_threat_opens_the_window_then_asks(self):
+        from ui.dialogs import ThreatsFoundDialog
+        with tempfile.TemporaryDirectory() as folder:
+            self.background_threat(folder)
+            with patch.object(ThreatsFoundDialog, 'exec', return_value=QDialog.DialogCode.Rejected) as asked:
+                window = QtMainWindow()  # crashed while building the sidebar
+                try:
+                    self.assertFalse(asked.called)  # not while the window is built
+                    for _ in range(5):
+                        self.app.processEvents()
+                    asked.assert_called_once()
+                    self.assertEqual(window.results.rowCount(), 1)
+                    self.assertEqual(window.pages.currentIndex(), window.page_indices['scan'])
+                finally:
+                    window.close()
+                    window.deleteLater()
+
     def test_closing_the_threat_question_asks_again_and_keep_does_not(self):
         from ui.dialogs import ThreatsFoundDialog
         with tempfile.TemporaryDirectory() as folder:
@@ -279,7 +296,7 @@ class QtFrontendTests(unittest.TestCase):
                 self.window.open_background_threats()
             quarantine.assert_not_called()
             self.assertEqual(self.window.config['threats_reviewed_at'], 10)
-            self.assertEqual(self.window.results.rowCount(), 0)  # rows come from the page poll
+            self.assertEqual(self.window.results.rowCount(), 1)  # also listed under Detected files
 
     def test_delete_from_threat_question_still_confirms(self):
         from ui.dialogs import ThreatsFoundDialog

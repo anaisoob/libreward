@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fix LibreWard not starting (and Open LibreWard in a threat notification doing nothing)
+  while a threat found in the background was still waiting for a decision.
+
 - While protection for new files is off, its folders are listed as “Folders to protect”
   instead of “Protected folders”. While a scan prepares, only one progress bar is shown;
   the thin activity bar appears once files are being checked.
