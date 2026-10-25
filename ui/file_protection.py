@@ -86,7 +86,7 @@ class FileProtectionSection:
         self.timer = QTimer(card)
         self.timer.timeout.connect(self.refresh)
         self.timer.start(30000)
-        if self.enabled and not backend.monitor_service_installed():
+        if self.enabled and not backend.monitor_service_installed() and not backend.monitor_agent_running():
             # Removed outside LibreWard, for example by uninstalling: never turn it
             # back on by itself. The folders are kept for the next Turn on.
             self.save(watch_folders_enabled=False)

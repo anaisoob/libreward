@@ -95,6 +95,10 @@ class WindowsBackend(PlatformBackend):
         if roaming:
             entries.extend([
                 ('Firefox', Path(roaming) / 'Mozilla/Firefox', 'firefox'),
+                ('LibreWolf', Path(roaming) / 'librewolf', 'firefox'),
+                ('Waterfox', Path(roaming) / 'Waterfox', 'firefox'),
+                ('Floorp', Path(roaming) / 'Floorp', 'firefox'),
+                ('Zen', Path(roaming) / 'zen', 'firefox'),
                 ('Opera', Path(roaming) / 'Opera Software/Opera Stable', 'chromium'),
             ])
         return entries

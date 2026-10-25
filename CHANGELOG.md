@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Downloads in LibreWolf, Waterfox, Floorp and Zen are found too. A threat notification
+  closes once the file is moved to quarantine, deleted or kept; a cancelled download
+  loses its “Waiting” notification. A file is no longer checked a second time when the
+  browser adds its download address after saving. The threat question opens only once
+  the main window is shown.
+
 - Files saved anywhere with Save as are checked too: the service reads the browsers'
   lists of finished downloads (only the downloads, never visited websites). With clamd
   installed, the service keeps its own clamd running for ten minutes after a check, so

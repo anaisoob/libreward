@@ -298,6 +298,10 @@ class PlatformBackend(ABC):
         """
         return False
 
+    def close_desktop_notification(self, replace):
+        """Remove the notification last sent with this `replace` key; True when closed."""
+        return False
+
     def notifications_available(self):
         """Whether send_desktop_notification can reach the desktop at all."""
         return False

@@ -121,11 +121,16 @@ class LinuxBackend(PlatformBackend):
             previous = self._notification_ids.get(replace) if replace else None
         replacing = [f'--replace-id={previous}'] if previous else []
         if on_open is not None:
-            # The final notification of its kind; it waits for the user, so its own
-            # number is not read back.
+            if replace and not previous:
+                # notify-send waits for the user with actions and prints nothing until
+                # then; show it once without them to learn its number, so it can be
+                # closed later (for example after the file was moved to quarantine).
+                previous = self._notify(basic + ['--print-id'] + text, read_id=True)
+                replacing = [f'--replace-id={previous}'] if previous else []
+                if previous:
+                    with self._notification_lock:
+                        self._notification_ids[replace] = previous
             actions = basic + replacing + ['--action=default=Open LibreWard', '--action=open=Open LibreWard']
-            with self._notification_lock:
-                self._notification_ids.pop(replace, None)
             # libnotify 0.8.4+ hands over the activation token; older versions only the action.
             if self._notify_with_action(actions, text, on_open, token=True) or \
                     self._notify_with_action(actions, text, on_open, token=False):
@@ -230,6 +235,21 @@ class LinuxBackend(PlatformBackend):
     def notifications_available(self):
         return shutil.which('notify-send') is not None
 
+    def close_desktop_notification(self, replace):
+        with self._notification_lock:
+            number = self._notification_ids.pop(replace, None)
+        gdbus = shutil.which('gdbus')
+        if not number or not gdbus:
+            return False
+        try:
+            return subprocess.run(
+                [gdbus, 'call', '--session', '--dest', 'org.freedesktop.Notifications',
+                 '--object-path', '/org/freedesktop/Notifications',
+                 '--method', 'org.freedesktop.Notifications.CloseNotification', str(number)],
+                stdin=subprocess.DEVNULL, capture_output=True, timeout=5, check=False).returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+
     def show_error_without_gui(self, title, message):
         from html import escape
         for command in (['zenity', '--error', f'--title={title}', f'--text={escape(message)}'],
@@ -327,6 +347,15 @@ class LinuxBackend(PlatformBackend):
         ):
             entries.append((label + ' (Flatpak)', home / '.var/app' / package / 'config' / relative, kind))
         entries.append(('Firefox (Flatpak)', home / '.var/app/org.mozilla.firefox/.mozilla/firefox', 'firefox'))
+        # Firefox-based browsers keep the same profile layout in their own folder.
+        for label, folder, package in (
+            ('LibreWolf', '.librewolf', 'io.gitlab.librewolf-community'),
+            ('Waterfox', '.waterfox', 'net.waterfox.waterfox'),
+            ('Floorp', '.floorp', 'one.ablaze.floorp'),
+            ('Zen', '.zen', 'app.zen_browser.zen'),
+        ):
+            entries.append((label, home / folder, 'firefox'))
+            entries.append((label + ' (Flatpak)', home / '.var/app' / package / folder, 'firefox'))
         override = os.environ.get('CHROME_USER_DATA_DIR')
         if override and os.path.isabs(override):
             entries.append(('Chrome / Chromium (custom)', Path(override), 'chromium'))

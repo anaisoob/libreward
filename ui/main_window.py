@@ -90,7 +90,16 @@ class QtMainWindow(QMainWindow):
         QTimer.singleShot(60 * 1000, self.maybe_auto_update_database)
         self.start_task("check", self.check_runtime, on_done=self.offer_setup)
         # Threats found while LibreWard was closed and not handled yet.
-        QTimer.singleShot(0, self.open_background_threats)
+        QTimer.singleShot(0, self, lambda: self.when_shown(self.open_background_threats))
+
+    def when_shown(self, callback, attempts=60):
+        """Run once the desktop shows the window, so a dialog never appears without it."""
+        handle = self.windowHandle()
+        if (handle is not None and handle.isExposed()) or attempts <= 0:
+            callback()
+        else:
+            # Bound to the window: cancelled if it is closed meanwhile.
+            QTimer.singleShot(50, self, lambda: self.when_shown(callback, attempts - 1))
 
     def restore_window(self):
         self.setWindowState(self.windowState() & ~Qt.WindowState.WindowMinimized)
@@ -1677,7 +1686,7 @@ def run(autostart=False, threats=False):
     window.instance_server = listen_for_instances(window, name)
     window.show()
     if threats:
-        QTimer.singleShot(0, lambda: window.open_background_threats(activated=True))
+        window.when_shown(lambda: window.open_background_threats(activated=True))
     try:
         return app.exec()
     finally:

@@ -156,7 +156,9 @@ class FolderMonitor:
 
     @staticmethod
     def _signature(stat):
-        return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+        # Contents only: browsers add metadata (such as the download address) after
+        # saving, which changes ctime but must not check the file a second time.
+        return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
 
     def ready(self, limit=64):
         ready = []

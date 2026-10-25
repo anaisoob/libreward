@@ -228,6 +228,30 @@ class NotificationActionTests(unittest.TestCase):
         self.assertNotIn('--print-id', run.call_args.args[0])
         LinuxBackend._notification_ids.clear()
 
+    def test_threat_notifications_get_a_number_and_can_be_closed(self):
+        import subprocess
+        LinuxBackend._notification_ids.clear()
+        waiting = Mock()
+        waiting.wait.side_effect = subprocess.TimeoutExpired('notify-send', 2)
+        with patch('backends.linux.shutil.which', side_effect=lambda name: f'/usr/bin/{name}'), \
+                patch('backends.linux.subprocess.run', return_value=Mock(returncode=0, stdout='23\n')) as run, \
+                patch('backends.linux.subprocess.Popen', return_value=waiting) as popen, \
+                patch('backends.linux.threading.Thread'):
+            backend = LinuxBackend()
+            self.assertTrue(backend.send_desktop_notification('Threat', 'eicar.com', warning=True,
+                                                              on_open=lambda _token: None, replace='check:eicar.com'))
+            self.assertIn('--print-id', run.call_args.args[0])
+            self.assertIn('--replace-id=23', popen.call_args.args[0])
+            self.assertTrue(backend.close_desktop_notification('check:eicar.com'))
+            self.assertEqual(run.call_args.args[0][-1], '23')
+            self.assertIn('org.freedesktop.Notifications.CloseNotification', run.call_args.args[0])
+            self.assertFalse(backend.close_desktop_notification('check:eicar.com'))  # already closed
+        LinuxBackend._notification_ids.clear()
+
+    def test_firefox_based_browsers_are_found(self):
+        labels = {label for label, _root, kind in LinuxBackend().browser_profile_locations() if kind == 'firefox'}
+        self.assertTrue({'Firefox', 'LibreWolf', 'Waterfox', 'Floorp', 'Zen', 'LibreWolf (Flatpak)'} <= labels)
+
     def test_warnings_use_the_exclamation_mark_icon(self):
         with patch('backends.linux.shutil.which', return_value='/usr/bin/notify-send'), \
                 patch('backends.linux.subprocess.run', return_value=Mock(returncode=0, stdout='')) as run:

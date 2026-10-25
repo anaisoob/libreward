@@ -139,6 +139,19 @@ class FolderMonitorTests(unittest.TestCase):
             finally:
                 monitor.stop()
 
+    def test_metadata_added_after_saving_does_not_check_again(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'download.zip'
+            path.write_text('contents')
+            monitor = FolderMonitor([folder], [], settle=0)
+            monitor.changed(str(path))
+            monitor.ready()
+            self.assertEqual(monitor.ready(), [str(path)])
+            os.chmod(path, 0o600)  # changes ctime only, like a browser's download address
+            monitor.changed(str(path))
+            self.assertEqual(monitor.ready(), [])
+            self.assertEqual(monitor.ready(), [])
+
     def test_file_targets_work_with_parallel_discovery(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / 'sample'

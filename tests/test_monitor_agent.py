@@ -51,7 +51,9 @@ class MonitorAgentTests(unittest.TestCase):
         self.config_file.write_text(json.dumps(config))
 
     def agent(self, gui_running=False):
-        return MonitorAgent(notify=self.notify, open_application=self.open_application,
+        self.close_notification = Mock(return_value=True)
+        return MonitorAgent(notify=self.notify, close_notification=self.close_notification,
+                            open_application=self.open_application,
                             gui_running=lambda: gui_running, log=self.logged.append)
 
     def scanning_agent(self, result):
@@ -236,6 +238,41 @@ class MonitorAgentTests(unittest.TestCase):
             agent.config['scan_profile'] = 'extended'
             agent.scan([str(self.watched / 'd')])
             self.assertIsNot(agent.clamd, first)
+
+    def test_threat_notification_is_removed_once_the_file_is_handled(self):
+        quarantined = self.watched / 'eicar.com'
+        kept = self.watched / 'kept.exe'
+        for path in (quarantined, kept):
+            path.write_text('sample')
+        result = {'infected': [(str(quarantined), 'Eicar FOUND')], 'infected_found': True, 'errors': False,
+                  'warnings': False, 'stopped': False, 'scanned': 1}
+        agent, scan = self.scanning_agent(result)
+        with scan:
+            agent.scan([str(quarantined)])
+        agent.forget_handled_threats()
+        self.close_notification.assert_not_called()  # still waiting for a decision
+        quarantined.unlink()
+        agent.forget_handled_threats()
+        self.close_notification.assert_called_once_with('check:eicar.com')
+        # "Keep file" in LibreWard marks the threat as decided.
+        agent.threat_notices[str(kept)] = ('check:kept.exe', 50)
+        agent.config['threats_reviewed_at'] = 60
+        agent.forget_handled_threats()
+        self.close_notification.assert_called_with('check:kept.exe')
+
+    def test_cancelled_download_loses_its_waiting_notification(self):
+        agent = self.agent()
+        agent.config = {}
+        with patch('core.monitor_agent.time.monotonic', return_value=100):
+            agent.announce(['setup.zip'])
+            agent.announce([])  # gone: cancelled, or moved to a folder chosen in Firefox
+        with patch('core.monitor_agent.time.monotonic', return_value=110):
+            agent.announce([])
+        self.close_notification.assert_not_called()  # the download list may still find it
+        with patch('core.monitor_agent.time.monotonic', return_value=100 + monitor_agent.STALE_DOWNLOAD + 1):
+            agent.announce([])
+        self.close_notification.assert_called_once_with('download:setup.zip')
+        self.assertEqual(agent.announced, {})
 
     def test_failed_scans_retry_and_notify_once(self):
         agent, scan = self.scanning_agent({'infected': [], 'errors': True, 'stopped': False, 'scanned': 0})

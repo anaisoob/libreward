@@ -41,6 +41,10 @@ BATCH_SIZE = 64
 MAX_THREATS = 100
 # A check that takes longer than this says "Checking…" while it runs.
 SLOW_CHECK = 2
+# A download that disappeared without being checked (cancelled) loses its
+# "Waiting" notification after this. Firefox moves a download to the folder chosen
+# in its dialog; the browser's download list then finds it well within this time.
+STALE_DOWNLOAD = 30
 MAX_LOG_BYTES = 1024 * 1024
 # EX_CONFIG: a component is missing; restarting does not help.
 MISSING_COMPONENT_EXIT = 78
@@ -135,8 +139,10 @@ class _Discard:
 
 
 class MonitorAgent:
-    def __init__(self, *, notify=None, open_application=None, gui_running=None, log=None):
+    def __init__(self, *, notify=None, close_notification=None, open_application=None, gui_running=None,
+                 log=None):
         self.notify = notify or backend.send_desktop_notification
+        self.close_notification = close_notification or backend.close_desktop_notification
         self.open_application = open_application or backend.open_application
         self.gui_running = gui_running or backend.gui_running
         self.log = log or _log
@@ -163,8 +169,11 @@ class MonitorAgent:
         self.database_thread = None
         self.database_checked = time.monotonic() - DATABASE_INTERVAL + 60
         self.undelivered = []
-        # Downloads announced in a notification, which later shows their result.
-        self.announced = set()
+        # Downloads announced in a notification, which later shows their result:
+        # name -> None while downloading, or when it disappeared.
+        self.announced = {}
+        # Threat notifications by file, removed once the file is gone (quarantined, deleted).
+        self.threat_notices = {}
         self.notification_lock = threading.Lock()
         previous = read_state()
         self.state = {key: previous[key] for key in
@@ -368,6 +377,7 @@ class MonitorAgent:
         downloads = monitor.downloads()
         self.update_state(downloading=downloads[:5])
         self.announce(downloads)
+        self.forget_handled_threats()
         if time.monotonic() < self.retry_at:
             return
         paths = [path for path in monitor.ready(BATCH_SIZE) if os.path.isfile(path)]
@@ -379,21 +389,39 @@ class MonitorAgent:
                 self.update_state(checking=None)
 
     def announce(self, downloads):
+        now = time.monotonic()
         # Chrome calls a download "Unconfirmed …" (shown as 'a download') until it
         # has a name; announce it once it does.
         for name in downloads:
-            if name != 'a download' and name not in self.announced:
-                self.announced.add(name)
-                if not threats_only(self.config):
-                    self.send('LibreWard — download', f'Waiting for {name} to finish downloading. '
-                              'LibreWard checks it for viruses right after.', False, replace=f'download:{name}')
+            if name != 'a download' and name not in self.announced and not threats_only(self.config):
+                self.send('LibreWard — download', f'Waiting for {name} to finish downloading. '
+                          'LibreWard checks it for viruses right after.', False, replace=f'download:{name}')
+            if name != 'a download':
+                self.announced[name] = None
+        for name, gone in list(self.announced.items()):
+            if name not in downloads and gone is None:
+                self.announced[name] = now
+            elif gone is not None and now - gone > STALE_DOWNLOAD:
+                del self.announced[name]
+                self.close_notification(f'download:{name}')
+
+    def forget_handled_threats(self):
+        """Remove a threat notification once its file was handled in LibreWard."""
+        reviewed = self.config.get('threats_reviewed_at', 0)
+        reviewed = reviewed if isinstance(reviewed, (int, float)) else 0
+        for path, (key, found) in list(self.threat_notices.items()):
+            # Quarantined or deleted, or kept with "Keep file".
+            if not os.path.lexists(path) or found <= reviewed:
+                del self.threat_notices[path]
+                if all(other != key for other, _found in self.threat_notices.values()):
+                    self.close_notification(key)
 
     def scan(self, paths):
         _roots, patterns = self.settings
         self.scanning = paths
         name = os.path.basename(paths[0])
         key = f'download:{name}' if len(paths) == 1 and name in self.announced else f'check:{name}'
-        self.announced.discard(name)
+        self.announced.pop(name, None)
         done = threading.Event()
 
         def slow():
@@ -466,6 +494,8 @@ class MonitorAgent:
         with self.notification_lock:
             if dangerous or not threats_only(self.config):
                 self.send(title, message, warning, replace=key)
+        for path, _threat in result.get('infected', []):
+            self.threat_notices[path] = (key, found)
         if result.get('infected') and not self.gui_running():
             # An open window asks what to do by itself; otherwise LibreWard opens to ask.
             self.show_threats()

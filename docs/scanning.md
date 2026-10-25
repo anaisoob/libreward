@@ -123,8 +123,8 @@ the service notices it within seconds and protects the new folder too; turn off
 protect only the listed folders.
 
 Files saved anywhere else, with **Save as** or a browser set to ask where to save,
-are found in the browsers' lists of finished downloads (Firefox, and Chrome,
-Chromium, Edge, Brave, Vivaldi and Opera) and checked within about ten seconds after
+are found in the browsers' lists of finished downloads (Firefox, LibreWolf,
+Waterfox, Floorp, Zen, and Chrome, Chromium, Edge, Brave, Vivaldi and Opera) and checked within about ten seconds after
 the download finishes. LibreWard reads a private copy of each browser's history
 database after it changed, and from it only the downloads, never visited websites;
 nothing leaves the computer. Downloads made by other programs outside the protected
@@ -191,8 +191,14 @@ files get the result only. Desktops whose `notify-send` cannot replace notificat
 (libnotify older than 0.8) show these as separate notifications. **Notify me only
 when a dangerous file is found** keeps all but dangerous files quiet.
 
-When a file is dangerous, the notification shows a warning sign, stays until
-dismissed and offers **Open LibreWard**, and:
+Firefox starts downloading into its default folder while its save dialog is open and
+moves the file once a folder is chosen; the notification then shows the result for
+the moved file. A download that is cancelled loses its notification after half a
+minute.
+
+When a file is dangerous, the notification shows a warning sign, stays until the
+file is handled (moved to quarantine, deleted or kept in LibreWard) and offers
+**Open LibreWard**, and:
 
 - if LibreWard is closed, it opens by itself;
 - if it is open, it comes forward (with the desktop’s activation token, so GNOME on

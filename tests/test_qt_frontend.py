@@ -305,9 +305,13 @@ class QtFrontendTests(unittest.TestCase):
                 window = QtMainWindow()  # crashed while building the sidebar
                 try:
                     self.assertFalse(asked.called)  # not while the window is built
-                    for _ in range(5):
+                    window.show()
+                    deadline = time.monotonic() + 3
+                    while not asked.called and time.monotonic() < deadline:
                         self.app.processEvents()
+                        time.sleep(.01)
                     asked.assert_called_once()
+                    self.assertTrue(window.windowHandle().isExposed())  # never a dialog without its window
                     self.assertEqual(window.results.rowCount(), 1)
                     self.assertEqual(window.pages.currentIndex(), window.page_indices['scan'])
                 finally:
