@@ -139,11 +139,10 @@ class _Discard:
 
 
 class MonitorAgent:
-    def __init__(self, *, notify=None, close_notification=None, forget_notification=None, open_application=None,
+    def __init__(self, *, notify=None, close_notification=None, open_application=None,
                  gui_running=None, log=None):
         self.notify = notify or backend.send_desktop_notification
         self.close_notification = close_notification or backend.close_desktop_notification
-        self.forget_notification = forget_notification or backend.forget_desktop_notification
         self.open_application = open_application or backend.open_application
         self.gui_running = gui_running or backend.gui_running
         self.log = log or _log
@@ -411,13 +410,20 @@ class MonitorAgent:
                 del self.announced[partial]
                 self.close_notification(f'download:{partial}')
 
+    def close_vanished_downloads(self):
+        """Firefox renames its temporary partial file; that "Waiting" ends with the result."""
+        for partial, gone in list(self.announced.items()):
+            if gone is not None:
+                del self.announced[partial]
+                self.close_notification(f'download:{partial}')
+
     def scan(self, paths):
         _roots, patterns = self.settings
         self.scanning = paths
         partial = self.monitor.came_from(paths[0]) if len(paths) == 1 and self.monitor is not None else None
         if partial is not None and partial in self.announced:
             del self.announced[partial]
-            key = f'download:{partial}'  # the download's own notification shows the result
+            key = f'download:{partial}'  # "Checking…" updates the download's "Waiting"
         else:
             key = f'check:{paths[0]}'
         done = threading.Event()
@@ -502,11 +508,12 @@ class MonitorAgent:
         dangerous = bool(result.get('infected') or result.get('infected_found'))
         with self.notification_lock:
             done.set()
+            # The result is a new notification: GNOME does not reliably show a banner
+            # for an update in place of a "Waiting" or "Checking…" it already showed.
+            self.close_notification(key)
+            self.close_vanished_downloads()
             if dangerous or not threats_only(self.config):
-                self.send(title, message, warning, replace=key)
-            # Final: the next check of this file gets a notification of its own, which
-            # GNOME shows again (an update in place would not be shown).
-            self.forget_notification(key)
+                self.send(title, message, warning)
         if result.get('infected') and not self.gui_running():
             # An open window asks what to do by itself; otherwise LibreWard opens to ask.
             self.show_threats()

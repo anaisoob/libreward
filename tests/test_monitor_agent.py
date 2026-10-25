@@ -52,9 +52,7 @@ class MonitorAgentTests(unittest.TestCase):
 
     def agent(self, gui_running=False):
         self.close_notification = Mock(return_value=True)
-        self.forget_notification = Mock()
         return MonitorAgent(notify=self.notify, close_notification=self.close_notification,
-                            forget_notification=self.forget_notification,
                             open_application=self.open_application,
                             gui_running=lambda: gui_running, log=self.logged.append)
 
@@ -115,8 +113,9 @@ class MonitorAgentTests(unittest.TestCase):
         _title, message = self.notify.call_args.args
         self.assertIn('No threats found', message)
         self.assertIn('clean.zip', message)
-        self.assertEqual(self.notify.call_args.kwargs, {'warning': False, 'replace': f'check:{path}'})
-        self.forget_notification.assert_called_with(f'check:{path}')  # the next check is a new notification
+        # The result is always a new notification, so GNOME shows it.
+        self.assertEqual(self.notify.call_args.kwargs, {'warning': False, 'replace': None})
+        self.close_notification.assert_called_with(f'check:{path}')
         state = read_state()
         self.assertEqual(state['last_scan']['outcome'], 'No threats found')
         self.assertEqual(state.get('threats', []), [])
@@ -162,6 +161,7 @@ class MonitorAgentTests(unittest.TestCase):
         # Browsers use temporary, sometimes random names: none are shown while waiting.
         self.assertTrue(all(message.startswith('Waiting for a download to finish.') for message in messages))
         self.assertEqual(self.notify.call_args_list[0].kwargs['replace'], f'download:{partial}')
+        agent.announce([partial])  # Firefox renamed its temporary file
         agent.monitor.came_from.return_value = partial
         self.notify.reset_mock()
 
@@ -174,7 +174,12 @@ class MonitorAgentTests(unittest.TestCase):
             agent.scan([path])
         titles = [call.args[0] for call in self.notify.call_args_list]
         self.assertEqual(titles, ['LibreWard — checking', 'LibreWard — new files checked'])
-        self.assertEqual({call.kwargs['replace'] for call in self.notify.call_args_list}, {f'download:{partial}'})
+        # "Checking…" updates the "Waiting"; the result is a new notification that
+        # GNOME shows, and the download's notification and the vanished temporary one close.
+        self.assertEqual([call.kwargs['replace'] for call in self.notify.call_args_list],
+                         [f'download:{partial}', None])
+        self.assertEqual({call.args[0] for call in self.close_notification.call_args_list},
+                         {f'download:{partial}', f'download:{firefox_temporary}'})
         agent.monitor.came_from.return_value = None
         with scan:  # quick checks say nothing until the result
             self.notify.reset_mock()

@@ -184,17 +184,16 @@ login.
 
 ### Notifications and dangerous files
 
-One desktop notification follows each download: **Waiting for … to finish
-downloading** when it starts, **Checking … for viruses** if the check takes more
-than two seconds (large files), then the result in the same notification. Other new
-files get the result only. Desktops whose `notify-send` cannot replace notifications
-(libnotify older than 0.8) show these as separate notifications. **Notify me only
+A download shows **Waiting for a download to finish** when it starts, and
+**Checking … for viruses** in the same notification if the check takes more than two
+seconds (large files). When the check is done, that notification closes and the
+result comes as a new notification, which the desktop always shows as a banner.
+Other new files get the result only. **Notify me only
 when a dangerous file is found** keeps all but dangerous files quiet.
 
 Firefox starts downloading into its default folder while its save dialog is open and
-moves the file once a folder is chosen; the notification then shows the result for
-the moved file. A download that is cancelled loses its notification after half a
-minute.
+moves the file once a folder is chosen; the result is shown for the moved file. A
+download that is cancelled loses its notification after half a minute.
 
 When a file is dangerous, the notification shows a warning sign and says not to
 open the file. Like the others, it moves to the notification list after a few

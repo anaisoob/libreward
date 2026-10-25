@@ -168,10 +168,6 @@ class LinuxBackend(PlatformBackend):
     def notifications_available(self):
         return shutil.which('notify-send') is not None
 
-    def forget_desktop_notification(self, replace):
-        with self._notification_lock:
-            self._notification_ids.pop(replace, None)
-
     def close_desktop_notification(self, replace):
         with self._notification_lock:
             number = self._notification_ids.pop(replace, None)

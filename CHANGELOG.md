@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Fix the dangerous file notification appearing only at the next download, while the
+  window already asked: the result of a check is now always a new notification, and
+  the download's “Waiting” or “Checking” notification closes. GNOME did not always show
+  a banner for a notification updated in place.
+
 - Fix a new dangerous download with the name of an earlier, already handled file being
   listed without a question: the service forgets threats whose file is gone, and the
   window checks for undecided threats on every update.

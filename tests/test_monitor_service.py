@@ -176,8 +176,7 @@ class NotificationActionTests(unittest.TestCase):
         self.assertIn('--icon=dialog-warning', command)
         self.assertFalse(any(argument.startswith('--action') for argument in command))
         self.assertEqual(LinuxBackend._notification_ids['check:/d/eicar.com'], 31)
-        LinuxBackend().forget_desktop_notification('check:/d/eicar.com')
-        self.assertEqual(LinuxBackend._notification_ids, {})
+        LinuxBackend._notification_ids.clear()
 
     def test_firefox_based_browsers_are_found(self):
         labels = {label for label, _root, kind in LinuxBackend().browser_profile_locations() if kind == 'firefox'}
