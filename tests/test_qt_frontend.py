@@ -322,6 +322,41 @@ class QtFrontendTests(unittest.TestCase):
                     window.close()
                     window.deleteLater()
 
+    def test_a_threat_found_while_the_question_is_open_is_asked_next(self):
+        from ui.dialogs import ThreatsFoundDialog
+        # Let the check at startup finish first (it waits until the window is shown).
+        self.window.show()
+        for _ in range(20):
+            self.app.processEvents()
+            time.sleep(.01)
+        with tempfile.TemporaryDirectory() as folder:
+            first = self.background_threat(folder)
+            second = Path(folder) / 'second.exe'
+            second.write_text('sample')
+            asked = []
+
+            def answer(dialog):
+                files = [label.text() for label in dialog.findChildren(QLabel) if label.objectName() == 'dangerFile']
+                asked.append(files)
+                if len(asked) == 1:  # the second file arrives while the first question is open
+                    self.monitor_state.return_value = {'updated': 20, 'threats': [
+                        {'path': str(first), 'threat': 'Eicar-Signature FOUND', 'time': 10},
+                        {'path': str(second), 'threat': 'Other FOUND', 'time': 20}]}
+                return ThreatsFoundDialog.KEEP
+
+            with patch.object(ThreatsFoundDialog, 'exec', answer):
+                self.window.open_background_threats()
+                deadline = time.monotonic() + 3
+                while len(asked) < 2 and time.monotonic() < deadline:
+                    self.app.processEvents()
+            self.assertEqual(len(asked), 2)
+            self.assertIn('eicar.com', asked[0][0])
+            self.assertEqual(len(asked[1]), 1)
+            self.assertIn('second.exe', asked[1][0])
+            for _ in range(5):
+                self.app.processEvents()
+            self.assertEqual(len(asked), 2)  # nothing left to ask
+
     def test_threat_question_stands_out_from_ordinary_dialogs(self):
         from ui.dialogs import ThreatsFoundDialog
         from PySide6.QtWidgets import QWidget

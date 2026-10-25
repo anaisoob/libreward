@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fix a dangerous file found while the question about an earlier one was open never being
+  asked about: LibreWard now asks about it right after.
+
 - The dangerous file question stands out: a red band with a warning sign, a reddish
   background and border, and the file in a highlighted box, in dark and light themes.
 

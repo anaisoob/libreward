@@ -185,6 +185,13 @@ class QtMainWindow(QMainWindow):
         finally:
             self.threat_dialog.deleteLater()
             self.threat_dialog = None
+            # Files found while this question was open were not in it: ask about them next.
+            shown = {path for path, _threat, _found in threats}
+            QTimer.singleShot(0, self, lambda: self.ask_about_threats_found_meanwhile(shown))
+
+    def ask_about_threats_found_meanwhile(self, shown):
+        if any(new and path not in shown for path, _threat, _found, new in self.background_threats()):
+            self.open_background_threats()
 
     def setup_window_icon(self):
         self.setWindowIcon(app_icon())
