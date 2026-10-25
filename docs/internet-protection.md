@@ -215,8 +215,8 @@ entries retain their precedence over DNS.
 Every change is saved at once. While protection is off, nothing else is needed:
 the saved choices are used when you turn it on. While it is on, a highlighted bar
 at the bottom of the page, always in view, says **Your changes are not active yet**
-with **Apply changes**, and leaving the page asks whether to apply them. Status checks (every 30 seconds while the
-page is open) compare the active choices with the saved ones and never overwrite
+with **Apply changes**, and leaving the page asks whether to apply them. Status checks (when the page opens, after a
+change, and when the system service records a new state) compare the active choices with the saved ones and never overwrite
 your edits; editing stays possible during a check. Confirmation is short: a new
 DNS service behind systemd-resolved, or a package installation, is always
 explained first. Counts represent installed domains, not blocked visits.

@@ -255,6 +255,10 @@ class PlatformBackend(ABC):
         """Stop a privileged helper that is still waiting for the password; True if stopped."""
         return False
 
+    def internet_protection_state_directory(self):
+        """Directory whose changes mean the protection state changed, or None."""
+        return None
+
     def internet_protection_enabled(self):
         """Cheap check, without probing DNS: is the protection service switched on?"""
         return False

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- The Live protection page no longer checks the status every 30 seconds (which briefly
+  disabled the buttons) or every 3 seconds: it reacts when a service records a new state.
+
 - The Apply changes bar of Internet protection is a highlighted bar at the bottom of
   the page that stays in view while you change lists further down.
 

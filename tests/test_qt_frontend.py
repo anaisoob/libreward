@@ -53,6 +53,10 @@ class QtFrontendTests(unittest.TestCase):
         self.agent_running = self.patch('ui.main_window.backend.monitor_agent_running', return_value=False)
         self.monitor_state = self.patch('ui.main_window.read_state', return_value={})
         self.patch('ui.file_protection.read_state', new=self.monitor_state)
+        self.monitor_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.monitor_directory.cleanup)
+        self.patch('ui.file_protection.monitor_dir', return_value=Path(self.monitor_directory.name))
+        self.patch('ui.internet_page.backend.internet_protection_state_directory', return_value=None)
         self.window = QtMainWindow()
         self.wait_idle()
 
@@ -505,6 +509,21 @@ class QtFrontendTests(unittest.TestCase):
         page = self.window.internet_page
         self.assertFalse(page.scroll.widget().isAncestorOf(page.pending_bar))
         self.assertTrue(page.page.isAncestorOf(page.pending_bar))
+
+    def test_pages_react_to_state_changes_instead_of_polling(self):
+        section = self.window.file_protection
+        self.assertIn(self.monitor_directory.name, section.watcher.directories())
+        self.assertGreaterEqual(section.timer.interval(), 30000)
+        section.watcher.directoryChanged.emit(self.monitor_directory.name)
+        self.assertTrue(section.changed.isActive())  # one refresh shortly after, for a burst of changes
+        page = self.window.internet_page
+        self.assertFalse(hasattr(page, 'health_timer'))
+        with tempfile.TemporaryDirectory() as directory, \
+                patch('ui.internet_page.backend.internet_protection_state_directory', return_value=Path(directory)):
+            page.watch_state()
+            self.assertIn(directory, page.state_watcher.directories())
+            page.state_watcher.directoryChanged.emit(directory)
+            self.assertTrue(page.state_changed.isActive())
 
     def test_status_checks_never_undo_unapplied_choices(self):
         page = self.window.internet_page

@@ -1,7 +1,7 @@
 """Plain-language domain protection UI; system work belongs to backends."""
 import threading
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QFileSystemWatcher, Qt, QTimer
 from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QCheckBox, QComboBox, QFrame, QHBoxLayout, QLineEdit, QListWidget, QMessageBox,
     QRadioButton, QScrollArea, QVBoxLayout, QWidget,
@@ -28,10 +28,15 @@ class InternetProtectionPage:
         self.page, outer = window.page('Live protection', 'Protection that keeps working in the background, '
                                                           'also when LibreWard is closed.')
         self.page.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.health_timer = QTimer(self.page)
-        self.health_timer.setInterval(30000)
-        self.health_timer.timeout.connect(self.check_health)
-        self.health_timer.start()
+        # No polling: the status is checked when the page opens, after a change, and
+        # when the system service writes a new state (also after a crash recovery).
+        self.state_watcher = QFileSystemWatcher(self.page)
+        self.state_watcher.directoryChanged.connect(lambda _path: self.state_changed.start())
+        self.state_changed = QTimer(self.page)
+        self.state_changed.setSingleShot(True)
+        self.state_changed.setInterval(1000)
+        self.state_changed.timeout.connect(self.request_refresh)
+        self.watch_state()
         scroll = QScrollArea()
         self.scroll = scroll
         self.scroll_position = None
@@ -390,9 +395,10 @@ class InternetProtectionPage:
             self.pending = False
             self.status.setText('Checking Internet protection…')
 
-    def check_health(self):
-        if self.state and self.state.get('active') and self.window.pages.currentIndex() == self.window.page_indices['internet']:
-            self.request_refresh()
+    def watch_state(self):
+        directory = backend.internet_protection_state_directory()
+        if directory is not None and directory.is_dir() and str(directory) not in self.state_watcher.directories():
+            self.state_watcher.addPath(str(directory))
 
     def prepare_operation(self):
         if self.window.pages.currentIndex() == self.window.page_indices['internet']:
@@ -408,6 +414,7 @@ class InternetProtectionPage:
 
     def show_state(self, state):
         self.state = state
+        self.watch_state()  # the directory appears when protection is first turned on
         # Say once that the filter stopped; later status checks keep other notices.
         if state.get('recovered') and not state.get('active') and not self.recovery_noticed:
             self.recovery_noticed = True

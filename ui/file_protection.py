@@ -3,14 +3,14 @@ import os
 import threading
 import time
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QFileSystemWatcher, Qt, QTimer
 from PySide6.QtWidgets import QHBoxLayout
 
 from backends import backend
 from config import save_config
 from core.dependencies import install_hint, missing_components, missing_message
 from core.download_folders import discover_download_folders
-from core.monitor_agent import monitor_settings, read_state
+from core.monitor_agent import monitor_dir, monitor_settings, read_state
 
 from .dialogs import ProtectedFoldersDialog
 
@@ -63,9 +63,17 @@ class FileProtectionSection:
         self.notification_status.hide()
         box.addWidget(self.notification_status)
         layout.addWidget(card)
+        # The agent replaces its state file on every change; react to that instead
+        # of polling. A slow check notices an agent that stopped without writing.
+        self.watcher = QFileSystemWatcher(card)
+        self.changed = QTimer(card)
+        self.changed.setSingleShot(True)
+        self.changed.setInterval(200)
+        self.changed.timeout.connect(self.refresh)
+        self.watcher.directoryChanged.connect(lambda _path: self.changed.start())
         self.timer = QTimer(card)
         self.timer.timeout.connect(self.refresh)
-        self.timer.start(3000)
+        self.timer.start(30000)
         self.apply_service()
 
     # ── settings ────────────────────────────────────────────────────
@@ -169,6 +177,8 @@ class FileProtectionSection:
         self.service_error = error
         if enabled and not error:
             self.started_at = time.monotonic()
+            # Shows a failed start once "Turning on…" is over.
+            QTimer.singleShot(16000, self.refresh)
         if error:
             self.window.log.appendPlainText(f'Live protection: {error}')
         self.refresh()
@@ -180,7 +190,14 @@ class FileProtectionSection:
 
     # ── status ──────────────────────────────────────────────────────
 
+    def watch(self):
+        # The agent creates its directory when it first runs.
+        path = str(monitor_dir())
+        if path not in self.watcher.directories() and os.path.isdir(path):
+            self.watcher.addPath(path)
+
     def refresh(self):
+        self.watch()
         enabled = self.enabled
         state = read_state()
         running = enabled and backend.monitor_agent_running()
@@ -251,3 +268,5 @@ class FileProtectionSection:
 
     def stop(self):
         self.timer.stop()
+        self.changed.stop()
+        self.watcher.removePaths(self.watcher.directories())

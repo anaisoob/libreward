@@ -1265,6 +1265,11 @@ class LinuxBackend(PlatformBackend):
         code, output = self._firewall_query([resolvectl, 'dns'], timeout=5)
         return code == 0 and filter_is_global(output)
 
+    def internet_protection_state_directory(self):
+        # The installer and the recovery service replace dns-state.json here.
+        from .linux_dns_service import DIRECTORY
+        return Path(DIRECTORY)
+
     def internet_protection_enabled(self):
         from .linux_dns_service import STATE
         import json
