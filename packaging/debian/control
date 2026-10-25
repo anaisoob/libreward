@@ -14,9 +14,11 @@ Depends: ${misc:Depends},
          python3-pyside6.qtcore,
          python3-pyside6.qtgui,
          python3-pyside6.qtwidgets,
+         python3-pyside6.qtnetwork,
+         python3-watchdog,
          pkexec | policykit-1,
          systemd
-Recommends: clamav, network-manager, dnsmasq-base
+Recommends: clamav, libnotify-bin, network-manager, dnsmasq-base
 Suggests: ufw
 Description: simple virus scanning, firewall and Internet protection
  LibreWard is a cross-platform security and privacy desktop application. On

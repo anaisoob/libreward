@@ -259,5 +259,69 @@ class PlatformBackend(ABC):
         """Cheap check, without probing DNS: is the protection service switched on?"""
         return False
 
+    def downloads_directory(self):
+        """Configured system Downloads folder, or None when disabled."""
+        return Path.home() / 'Downloads'
+
+    def desktop_directory(self):
+        return Path.home() / 'Desktop'
+
+    def browser_profile_locations(self):
+        """(Browser label, configuration root, 'chromium' or 'firefox')."""
+        return []
+
+    def folder_observer(self):
+        """Native recursive filesystem notifications for this platform."""
+        from watchdog.observers import Observer
+        return Observer()
+
+    def send_desktop_notification(self, title, message, *, warning=False, on_open=None):
+        """Send without a tray; called from a worker. True when the desktop accepted it.
+
+        `on_open`, when given, adds an "Open LibreWard" action and is called from
+        a background thread if the user chooses it.
+        """
+        return False
+
+    # ── folder monitoring agent ─────────────────────────────────────
+
+    def application_command(self, *arguments):
+        """Command that starts this LibreWard installation (source or package)."""
+        import sys
+        if getattr(sys, 'frozen', False):
+            return [sys.executable, *arguments]
+        main = Path(__file__).resolve().parent.parent / 'main.py'
+        # -s and -E, like the installed launcher: user site-packages and PYTHON*
+        # variables cannot replace application modules.
+        return [sys.executable, '-s', '-E', str(main), *arguments]
+
+    def open_application(self):
+        """Start the GUI; a running window comes to the front instead."""
+        import subprocess
+        subprocess.Popen(self.application_command(), stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True)
+
+    @abstractmethod
+    def acquire_instance_lock(self, path):
+        """Exclusive lock held until the returned file is closed; None when taken."""
+        ...
+
+    def monitor_agent_running(self):
+        """True while a monitoring agent of this user holds its lock."""
+        from core.monitor_agent import lock_file
+        try:
+            lock = self.acquire_instance_lock(lock_file())
+        except OSError:
+            return False
+        if lock is None:
+            return True
+        lock.close()
+        return False
+
+    def set_monitor_service(self, enabled):
+        """Start the agent at login and now, or remove it. Raises OSError with a message."""
+        raise OSError('Background folder monitoring is not available on this platform.')
+
     def remove_autostart(self):
         """Remove a login autostart entry written by an earlier LibreWard version."""

@@ -46,7 +46,7 @@ GUI installation/update and firewall mutation operations are simulated. Automate
 tests never enable the host firewall or modify its rules. The suite does not download
 ClamAV or benchmark real antivirus scans.
 Domain-list downloads are mocked and the public DNS helper is tested only
-against temporary files. The database DNS filter is tested with real UDP/TCP queries on temporary loopback ports. Installer rollback, migration and failure recovery use temporary files and mocked service commands. Tests never alter system DNS settings.
+against temporary files. The database DNS filter is tested with real UDP/TCP queries on temporary loopback ports. Installer rollback, migration and failure recovery use temporary files and mocked service commands. Tests never alter system DNS settings. The folder monitoring service is tested with systemctl mocked and never installed or started.
 
 ## Release smoke checks
 
@@ -64,6 +64,11 @@ Verify on Windows and a desktop Linux installation:
 - Linux firewall detection, cancelled authorization, activation and LAN/all-address rules
   in a disposable VM. Verify matching traffic and UFW/firewalld persistence.
 - Themes, exclusions and reopening resized or maximized windows.
+- Folder monitoring on GNOME (Wayland) and KDE: turn it on, close the window, add a
+  clean file and an EICAR test file to a watched folder, check both notifications and
+  **Open LibreWard**, log out and in, then turn monitoring off and confirm
+  `systemctl --user status libreward-monitor.service` shows no service. Start
+  LibreWard twice and confirm the open window comes to the front.
 - Linux Internet protection in a disposable VM: enable, cancel authorization,
   allow/block an exact domain, update lists, pause, restart, and check IPv4/IPv6
   resolution. Verify VPN/DNS connection settings remain intact.

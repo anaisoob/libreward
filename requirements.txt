@@ -1,2 +1,3 @@
 # Qt for Python (LGPLv3; see README for distribution notes).
 PySide6>=6.8,<7
+watchdog>=6,<7

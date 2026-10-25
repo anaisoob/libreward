@@ -8,7 +8,13 @@ def main():
     parser.add_argument("--qt", action="store_true", help=argparse.SUPPRESS)  # older launch commands
     # Login autostart entries of earlier versions: removed on launch, nothing is shown.
     parser.add_argument("--autostart", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--monitor", action="store_true",
+                        help="run folder monitoring in the background (started by the user service)")
     args = parser.parse_args()
+    if args.monitor:
+        # Headless: no Qt, so the agent also runs before or without a desktop session.
+        from core.monitor_agent import main as monitor
+        return monitor()
     try:
         from ui.main_window import run
     except ModuleNotFoundError as exc:

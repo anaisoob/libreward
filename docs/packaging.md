@@ -20,6 +20,9 @@ Flatpak sandbox blocks exactly these operations, and working around it with
 The modules live in a private directory instead of site-packages because their
 names (`core`, `ui`, `config`, …) would clash with other packages. LibreWard
 installs no login autostart entry; Internet protection runs as a system service.
+Folder monitoring, when a user turns it on, runs as that user's systemd service
+`~/.config/systemd/user/libreward-monitor.service` (`libreward --monitor`),
+written by LibreWard rather than the package.
 Run `make test` for the test suite. `tests/test_packaging.py` checks that every
 module is installed and that package versions match.
 
@@ -35,7 +38,8 @@ not on upgrades: RPM `%preun` when `$1` is 0, Debian `prerm remove`, Arch
 The cleanup uses the same transaction as **Turn off**, removes only files
 LibreWard wrote, keeps anything else in `/etc/libreward`, and never fails the
 removal; on errors it prints the manual steps. User data (settings, lists,
-quarantine) stays in the home directory.
+quarantine) stays in the home directory. A user's folder monitoring service
+stays too, but is skipped (`ConditionPathExists`) once LibreWard is removed.
 Firewall rules belong to UFW or firewalld and are kept.
 
 ## Distribution support

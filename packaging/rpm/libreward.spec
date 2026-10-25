@@ -12,9 +12,12 @@ BuildRequires:  python3
 Requires:       python3
 # Generated Python provides work on Fedora (python3-pyside6) and openSUSE (python3XX-pyside6).
 Requires:       python3dist(pyside6)
+Requires:       python3dist(watchdog)
 Requires:       polkit
 Requires:       systemd
 Recommends:     clamav
+# Desktop notifications from folder monitoring (Fedora libnotify, openSUSE libnotify-tools).
+Recommends:     /usr/bin/notify-send
 Recommends:     NetworkManager
 Suggests:       firewalld
 

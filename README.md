@@ -14,6 +14,9 @@ ClamAV, Linux firewall management and Linux domain blocking.
   exceptions, optional adult-site blocking, and disk-backed local DNS filtering on supported NetworkManager/systemd setups.
   On systemd-resolved systems the filter forwards allowed names over TLS to a chosen DNS service (AdGuard DNS, Quad9, Cloudflare).
 - Folder scans and Quick system scans with configurable exclusions.
+- Optional monitoring of selected and browser download folders for new and changed
+  files, as a background service that keeps running when the window is closed and
+  notifies the desktop (GNOME, KDE and others; no tray icon needed).
 - Parallel scanning with `clamd` and standard scanning with `clamscan`.
 - Live progress, current-file information, cancellation and scan reports.
 - Threat detection and warnings for files that could not be fully checked.

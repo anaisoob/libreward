@@ -68,7 +68,13 @@ def normalize_scan_roots(scan_roots):
 
 def iter_scan_files(scan_roots, exclude_patterns, check_stop):
     """Discover files lazily, pruning overlapping roots without a file-sized set."""
-    unique = [root for root in normalize_scan_roots(scan_roots)
+    roots = normalize_scan_roots(scan_roots)
+    for root in roots:
+        if check_stop():
+            return
+        if os.path.isfile(root) and not path_is_excluded(root, exclude_patterns):
+            yield root
+    unique = [root for root in roots
               if os.path.isdir(root) and not path_is_excluded(root, exclude_patterns)]
     pending = list(reversed(unique))
     while pending and not check_stop():

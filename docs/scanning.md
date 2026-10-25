@@ -110,3 +110,69 @@ Select detected rows to quarantine or delete them. Quarantine supports confirmed
 restoration and permanent deletion, retains restore metadata and does not
 overwrite an existing file at the original location. Failed actions remain
 available for retry.
+
+## Automatic folder monitoring
+
+In Settings, enable **Automatically scan new and changed files**, add folders
+(**Find download folders** suggests the system Downloads folder and the folders
+configured in Firefox, Chrome, Chromium, Edge, Brave, Vivaldi and Opera), and
+select **Save settings**. LibreWard includes subfolders, applies scan exclusions,
+and records existing files as a baseline when monitoring starts. Only new or
+changed files are queued; use a manual scan to check existing files. LibreWard’s
+own application data, configuration and log folders are excluded. Files wait until
+their size and modification time settle, and incomplete browser downloads until
+the final file is ready. Filesystem notifications are supplemented by a check every
+minute, which also covers network folders without notifications. Monitoring scans
+after a change and does not block opening or executing a file.
+
+### Background service
+
+Monitoring runs in the background, independently of the window, like Internet
+protection: it keeps working when LibreWard is closed and starts again when you log
+in. Closing the window explains this once. To stop monitoring, turn it off in
+Settings and save. Saving folder or exclusion changes applies them to the running
+service within a few seconds.
+
+On Linux, LibreWard writes the systemd user service
+`~/.config/systemd/user/libreward-monitor.service`, which runs `libreward --monitor`
+at login, restarts it after a failure and scans with lower CPU and disk priority.
+It works with GNOME, KDE Plasma and other desktops and does not need a tray icon.
+Check it with:
+
+```sh
+systemctl --user status libreward-monitor.service
+journalctl --user -u libreward-monitor.service
+```
+
+On Windows, LibreWard starts the same agent at login through the
+`LibreWard Monitor` entry under
+`HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run`, and logs
+to `%APPDATA%\LibreWard\logs\monitor.log`.
+
+The service uses a running `clamd` when parallel scanning is enabled; otherwise it
+starts `clamscan` for each batch of files. While it runs, it also refreshes
+LibreWard’s own virus database (when automatic updates are enabled). It pauses
+while the antivirus engine or virus database is missing and while ClamAV is being
+updated. A failed scan is retried every minute, with one notification after
+repeated failures. Files still waiting when you log out are checked after the next
+login.
+
+### Notifications and results
+
+Each automatic batch sends a desktop notification with its result and file names.
+Results without threats are not kept in the notification list. A threat notification
+stays until dismissed and offers **Open LibreWard**; the threat also appears in
+Detected files while the file is still at its location. Deletion and quarantine
+still require confirmation. Starting LibreWard again while its window is open
+brings that window to the front.
+
+Linux notifications use `notify-send` (libnotify), which talks to the desktop’s
+notification service directly. Install your distribution’s package providing
+`notify-send` if needed (`libnotify` on Arch and Fedora, `libnotify-bin` on Debian
+and Ubuntu, `libnotify-tools` on openSUSE). Use **Test notification** in Settings
+to check delivery. A successful send means the desktop accepted the notification;
+desktop notification settings and Do Not Disturb can still suppress banners.
+
+Monitoring requires `watchdog`, included in the packages and in `requirements.txt`.
+When running from source, install dependencies in the Python environment used to
+launch LibreWard; the service uses the same interpreter.

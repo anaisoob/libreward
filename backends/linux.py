@@ -31,6 +31,8 @@ def _parse_version(raw: str | None) -> str | None:
     return m.group(1) if m else None
 
 
+MONITOR_UNIT = 'libreward-monitor.service'
+
 SYSTEM_DATABASE = Path('/var/lib/clamav')
 # The system database is used while its newest file is at most this old.
 SYSTEM_DATABASE_MAX_AGE = 3 * 24 * 3600
@@ -38,6 +40,126 @@ SYSTEM_DATABASE_MAX_AGE = 3 * 24 * 3600
 
 class LinuxBackend(PlatformBackend):
     """Platform backend for Linux."""
+
+    def send_desktop_notification(self, title, message, *, warning=False, on_open=None):
+        # libnotify sends to the desktop notification service (GNOME Shell,
+        # Plasma, …) independently of status icons. Never wait for it on the GUI thread.
+        from html import escape
+        executable = shutil.which('notify-send')
+        if not executable:
+            return False
+        icon = Path(__file__).resolve().parent.parent / 'assets/icons/libreward-256.png'
+        basic = [executable, '--app-name=LibreWard', f'--icon={icon if icon.is_file() else "libreward"}',
+                 '--urgency=' + ('critical' if warning else 'normal')]
+        # The desktop entry lets GNOME group notifications under LibreWard and
+        # list it in notification settings; routine results are not kept there.
+        extended = basic + ['--hint=string:desktop-entry:libreward'] + ([] if warning else ['--transient'])
+        text = ['--', title, escape(message)]
+        if on_open is not None and self._notify_with_action(
+                extended + ['--action=default=Open LibreWard', '--action=open=Open LibreWard'] + text, on_open):
+            return True
+        # Older libnotify versions reject the newer options.
+        return any(self._notify(command + text) for command in (extended, basic))
+
+    @staticmethod
+    def _notify(command):
+        try:
+            return subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                  stderr=subprocess.DEVNULL, timeout=5, check=False).returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+
+    @staticmethod
+    def _notify_with_action(command, on_open):
+        """notify-send waits with actions; answer in a thread once it was shown."""
+        import threading
+        try:
+            process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                       stderr=subprocess.DEVNULL, text=True)
+        except OSError:
+            return False
+        try:
+            if process.wait(timeout=2) != 0:
+                process.stdout.close()
+                return False
+        except subprocess.TimeoutExpired:
+            pass  # shown and waiting for the user
+
+        def answer():
+            with process.stdout:
+                choice = process.stdout.read().strip()
+            process.wait()
+            if choice in ('default', 'open'):
+                on_open()
+
+        threading.Thread(target=answer, name='notification-action', daemon=True).start()
+        return True
+
+    def _user_directory(self, name, fallback):
+        import shlex
+        home = Path.home()
+        config = Path(os.environ.get('XDG_CONFIG_HOME') or home / '.config')
+        try:
+            lines = (config / 'user-dirs.dirs').read_text(encoding='utf-8').splitlines()
+        except (OSError, UnicodeError):
+            lines = []
+        for line in lines:
+            key, separator, value = line.partition('=')
+            if not separator or key.strip() != f'XDG_{name}_DIR':
+                continue
+            try:
+                tokens = shlex.split(value, comments=True)
+                if len(tokens) != 1:
+                    continue
+                value = tokens[0]
+                for prefix in ('${HOME}', '$HOME'):
+                    if value == prefix or value.startswith(prefix + '/'):
+                        value = str(home) + value[len(prefix):]
+                        break
+                if '$' in value or not os.path.isabs(value):
+                    continue
+                folder = Path(value)
+                # xdg-user-dirs uses HOME to mark a special folder disabled.
+                return None if folder == home else folder
+            except ValueError:
+                continue
+        return home / fallback
+
+    def downloads_directory(self):
+        return self._user_directory('DOWNLOAD', 'Downloads')
+
+    def desktop_directory(self):
+        return self._user_directory('DESKTOP', 'Desktop')
+
+    def browser_profile_locations(self):
+        home = Path.home()
+        config = Path(os.environ.get('XDG_CONFIG_HOME') or home / '.config')
+        chrome_config = Path(os.environ.get('CHROME_CONFIG_HOME') or config)
+        entries = [
+            ('Chrome', chrome_config / 'google-chrome', 'chromium'),
+            ('Chromium', chrome_config / 'chromium', 'chromium'),
+            ('Edge', config / 'microsoft-edge', 'chromium'),
+            ('Brave', config / 'BraveSoftware/Brave-Browser', 'chromium'),
+            ('Vivaldi', config / 'vivaldi', 'chromium'),
+            ('Opera', config / 'opera', 'chromium'),
+            ('Firefox', home / '.mozilla/firefox', 'firefox'),
+            ('Firefox', config / 'mozilla/firefox', 'firefox'),
+            ('Firefox (Snap)', home / 'snap/firefox/common/.mozilla/firefox', 'firefox'),
+            ('Chromium (Snap)', home / 'snap/chromium/common/chromium', 'chromium'),
+        ]
+        for label, package, relative, kind in (
+            ('Chrome', 'com.google.Chrome', 'google-chrome', 'chromium'),
+            ('Chromium', 'org.chromium.Chromium', 'chromium', 'chromium'),
+            ('Edge', 'com.microsoft.Edge', 'microsoft-edge', 'chromium'),
+            ('Brave', 'com.brave.Browser', 'BraveSoftware/Brave-Browser', 'chromium'),
+            ('Vivaldi', 'com.vivaldi.Vivaldi', 'vivaldi', 'chromium'),
+        ):
+            entries.append((label + ' (Flatpak)', home / '.var/app' / package / 'config' / relative, kind))
+        entries.append(('Firefox (Flatpak)', home / '.var/app/org.mozilla.firefox/.mozilla/firefox', 'firefox'))
+        override = os.environ.get('CHROME_USER_DATA_DIR')
+        if override and os.path.isabs(override):
+            entries.append(('Chrome / Chromium (custom)', Path(override), 'chromium'))
+        return entries
 
     def clamd_endpoints(self):
         endpoints = [("unix", path) for path in (
@@ -1013,6 +1135,94 @@ class LinuxBackend(PlatformBackend):
         except (OSError, ValueError):
             return False
         return isinstance(state, dict) and state.get('active') is True
+
+    def acquire_instance_lock(self, path):
+        import fcntl
+        path.parent.mkdir(parents=True, exist_ok=True)
+        stream = open(path, 'a+', encoding='utf-8')  # noqa: SIM115 - held until the caller closes it
+        try:
+            fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            stream.close()
+            return None
+        return stream
+
+    def monitor_unit_path(self):
+        config = Path(os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.config')
+        return config / 'systemd' / 'user' / MONITOR_UNIT
+
+    def monitor_unit(self):
+        """systemd user unit that runs the agent of this installation at login."""
+        def quote(argument):
+            escaped = argument.replace('\\', '\\\\').replace('"', '\\"')
+            return '"' + escaped.replace('%', '%%').replace('$', '$$') + '"'
+
+        command = self.application_command('--monitor')
+        # A package removal leaves this per-user file behind; it is then skipped.
+        conditions = ''.join(f'ConditionPathExists={path.replace("%", "%%")}\n'
+                             for path in command if os.path.isabs(path))
+        return ('[Unit]\n'
+                'Description=LibreWard folder monitoring\n'
+                'Documentation=https://github.com/anaisoob/libreward\n'
+                f'{conditions}\n'
+                '[Service]\n'
+                'Type=exec\n'
+                f'ExecStart={" ".join(quote(argument) for argument in command)}\n'
+                'Restart=on-failure\n'
+                'RestartSec=30\n'
+                '# Background scans give way to what the user is doing.\n'
+                'Nice=10\n'
+                'IOSchedulingClass=best-effort\n'
+                'IOSchedulingPriority=7\n\n'
+                '[Install]\n'
+                'WantedBy=default.target\n')
+
+    def _systemctl(self, *arguments):
+        executable = shutil.which('systemctl')
+        if not executable:
+            raise OSError('Background folder monitoring needs systemd (systemctl --user).')
+        try:
+            result = subprocess.run([executable, '--user', *arguments], stdin=subprocess.DEVNULL,
+                                    capture_output=True, text=True, timeout=30, check=False)
+        except subprocess.TimeoutExpired as exc:
+            raise OSError('systemd did not respond in time.') from exc
+        if result.returncode != 0:
+            raise OSError((result.stderr or result.stdout).strip()
+                          or f'systemctl --user {arguments[0]} failed.')
+
+    def set_monitor_service(self, enabled):
+        path = self.monitor_unit_path()
+        if not enabled:
+            if path.exists():
+                try:
+                    self._systemctl('disable', '--now', MONITOR_UNIT)
+                finally:
+                    path.unlink(missing_ok=True)
+                    self._systemctl('daemon-reload')
+            return
+        content = self.monitor_unit()
+        try:
+            changed = path.read_text(encoding='utf-8') != content
+        except OSError:
+            changed = True
+        if changed:
+            # Rewritten when LibreWard moved, for example from source to a package.
+            previous = path.read_text(encoding='utf-8') if path.exists() else None
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_name(path.name + '.tmp')
+            temporary.write_text(content, encoding='utf-8')
+            os.replace(temporary, path)
+            try:
+                self._systemctl('daemon-reload')
+            except OSError:
+                # Leave no unit that systemd has not loaded; the next attempt starts over.
+                if previous is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    path.write_text(previous, encoding='utf-8')
+                raise
+        self._systemctl('enable', MONITOR_UNIT)
+        self._systemctl('restart' if changed else 'start', MONITOR_UNIT)
 
     def autostart_path(self):
         return Path(os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.config') / 'autostart' / 'libreward.desktop'

@@ -6,10 +6,11 @@ pkgdesc='Simple virus scanning, firewall and Internet protection for Linux deskt
 arch=('any')
 url='https://github.com/anaisoob/libreward'
 license=('GPL-2.0-or-later')
-depends=('python' 'pyside6' 'polkit' 'systemd')
+depends=('python' 'pyside6' 'python-watchdog' 'polkit' 'systemd')
 optdepends=('clamav: virus scanning (LibreWard can also offer to install it)'
             'networkmanager: Internet protection'
             'dnsmasq: Internet protection with NetworkManager (LibreWard can also offer to install it)'
+            'libnotify: desktop notifications from folder monitoring'
             'ufw: firewall management'
             'firewalld: firewall management')
 makedepends=('make')

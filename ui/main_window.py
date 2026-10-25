@@ -18,6 +18,8 @@ from backends import backend
 from config import load_config, save_config
 from core.authorization import AuthorizationError
 from core.constants import APP_NAME, APP_VERSION, CLAMAV_HOMEPAGE, CLAMAV_SOURCE
+from core.download_folders import discover_download_folders
+from core.monitor_agent import monitor_settings, read_state
 from core.db_manager import auto_update_due, database_summary, own_database_needs_refresh, run_freshclam_update
 from core.quarantine import (
     delete_file, delete_quarantined_file, list_quarantined_files,
@@ -27,7 +29,7 @@ from core.runtime import check_startup, setup_components
 from core.scan_service import ScanService, scan_outcome
 from core.updater import check_for_updates, perform_update
 from excludes import get_active_exclude_patterns, get_common_excludes
-from .dialogs import ClamAVConsentDialog, UpdateProgressDialog, ScanReportDialog, AntivirusSetupDialog, AuthorizationHelpDialog
+from .dialogs import ClamAVConsentDialog, UpdateProgressDialog, ScanReportDialog, AntivirusSetupDialog, AuthorizationHelpDialog, DownloadFoldersDialog
 from .firewall_dialog import FirewallRuleDialog
 from .theme import app_icon, palette, stylesheet, navigation_icon
 from .widgets import ElidedPathLabel, BusyNavigationButton
@@ -54,6 +56,9 @@ class QtMainWindow(QMainWindow):
         self.idle_buttons = []
         self.scan_actions = []
         self.last_result = None
+        self.monitor_service_error = None
+        self.monitor_state_mtime = None
+        self.monitor_started_at = float('-inf')
         self.build_shell()
         self.setup_window_icon()
         # Earlier versions started LibreWard at login; protection no longer needs it.
@@ -81,7 +86,119 @@ class QtMainWindow(QMainWindow):
         self.auto_database_timer.timeout.connect(self.maybe_auto_update_database)
         self.auto_database_timer.start()
         QTimer.singleShot(60 * 1000, self.maybe_auto_update_database)
+        # Folder monitoring runs in the background agent; the window shows its state.
+        self.monitor_timer = QTimer(self)
+        self.monitor_timer.timeout.connect(self.poll_monitor_state)
+        self.monitor_timer.start(3000)
+        self.apply_monitor_service()
         self.start_task("check", self.check_runtime, on_done=self.offer_setup)
+
+    def restore_window(self):
+        self.setWindowState(self.windowState() & ~Qt.WindowState.WindowMinimized)
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def notify_desktop(self, title, message):
+        def send():
+            delivered = backend.send_desktop_notification(title, message)
+            self.events.put(('__NOTIFICATION__', delivered))
+        threading.Thread(target=send, name='desktop-notification', daemon=True).start()
+
+    def add_watch_folder(self):
+        folder = QFileDialog.getExistingDirectory(self, 'Watch folder')
+        existing = [self.watched_folders.item(i).text() for i in range(self.watched_folders.count())]
+        if folder and folder not in existing:
+            self.watched_folders.addItem(folder)
+
+    def find_download_folders(self):
+        if self.start_task('download-folders', discover_download_folders, on_done=self.choose_download_folders):
+            self.watch_status.setText('Finding system and browser download folders…')
+
+    def choose_download_folders(self, folders):
+        if not folders:
+            self.watch_status.setText('No existing download folders found. You can still use Add folder.')
+            return
+        existing = [self.watched_folders.item(i).text() for i in range(self.watched_folders.count())]
+        dialog = DownloadFoldersDialog(self, folders, existing)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            selected = dialog.selected_paths()
+            for path in selected:
+                self.watched_folders.addItem(path)
+            if selected:
+                self.watch_enabled.setChecked(True)
+                self.watch_status.setText(f'Added {len(selected)} download folder(s). Save settings to start monitoring.')
+        dialog.deleteLater()
+
+    def remove_watch_folders(self):
+        for item in self.watched_folders.selectedItems():
+            self.watched_folders.takeItem(self.watched_folders.row(item))
+
+    def apply_monitor_service(self):
+        """Start or remove the background agent to match the saved settings.
+
+        Starting also repairs a service that points to an older installation.
+        systemctl can take a moment, so this never runs on the GUI thread.
+        """
+        enabled = monitor_settings(self.config) is not None
+        self.monitor_service_error = None
+        if enabled:
+            self.watch_status.setText('Starting background monitoring…')
+
+        def work():
+            try:
+                backend.set_monitor_service(enabled)
+                error = None
+            except OSError as exc:
+                error = str(exc) or 'The background service could not be changed.'
+            self.events.put(('__MONITOR_SERVICE__', enabled, error))
+
+        threading.Thread(target=work, name='monitor-service', daemon=True).start()
+
+    def poll_monitor_state(self):
+        enabled = monitor_settings(self.config) is not None
+        running = backend.monitor_agent_running()
+        state = read_state()
+        if self.monitor_service_error and enabled:
+            text = f'Background monitoring could not start: {self.monitor_service_error}'
+        elif not enabled:
+            text = 'Folder monitoring is off.'
+        elif not running and time.monotonic() - self.monitor_started_at < 15:
+            text = 'Starting background monitoring…'
+        elif not running:
+            text = 'Background monitoring is not running. Save settings to start it again.'
+        else:
+            text = state.get('message') or 'Monitoring selected folders, including subfolders.'
+            last = state.get('last_scan')
+            if isinstance(last, dict) and last.get('outcome'):
+                checked = time.strftime('%H:%M', time.localtime(last.get('time', 0)))
+                text += f"\nLast check {checked}: {last['outcome']} ({last.get('names', '')})"
+        self.watch_status.setText(text)
+        self.show_monitor_threats(state)
+
+    def show_monitor_threats(self, state):
+        """Threats found in the background, while they are still at their location."""
+        updated = state.get('updated')
+        if updated == self.monitor_state_mtime:
+            return
+        self.monitor_state_mtime = updated
+        added = False
+        for entry in state.get('threats', []):
+            if not isinstance(entry, dict):
+                continue
+            path, threat = entry.get('path'), entry.get('threat')
+            if not isinstance(path, str) or not isinstance(threat, str) or not os.path.isfile(path):
+                continue
+            if any(self.results.item(i, 0).text() == path for i in range(self.results.rowCount())):
+                continue
+            row = self.results.rowCount()
+            self.results.insertRow(row)
+            self.results.setItem(row, 0, QTableWidgetItem(path))
+            self.results.setItem(row, 1, QTableWidgetItem(threat))
+            added = True
+        if added:
+            self.findings_card.show()
+            self.set_status('Folder monitoring found threats', 'danger')
 
     def setup_window_icon(self):
         self.setWindowIcon(app_icon())
@@ -754,6 +871,43 @@ class QtMainWindow(QMainWindow):
         box.addLayout(row)
         form.addWidget(card)
         card, box = self.card()
+        box.addWidget(self.label("Folder monitoring", "sectionTitle"))
+        self.watch_enabled = QCheckBox('Automatically scan new and changed files')
+        self.watch_enabled.setChecked(bool(self.config.get('watch_folders_enabled', False)))
+        box.addWidget(self.watch_enabled)
+        note = self.label('Runs in the background, also when LibreWard is closed and after you log in again. '
+                          'Existing files form a baseline; use a manual scan to check the whole folder. '
+                          'Files are scanned after changes; this does not block opening or running them. Save settings to apply.', 'muted')
+        note.setWordWrap(True)
+        box.addWidget(note)
+        self.watched_folders = QListWidget()
+        self.watched_folders.setMaximumHeight(120)
+        self.watched_folders.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        for folder in self.config.get('watched_folders', []):
+            if isinstance(folder, str):
+                self.watched_folders.addItem(folder)
+        box.addWidget(self.watched_folders)
+        downloads_note = self.label('Find system Downloads and configured folders for Firefox, Chrome, Chromium, Edge, Brave, Vivaldi and Opera. '
+                                    'Incomplete browser downloads wait until the final file is ready.', 'muted')
+        downloads_note.setWordWrap(True)
+        box.addWidget(downloads_note)
+        row = QHBoxLayout()
+        row.addWidget(self.button('Find download folders', self.find_download_folders))
+        row.addWidget(self.button('Add folder', self.add_watch_folder))
+        row.addWidget(self.button('Remove selected', self.remove_watch_folders))
+        box.addLayout(row)
+        self.watch_status = self.label('Folder monitoring is off.', 'muted')
+        self.watch_status.setWordWrap(True)
+        box.addWidget(self.watch_status)
+        help_text = self.label('Results appear as desktop notifications; threats also appear in Detected files. '
+                               'To stop monitoring, turn it off here and save settings.', 'muted')
+        help_text.setWordWrap(True)
+        box.addWidget(help_text)
+        box.addWidget(self.button('Test notification', lambda: self.notify_desktop(
+            'LibreWard — notification test', 'Desktop notifications are working.')))
+        self.notification_status = self.label('', 'muted')
+        self.notification_status.setWordWrap(True)
+        box.addWidget(self.notification_status)
         box.addWidget(self.label("Preferences", "sectionTitle"))
         self.suppress_setup = QCheckBox("Don't show ClamAV setup automatically")
         self.suppress_setup.setChecked(bool(self.config.get("suppress_clamav_setup_prompt", False)))
@@ -860,6 +1014,8 @@ class QtMainWindow(QMainWindow):
     def save_settings(self):
         updated = dict(self.config)
         updated.update(
+            watch_folders_enabled=self.watch_enabled.isChecked(),
+            watched_folders=[self.watched_folders.item(i).text() for i in range(self.watched_folders.count())],
             scan_path=self.path.text().strip(),
             enabled_common_excludes=[label for label, check in self.exclude_checks.items() if check.isChecked()],
             user_excludes=[self.excluded_paths.item(i).text() for i in range(self.excluded_paths.count())],
@@ -875,8 +1031,14 @@ class QtMainWindow(QMainWindow):
         except OSError as exc:
             QMessageBox.warning(self, "Settings", f"Cannot save settings: {exc}")
             return False
+        previous = self.config
         self.config = updated
         self.update_exclude_summary()
+        # Folder and exclusion changes reach a running agent through the saved file.
+        enabled = monitor_settings(updated) is not None
+        if (enabled != (monitor_settings(previous) is not None) or self.monitor_service_error
+                or (enabled and not backend.monitor_agent_running())):
+            self.apply_monitor_service()
         self.settings_feedback.setText("Settings saved")
         return True
 
@@ -981,6 +1143,7 @@ class QtMainWindow(QMainWindow):
             return
         self.results.setRowCount(0)
         self.findings_card.hide()
+        self.monitor_state_mtime = None  # threats found in the background return afterwards
         self.progress.setValue(0)
         self.percent.setText("0%")
         self.last_result = None
@@ -1042,7 +1205,9 @@ class QtMainWindow(QMainWindow):
                 or status is None or not status.can_update_db
                 or not auto_update_due(time.time(), self.config.get('database_auto_update_at'),
                                        self.config.get('database_auto_update_ok', True))
-                or not own_database_needs_refresh()):
+                or not own_database_needs_refresh()
+                # The background monitoring agent keeps the database current itself.
+                or backend.monitor_agent_running()):
             return False
         freshclam = status.runtime.freshclam
 
@@ -1286,6 +1451,23 @@ class QtMainWindow(QMainWindow):
                     self.update_dialog.append(event)
                 continue
             kind, *values = event
+            if kind == '__NOTIFICATION__':
+                self.notification_status.setText(
+                    'Notification sent. Check desktop notification settings and Do Not Disturb if no banner appears.'
+                    if values[0] else
+                    'Desktop notifications are unavailable. On Linux, install notify-send (libnotify) '
+                    'and allow notifications for LibreWard.')
+                continue
+            if kind == '__MONITOR_SERVICE__':
+                enabled, error = values
+                if enabled == (monitor_settings(self.config) is not None):
+                    self.monitor_service_error = error
+                    if enabled and not error:
+                        self.monitor_started_at = time.monotonic()
+                    self.poll_monitor_state()
+                if error:
+                    self.log.appendPlainText(f'Background monitoring: {error}')
+                continue
             if kind == '__DATABASE_AUTO__':
                 self.auto_database_update_finished(*values)
                 continue
@@ -1347,7 +1529,7 @@ class QtMainWindow(QMainWindow):
                 result = values[0]
                 self.last_result = result
                 self.report_button.setEnabled(True)
-                self.findings_card.setVisible(bool(result["infected"]))
+                self.findings_card.setVisible(bool(result["infected"]) or bool(self.results.rowCount()))
                 severity = "danger" if result.get("infected") or result.get("infected_found") or result.get("errors") else "warning" if result.get("warnings") else "normal"
                 self.set_status(scan_outcome(result), severity)
                 self.current_file.setText("—")
@@ -1357,6 +1539,9 @@ class QtMainWindow(QMainWindow):
                 if result.get("warnings") and result.get("admin_hint"):
                     self.summary.setText(self.summary.text() + " For a deeper scan of protected locations, you can run LibreWard as Administrator.")
                 for path, threat in result["infected"]:
+                    if any(self.results.item(i, 0).text() == path and self.results.item(i, 1).text() == threat
+                           for i in range(self.results.rowCount())):
+                        continue
                     row = self.results.rowCount()
                     self.results.insertRow(row)
                     self.results.setItem(row, 0, QTableWidgetItem(path))
@@ -1428,7 +1613,13 @@ class QtMainWindow(QMainWindow):
             self.internet_page.explain_once('internet_protection_close_notice', 'Internet protection stays on',
                 'LibreWard is closing, but Internet protection keeps blocking websites, like the firewall. '
                 'To turn it off, open LibreWard and choose Turn off on the Internet protection page.')
+        if monitor_settings(self.config) is not None and backend.monitor_agent_running():
+            self.internet_page.explain_once('folder_monitoring_close_notice', 'Folder monitoring keeps running',
+                'LibreWard is closing, but folder monitoring keeps checking new files in the background '
+                'and notifies you about the results, also after you log in again. '
+                'To stop it, open LibreWard and turn folder monitoring off in Settings.')
         self.timer.stop()
+        self.monitor_timer.stop()
         self.database_watch_timer.stop()
         updated = dict(self.config)
         updated['window_geometry'] = bytes(self.saveGeometry()).hex()
@@ -1438,6 +1629,48 @@ class QtMainWindow(QMainWindow):
         except OSError as exc:
             self.log.appendPlainText(f'Cannot save window size and position: {exc}')
         event.accept()
+
+
+def instance_server_name():
+    """Per-user name: a second launch shows the running window instead."""
+    import getpass
+    try:
+        user = getpass.getuser()
+    except (KeyError, OSError):  # no user name in containers without passwd entries
+        user = str(os.getuid()) if hasattr(os, 'getuid') else 'user'
+    return f'libreward-{user}'
+
+
+def show_running_instance(name):
+    from PySide6.QtNetwork import QLocalSocket
+    socket = QLocalSocket()
+    socket.connectToServer(name)
+    if not socket.waitForConnected(500):
+        return False
+    socket.write(b'show')
+    socket.flush()
+    socket.waitForBytesWritten(500)
+    socket.disconnectFromServer()
+    return True
+
+
+def listen_for_instances(window, name):
+    from PySide6.QtNetwork import QLocalServer
+    server = QLocalServer(window)
+    server.setSocketOptions(QLocalServer.SocketOption.UserAccessOption)
+    if not server.listen(name):
+        # A socket left behind by a crashed instance (Unix); nobody answered above.
+        QLocalServer.removeServer(name)
+        server.listen(name)
+
+    def connection():
+        socket = server.nextPendingConnection()
+        if socket is not None:
+            socket.disconnected.connect(socket.deleteLater)
+            window.restore_window()
+
+    server.newConnection.connect(connection)
+    return server
 
 
 def run(autostart=False):
@@ -1452,6 +1685,10 @@ def run(autostart=False):
     app.setApplicationName(APP_NAME)
     app.setOrganizationName(APP_NAME)
     app.setStyle("Fusion")
+    name = instance_server_name()
+    if show_running_instance(name):
+        return 0
     window = QtMainWindow()
+    window.instance_server = listen_for_instances(window, name)
     window.show()
     return app.exec()

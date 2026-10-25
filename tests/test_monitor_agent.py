@@ -1,0 +1,207 @@
+"""Background folder monitoring agent: settings, scans, notifications and state."""
+import json
+import tempfile
+import threading
+import time
+import unittest
+from pathlib import Path
+from unittest.mock import Mock, patch
+
+from backends.base import RuntimeInfo
+from core import monitor_agent
+from core.monitor_agent import MonitorAgent, monitor_settings, read_state
+from core.runtime import StartupStatus
+
+
+class MonitorAgentTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.directory.name)
+        self.watched = self.root / 'Downloads'
+        self.watched.mkdir()
+        self.config_file = self.root / 'config/config.json'
+        self.config_file.parent.mkdir()
+        self.patchers = [
+            patch.object(monitor_agent.backend, 'data_dir', return_value=self.root / 'data'),
+            patch.object(monitor_agent.backend, 'config_dir', return_value=self.root / 'config'),
+            patch.object(monitor_agent.backend, 'log_dir', return_value=self.root / 'data/logs'),
+            patch.object(monitor_agent, 'CONFIG_FILE', self.config_file),
+            patch.object(monitor_agent, 'load_config', side_effect=self.load_config),
+        ]
+        for patcher in self.patchers:
+            patcher.start()
+        self.ready = StartupStatus(RuntimeInfo('system-path', 'clamscan', 'freshclam', 'ClamAV 1.5.2', '1.5.2'),
+                                   True, True, False, True)
+        self.notify = Mock(return_value=True)
+        self.open_application = Mock()
+        self.logged = []
+
+    def tearDown(self):
+        for patcher in reversed(self.patchers):
+            patcher.stop()
+        self.directory.cleanup()
+
+    def load_config(self):
+        try:
+            return json.loads(self.config_file.read_text())
+        except (OSError, ValueError):
+            return None
+
+    def save(self, **config):
+        self.config_file.write_text(json.dumps(config))
+
+    def agent(self):
+        return MonitorAgent(notify=self.notify, open_application=self.open_application, log=self.logged.append)
+
+    def scanning_agent(self, result):
+        agent = self.agent()
+        agent.config = {'watch_folders_enabled': True, 'watched_folders': [str(self.watched)]}
+        agent.settings = monitor_settings(agent.config)
+        agent.status = self.ready
+        agent.monitor = Mock()
+
+        def run(service, *_args, **_kwargs):
+            service.result = result
+
+        return agent, patch('core.monitor_agent.ScanService.run', autospec=True, side_effect=run)
+
+    def test_settings_follow_switch_and_exclude_own_folders(self):
+        self.assertIsNone(monitor_settings({'watched_folders': [str(self.watched)]}))
+        self.assertIsNone(monitor_settings({'watch_folders_enabled': True, 'watched_folders': []}))
+        roots, patterns = monitor_settings({'watch_folders_enabled': True, 'watched_folders': [str(self.watched), 3]})
+        self.assertEqual(roots, [str(self.watched)])
+        self.assertIn(str(self.root / 'data'), patterns)
+        self.assertIn(str(self.root / 'config'), patterns)
+
+    def test_clean_files_notify_quietly_with_names(self):
+        agent, scan = self.scanning_agent({'infected': [], 'infected_found': False, 'errors': False,
+                                               'warnings': False, 'stopped': False, 'scanned': 1})
+        path = str(self.watched / 'clean.zip')
+        with scan:
+            agent.scan([path])
+        _title, message = self.notify.call_args.args
+        self.assertIn('No threats found', message)
+        self.assertIn('clean.zip', message)
+        self.assertEqual(self.notify.call_args.kwargs, {'warning': False, 'on_open': None})
+        state = read_state()
+        self.assertEqual(state['last_scan']['outcome'], 'No threats found')
+        self.assertEqual(state.get('threats', []), [])
+
+    def test_threats_are_recorded_and_notification_opens_libreward(self):
+        path = str(self.watched / 'eicar.com')
+        agent, scan = self.scanning_agent({'infected': [(path, 'Eicar-Signature FOUND')], 'infected_found': True,
+                                               'errors': False, 'warnings': False, 'stopped': False, 'scanned': 1})
+        with scan:
+            agent.scan([path])
+            agent.scan([path])  # the same file found again is listed once
+        self.assertEqual(self.notify.call_args.args[0], 'LibreWard — threat found')
+        self.assertIn('eicar.com', self.notify.call_args.args[1])
+        self.assertTrue(self.notify.call_args.kwargs['warning'])
+        self.assertIs(self.notify.call_args.kwargs['on_open'], self.open_application)
+        threats = read_state()['threats']
+        self.assertEqual([(entry['path'], entry['threat']) for entry in threats],
+                         [(path, 'Eicar-Signature FOUND')])
+
+    def test_failed_scans_retry_and_notify_once(self):
+        agent, scan = self.scanning_agent({'infected': [], 'errors': True, 'stopped': False, 'scanned': 0})
+        path = str(self.watched / 'file')
+        with scan:
+            for _attempt in range(4):
+                agent.scan([path])
+        agent.monitor.changed.assert_called_with(path, retry=True)
+        self.assertEqual(agent.monitor.changed.call_count, 4)
+        self.assertGreater(agent.retry_at, time.monotonic())
+        self.assertEqual(self.notify.call_count, 1)
+        self.assertEqual(self.notify.call_args.args[0], 'LibreWard — automatic scan failed')
+
+    def test_undelivered_warnings_are_sent_again_later(self):
+        agent = self.agent()
+        self.notify.return_value = False
+        agent.send('LibreWard — threat found', 'eicar.com', True)
+        agent.send('LibreWard — new files checked', 'clean', False)
+        self.assertEqual(len(agent.undelivered), 1)
+        agent.retry_notifications()
+        self.assertEqual(self.notify.call_count, 2)  # not before the retry interval
+        self.notify.return_value = True
+        queued, _next, title, message = agent.undelivered[0]
+        agent.undelivered = [(queued, 0, title, message)]
+        agent.retry_notifications()
+        self.assertEqual(self.notify.call_count, 3)
+        self.assertEqual(agent.undelivered, [])
+        agent.undelivered = [(time.monotonic() - monitor_agent.NOTIFICATION_GIVE_UP - 1, 0, title, message)]
+        agent.retry_notifications()
+        self.assertEqual(agent.undelivered, [])
+        self.assertEqual(self.notify.call_count, 3)
+
+    def test_agent_runs_once_and_ends_when_monitoring_is_turned_off(self):
+        self.save(watch_folders_enabled=True, watched_folders=[str(self.watched)])
+        agent = self.agent()
+        with patch('core.monitor_agent.check_startup', return_value=self.ready):
+            thread = threading.Thread(target=agent.run)
+            thread.start()
+            try:
+                deadline = time.monotonic() + 5
+                while read_state().get('status') != 'watching' and time.monotonic() < deadline:
+                    time.sleep(.02)
+                self.assertEqual(read_state()['status'], 'watching')
+                self.assertTrue(read_state()['running'])
+                self.assertEqual(self.agent().run(), 0)  # a second agent does not start
+                self.assertIn('already running', self.logged[-1])
+                self.save(watch_folders_enabled=False, watched_folders=[str(self.watched)])
+                thread.join(timeout=5)
+                self.assertFalse(thread.is_alive())
+            finally:
+                agent.stop()
+                thread.join(timeout=5)
+        state = read_state()
+        self.assertEqual(state['status'], 'off')
+        self.assertFalse(state['running'])
+        lock = monitor_agent.backend.acquire_instance_lock(monitor_agent.lock_file())
+        self.assertIsNotNone(lock)
+        lock.close()
+
+    def test_unreadable_settings_keep_the_previous_ones(self):
+        self.save(watch_folders_enabled=True, watched_folders=[str(self.watched)])
+        agent = self.agent()
+        agent.reload_config()
+        self.config_file.write_text('{"watch_folders_')
+        agent.reload()
+        agent.reload_config()
+        self.assertTrue(agent.config['watch_folders_enabled'])
+
+    def test_files_waiting_at_shutdown_are_checked_after_restart(self):
+        path = self.watched / 'late.zip'
+        path.write_text('downloaded just before logout')
+        agent = self.agent()
+        agent.scanning = [str(path)]
+        agent._stop_monitor()
+        self.assertEqual(read_state()['pending'], [str(path)])
+        restarted = self.agent()
+        with patch('core.folder_watch.FolderMonitor.start'):
+            restarted.start_monitor(monitor_settings({'watch_folders_enabled': True,
+                                                      'watched_folders': [str(self.watched)]}))
+        self.assertIn(str(path), restarted.monitor.pending)
+        self.assertEqual(read_state()['pending'], [])
+
+    def test_database_refresh_uses_the_newest_attempt_of_gui_and_agent(self):
+        agent = self.agent()
+        agent.status = self.ready
+        agent.database_checked = float('-inf')
+        agent.config = {'database_auto_update_at': 0}
+        agent.state['database_update_at'] = time.time()
+        with patch('core.monitor_agent.own_database_needs_refresh', return_value=True), \
+                patch('core.monitor_agent.run_freshclam_update') as update:
+            agent.maybe_update_database()
+        update.assert_not_called()
+        agent.database_checked = float('-inf')
+        agent.state['database_update_at'] = 0
+        with patch('core.monitor_agent.own_database_needs_refresh', return_value=True), \
+                patch('core.monitor_agent.run_freshclam_update', return_value=(True, '')) as update:
+            agent.maybe_update_database()
+            agent.database_thread.join(timeout=3)
+        update.assert_called_once_with('freshclam', wait=False)
+        self.assertTrue(read_state()['database_update_ok'])
+
+
+if __name__ == '__main__':
+    unittest.main()

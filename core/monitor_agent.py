@@ -1,0 +1,404 @@
+"""Background folder monitoring, independent of the GUI.
+
+`libreward --monitor` runs this agent from the platform's user service (a
+systemd user unit on Linux, the Run key on Windows): it starts at login, keeps
+running when the window is closed, follows the saved settings, scans new and
+changed files, notifies the desktop and keeps LibreWard's own virus database
+current. The GUI reads its state file; the agent never writes config.json.
+"""
+import json
+import os
+import signal
+import sys
+import threading
+import time
+
+from backends import backend
+from config import CONFIG_FILE, load_config
+from core.db_manager import (
+    auto_update_due,
+    own_database_needs_refresh,
+    run_freshclam_update,
+)
+from core.runtime import check_startup, is_update_locked
+from core.scan_service import ScanService, scan_outcome
+from excludes import get_active_exclude_patterns
+
+CONFIG_INTERVAL = 2
+STATUS_INTERVAL = 10 * 60
+RETRY_INTERVAL = 60
+DATABASE_INTERVAL = 10 * 60
+NOTIFICATION_RETRY = 30
+NOTIFICATION_GIVE_UP = 30 * 60
+# Repeated failures of the same batch notify once instead of every minute.
+FAILURES_BEFORE_NOTICE = 3
+BATCH_SIZE = 64
+MAX_THREATS = 100
+MAX_LOG_BYTES = 1024 * 1024
+
+
+def monitor_dir():
+    return backend.data_dir() / 'monitor'
+
+
+def lock_file():
+    return monitor_dir() / 'agent.lock'
+
+
+def state_file():
+    return monitor_dir() / 'state.json'
+
+
+def monitor_settings(config):
+    """(roots, exclude patterns) to watch, or None when monitoring is off."""
+    if not config.get('watch_folders_enabled', False):
+        return None
+    roots = [os.path.abspath(root) for root in config.get('watched_folders', [])
+             if isinstance(root, str) and root]
+    if not roots:
+        return None
+    patterns = get_active_exclude_patterns(set(config.get('enabled_common_excludes', [])),
+                                           config.get('user_excludes', []))
+    # LibreWard's own runtime, database and config changes must not feed back
+    # into monitoring when a user watches their home directory.
+    patterns.extend(str(path) for path in (backend.data_dir(), backend.config_dir(), backend.log_dir()))
+    return roots, patterns
+
+
+def read_state():
+    try:
+        state = json.loads(state_file().read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
+def write_state(state):
+    path = state_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f'{path.name}.{os.getpid()}.tmp')
+    temporary.write_text(json.dumps(state, ensure_ascii=False, indent=1), encoding='utf-8')
+    os.replace(temporary, path)
+
+
+def file_names(paths, limit=3):
+    names = ', '.join(os.path.basename(path) for path in paths[:limit])
+    return names + (f' (+{len(paths) - limit} more)' if len(paths) > limit else '')
+
+
+def scan_notification(result, paths):
+    """(title, message, warning) for a finished automatic scan."""
+    threats = [path for path, _threat in result.get('infected', [])]
+    if threats or result.get('infected_found'):
+        return ('LibreWard — threat found',
+                (f'{scan_outcome(result)}\n{file_names(threats or paths)}\n'
+                 'Open LibreWard to move it to quarantine or delete it.'), True)
+    return ('LibreWard — new files checked',
+            f"{scan_outcome(result)}\nChecked: {result.get('scanned', 0)} file(s).\n{file_names(paths)}",
+            bool(result.get('warnings')))
+
+
+class _Discard:
+    """Scan output sink: the agent keeps results, not the per-file log."""
+    def put(self, _item):
+        pass
+
+
+class MonitorAgent:
+    def __init__(self, *, notify=None, open_application=None, log=None):
+        self.notify = notify or backend.send_desktop_notification
+        self.open_application = open_application or backend.open_application
+        self.log = log or _log
+        self.stopped = threading.Event()
+        self.config = {}
+        self.config_mtime = None
+        self.config_checked = float('-inf')
+        self.settings = None
+        self.monitor = None
+        self.monitor_retry_at = 0
+        self.status = None
+        self.status_checked = float('-inf')
+        self.retry_at = 0
+        self.failures = 0
+        self.service = None
+        self.scanning = []
+        self.database_thread = None
+        self.database_checked = time.monotonic() - DATABASE_INTERVAL + 60
+        self.undelivered = []
+        previous = read_state()
+        self.state = {key: previous[key] for key in
+                      ('threats', 'last_scan', 'pending', 'database_update_at', 'database_update_ok')
+                      if key in previous}
+
+    # ── lifecycle ───────────────────────────────────────────────────
+
+    def run(self):
+        lock = backend.acquire_instance_lock(lock_file())
+        if lock is None:
+            self.log('LibreWard folder monitoring is already running.')
+            return 0
+        try:
+            self.update_state(running=True, pid=os.getpid(), started=time.time(),
+                              status='starting', message='Starting folder monitoring…')
+            self.log('LibreWard folder monitoring started.')
+            return self._loop()
+        finally:
+            self._stop_monitor()
+            thread = self.database_thread
+            if thread is not None:
+                thread.join(timeout=5)
+            self.update_state(running=False, pid=None)
+            self.log('LibreWard folder monitoring stopped.')
+            lock.close()
+
+    def stop(self):
+        self.stopped.set()
+        service = self.service
+        if service is not None:
+            service.stop()
+
+    def reload(self):
+        """Read the settings again at the next check (SIGHUP)."""
+        self.config_mtime = None
+        self.config_checked = float('-inf')
+
+    def _loop(self):
+        while not self.stopped.is_set():
+            now = time.monotonic()
+            if now - self.config_checked >= CONFIG_INTERVAL:
+                self.config_checked = now
+                self.reload_config()
+                settings = monitor_settings(self.config)
+                if settings is None:
+                    self.update_state(status='off', message='Folder monitoring is off.')
+                    self.log('Folder monitoring is turned off in the settings.')
+                    return 0
+                if settings != self.settings or (self.monitor_failed() and now >= self.monitor_retry_at):
+                    self.start_monitor(settings)
+            self.check_status()
+            self.maybe_update_database()
+            self.scan_ready()
+            self.retry_notifications()
+            self.stopped.wait(1)
+        return 0
+
+    def reload_config(self):
+        try:
+            mtime = CONFIG_FILE.stat().st_mtime_ns
+        except OSError:
+            mtime = None
+        if mtime is not None and mtime == self.config_mtime:
+            return
+        config = load_config()
+        if config is None and mtime is not None:
+            return  # unreadable right now: keep the previous settings and try again
+        self.config_mtime = mtime
+        self.config = config if isinstance(config, dict) else {}
+
+    # ── watching ────────────────────────────────────────────────────
+
+    def start_monitor(self, settings):
+        from core.folder_watch import FolderMonitor
+        # Files that changed before a restart or a settings change are still checked.
+        carried = self._pending_paths() + [path for path in self.state.get('pending', []) if isinstance(path, str)]
+        if self.monitor is not None:
+            self.monitor.stop()
+        self.settings = settings
+        roots, patterns = settings
+        self.monitor = FolderMonitor(roots, patterns)
+        self.monitor.start()
+        for path in dict.fromkeys(carried):
+            if os.path.isfile(path):
+                self.monitor.changed(path)
+        self.monitor_retry_at = time.monotonic() + RETRY_INTERVAL
+        self.update_state(folders=len(roots), pending=[])
+        self.log(f'Watching {len(roots)} folder(s).')
+
+    def monitor_failed(self):
+        return self.monitor is not None and not self.monitor.thread.is_alive()
+
+    def _pending_paths(self):
+        monitor = self.monitor
+        if monitor is None:
+            return list(self.scanning)
+        with monitor.lock:
+            return list(dict.fromkeys([*self.scanning, *monitor.pending]))
+
+    def _stop_monitor(self):
+        pending = self._pending_paths()
+        if self.monitor is not None:
+            self.monitor.stop()
+            self.monitor = None
+        if pending:
+            self.update_state(pending=pending)
+
+    def check_status(self):
+        interval = STATUS_INTERVAL if self.status is not None and self.status.can_scan else RETRY_INTERVAL
+        if time.monotonic() - self.status_checked < interval:
+            return
+        self.status_checked = time.monotonic()
+        try:
+            self.status = check_startup()
+        except Exception as exc:  # noqa: BLE001 - a broken runtime must not end monitoring
+            self.status = None
+            self.log(f'Cannot check the antivirus engine: {exc}')
+
+    # ── scanning ────────────────────────────────────────────────────
+
+    def scan_ready(self):
+        monitor = self.monitor
+        if monitor is None or self.stopped.is_set():
+            return
+        if self.monitor_failed():
+            self.update_state(status='error', message=f'Monitoring needs attention: {monitor.error or "stopped"}. '
+                                                      'LibreWard tries again in a minute.')
+            return
+        if self.status is None or not self.status.can_scan:
+            self.update_state(status='needs-setup',
+                              message='Monitoring is waiting for the antivirus engine and virus database.')
+            return
+        if is_update_locked():
+            self.update_state(status='paused', message='Monitoring is paused while ClamAV is being updated.')
+            return
+        if monitor.error:
+            self.update_state(status='error', message=f'Monitoring needs attention: {monitor.error}')
+        else:
+            self.update_state(status='watching',
+                              message=f'Monitoring {len(self.settings[0])} folder(s), including subfolders.')
+        if time.monotonic() < self.retry_at:
+            return
+        paths = [path for path in monitor.ready(BATCH_SIZE) if os.path.isfile(path)]
+        if paths:
+            self.scan(paths)
+
+    def scan(self, paths):
+        _roots, patterns = self.settings
+        self.scanning = paths
+        service = ScanService(_Discard(), scan_profile=self.config.get('scan_profile', 'standard'),
+                              workers=self.config.get('scan_workers', 'auto'))
+        self.service = service
+        # Reuse a running clamd; starting one per batch would load the database each time.
+        parallel = bool(self.config.get('parallel_scanning', True) and self.status.clamd_running)
+        try:
+            service.run(paths, patterns, self.status.runtime.clamscan, parallel=parallel)
+        finally:
+            self.service = None
+        result = service.result or {'errors': True}
+        if self.stopped.is_set():
+            return  # self.scanning is saved as pending for the next start
+        self.scanning = []
+        if result.get('errors') or result.get('stopped'):
+            self.failures += 1
+            self.retry_at = time.monotonic() + RETRY_INTERVAL
+            self.status_checked = float('-inf')
+            for path in paths:
+                self.monitor.changed(path, retry=True)
+            self.log(f'Automatic scan of {len(paths)} file(s) failed; trying again in a minute.')
+            if self.failures == FAILURES_BEFORE_NOTICE:
+                self.send('LibreWard — automatic scan failed',
+                          f'New files could not be checked: {file_names(paths)}\n'
+                          'LibreWard keeps trying. Open LibreWard to check the antivirus setup.', True)
+            return
+        self.failures = 0
+        found = time.time()
+        threats = [entry for entry in self.state.get('threats', [])
+                   if not any(entry.get('path') == path for path, _threat in result.get('infected', []))]
+        threats += [{'path': path, 'threat': threat, 'time': found} for path, threat in result.get('infected', [])]
+        self.update_state(threats=threats[-MAX_THREATS:], last_scan={
+            'time': found, 'outcome': scan_outcome(result), 'files': len(paths),
+            'names': file_names(paths)})
+        self.log(f"Automatic scan of {len(paths)} file(s): {scan_outcome(result)}")
+        self.send(*scan_notification(result, paths))
+
+    # ── notifications ───────────────────────────────────────────────
+
+    def send(self, title, message, warning):
+        delivered = self.notify(title, message, warning=warning,
+                                on_open=self.open_application if warning else None)
+        if not delivered and warning:
+            # Threats and failures must reach the user, for example when the
+            # desktop's notification service starts later than this agent.
+            now = time.monotonic()
+            self.undelivered.append((now, now + NOTIFICATION_RETRY, title, message))
+
+    def retry_notifications(self):
+        now = time.monotonic()
+        waiting, self.undelivered = self.undelivered, []
+        for queued, next_try, title, message in waiting:
+            if now - queued > NOTIFICATION_GIVE_UP:
+                continue
+            if now < next_try:
+                self.undelivered.append((queued, next_try, title, message))
+            elif not self.notify(title, message, warning=True, on_open=self.open_application):
+                self.undelivered.append((queued, now + NOTIFICATION_RETRY, title, message))
+
+    # ── virus database ──────────────────────────────────────────────
+
+    def maybe_update_database(self):
+        """Keep LibreWard's own database current, like the GUI does while it is open."""
+        status = self.status
+        if (time.monotonic() - self.database_checked < DATABASE_INTERVAL
+                or (self.database_thread is not None and self.database_thread.is_alive())
+                or status is None or not status.can_update_db
+                or not self.config.get('auto_update_database', True)):
+            return
+        self.database_checked = time.monotonic()
+        attempts = [(self.config.get('database_auto_update_at'), self.config.get('database_auto_update_ok', True)),
+                    (self.state.get('database_update_at'), self.state.get('database_update_ok', True))]
+        attempts = [entry for entry in attempts if isinstance(entry[0], (int, float))]
+        last, succeeded = max(attempts, key=lambda entry: entry[0]) if attempts else (None, True)
+        if not auto_update_due(time.time(), last, succeeded) or not own_database_needs_refresh():
+            return
+        freshclam = status.runtime.freshclam
+
+        def work():
+            try:
+                result = run_freshclam_update(freshclam, wait=False)
+                success, pending = bool(result[0]), getattr(result, 'pending', False)
+            except Exception:  # noqa: BLE001 - retried later, like the GUI's refresh
+                success, pending = False, False
+            if pending:
+                return  # another update is running; try again at the next check
+            self.update_state(database_update_at=time.time(), database_update_ok=success)
+            self.status_checked = float('-inf')
+            self.log('Virus database updated automatically.' if success else
+                     'Automatic virus database update did not finish; trying again later.')
+
+        self.database_thread = threading.Thread(target=work, name='database-update', daemon=True)
+        self.database_thread.start()
+
+    # ── state for the GUI ───────────────────────────────────────────
+
+    def update_state(self, **changes):
+        if all(self.state.get(key) == value for key, value in changes.items()):
+            return
+        self.state.update(changes)
+        try:
+            write_state(dict(self.state, updated=time.time()))
+        except OSError as exc:
+            self.log(f'Cannot save the monitoring state: {exc}')
+
+
+def _log(text):
+    # Under systemd stderr goes to the journal; pythonw.exe has no stderr.
+    if sys.stderr is not None:
+        print(text, file=sys.stderr, flush=True)
+        return
+    try:
+        path = backend.log_dir() / 'monitor.log'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists() and path.stat().st_size > MAX_LOG_BYTES:
+            path.replace(path.with_suffix('.log.old'))
+        with path.open('a', encoding='utf-8') as stream:
+            stream.write(time.strftime('%Y-%m-%d %H:%M:%S ') + text + '\n')
+    except OSError:
+        pass
+
+
+def main():
+    agent = MonitorAgent()
+    signal.signal(signal.SIGTERM, lambda _signal, _frame: agent.stop())
+    signal.signal(signal.SIGINT, lambda _signal, _frame: agent.stop())
+    if hasattr(signal, 'SIGHUP'):
+        signal.signal(signal.SIGHUP, lambda _signal, _frame: agent.reload())
+    return agent.run()

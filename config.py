@@ -6,6 +6,7 @@ Uses paths provided by the platform backend.
 """
 
 import json
+import os
 
 from backends import backend
 
@@ -26,7 +27,14 @@ def load_config() -> dict | None:
 def save_config(data: dict) -> None:
     """Save config dict to disk. Raises on failure."""
     backend.config_dir().mkdir(parents=True, exist_ok=True)
-    CONFIG_FILE.write_text(
-        json.dumps(data, indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    # Replace atomically: the folder monitoring agent reads this file while
+    # the GUI saves it.
+    temporary = CONFIG_FILE.with_name(f"{CONFIG_FILE.name}.{os.getpid()}.tmp")
+    try:
+        temporary.write_text(
+            json.dumps(data, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        os.replace(temporary, CONFIG_FILE)
+    finally:
+        temporary.unlink(missing_ok=True)

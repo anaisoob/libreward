@@ -2,8 +2,58 @@
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QPlainTextEdit,
-    QProgressBar, QPushButton, QVBoxLayout, QWidget,
+    QProgressBar, QPushButton, QVBoxLayout, QWidget, QListWidget, QListWidgetItem,
 )
+
+
+class DownloadFoldersDialog(QDialog):
+    def __init__(self, parent, folders, existing=()):
+        super().__init__(parent)
+        import os
+        self.setWindowTitle('Download folders')
+        self.resize(720, 440)
+        layout = QVBoxLayout(self)
+        note = QLabel('Select folders to monitor for new and changed files. Browser names show where '
+                      'a setting was found; they do not identify which app downloaded each file. '
+                      'Save settings after adding your selection.')
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        self.folders = QListWidget()
+        existing = {os.path.normcase(os.path.realpath(path)) for path in existing}
+        for folder in folders:
+            item = QListWidgetItem(', '.join(folder.sources) + '\n' + folder.path)
+            item.setData(Qt.ItemDataRole.UserRole, folder.path)
+            item.setToolTip(folder.path)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            if os.path.normcase(folder.path) in existing:
+                item.setText(item.text() + '\nAlready monitored')
+                item.setCheckState(Qt.CheckState.Unchecked)
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
+            else:
+                item.setCheckState(Qt.CheckState.Checked)
+            self.folders.addItem(item)
+        layout.addWidget(self.folders, 1)
+        help_text = QLabel('Browsers using “Ask where to save” can download elsewhere. Custom portable '
+                           'profiles and other applications can be added with Add folder.')
+        help_text.setWordWrap(True)
+        layout.addWidget(help_text)
+        buttons = QDialogButtonBox()
+        self.add_button = buttons.addButton('Add selected folders', QDialogButtonBox.ButtonRole.AcceptRole)
+        buttons.addButton(QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        self.folders.itemChanged.connect(lambda _item: self.update_selection())
+        self.update_selection()
+
+    def selected_paths(self):
+        return [self.folders.item(i).data(Qt.ItemDataRole.UserRole)
+                for i in range(self.folders.count())
+                if self.folders.item(i).checkState() == Qt.CheckState.Checked
+                and self.folders.item(i).flags() & Qt.ItemFlag.ItemIsEnabled]
+
+    def update_selection(self):
+        self.add_button.setEnabled(bool(self.selected_paths()))
 
 
 class ClamAVConsentDialog(QDialog):

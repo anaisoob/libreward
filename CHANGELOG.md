@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Folder monitoring: automatically scan new and changed files in chosen folders,
+  with suggestions for the system Downloads folder and browser download folders.
+  It runs as a background service (`libreward --monitor`; a systemd user service on
+  Linux, a login entry on Windows) that keeps working when the window is closed and
+  after logging in again, and needs no tray icon, so it also works on GNOME. Desktop
+  notifications report each result; threats stay until dismissed, offer
+  **Open LibreWard** and appear in Detected files. The service also refreshes
+  LibreWard's own virus database. Starting LibreWard again brings the open window to
+  the front. Packages now depend on watchdog (and Debian on the PySide6 network
+  module) and recommend libnotify for notifications.
+
 - Fix the scan report never opening when some files could not be checked (as on every
   quick scan): it counted the warnings flag as a list. A report failure now still shows
   the scan outcome and logs the details.

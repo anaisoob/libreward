@@ -40,6 +40,140 @@ def _parse_version(raw: str | None) -> str | None:
 class WindowsBackend(PlatformBackend):
     """Platform backend for Windows."""
 
+    @staticmethod
+    def _known_folder(identifier):
+        """Resolve redirected/localized Windows known folders without guessing."""
+        import ctypes
+        import uuid
+        from ctypes import wintypes
+
+        class GUID(ctypes.Structure):
+            _fields_ = [('Data1', wintypes.DWORD), ('Data2', wintypes.WORD),
+                        ('Data3', wintypes.WORD), ('Data4', ctypes.c_ubyte * 8)]
+
+        folder_id = GUID.from_buffer_copy(uuid.UUID(identifier).bytes_le)
+        shell = ctypes.WinDLL('shell32', use_last_error=True)
+        ole = ctypes.WinDLL('ole32', use_last_error=True)
+        function = shell.SHGetKnownFolderPath
+        function.argtypes = [ctypes.POINTER(GUID), wintypes.DWORD, wintypes.HANDLE,
+                             ctypes.POINTER(ctypes.c_void_p)]
+        function.restype = ctypes.c_long
+        ole.CoTaskMemFree.argtypes = [ctypes.c_void_p]
+        ole.CoTaskMemFree.restype = None
+        result = ctypes.c_void_p()
+        try:
+            if function(ctypes.byref(folder_id), 0, None, ctypes.byref(result)) != 0:
+                return None
+            return Path(ctypes.wstring_at(result)) if result.value else None
+        finally:
+            if result.value:
+                ole.CoTaskMemFree(result)
+
+    def downloads_directory(self):
+        try:
+            return self._known_folder('374de290-123f-4565-9164-39c4925e467b') or super().downloads_directory()
+        except (OSError, AttributeError):
+            return super().downloads_directory()
+
+    def desktop_directory(self):
+        try:
+            return self._known_folder('b4bfcc3a-db2c-424c-b029-7fe99a87c641') or super().desktop_directory()
+        except (OSError, AttributeError):
+            return super().desktop_directory()
+
+    def browser_profile_locations(self):
+        entries = []
+        local = os.environ.get('LOCALAPPDATA')
+        roaming = os.environ.get('APPDATA')
+        if local:
+            for label, relative in (
+                ('Chrome', 'Google/Chrome/User Data'), ('Chromium', 'Chromium/User Data'),
+                ('Edge', 'Microsoft/Edge/User Data'), ('Brave', 'BraveSoftware/Brave-Browser/User Data'),
+                ('Vivaldi', 'Vivaldi/User Data'),
+            ):
+                entries.append((label, Path(local) / relative, 'chromium'))
+        if roaming:
+            entries.extend([
+                ('Firefox', Path(roaming) / 'Mozilla/Firefox', 'firefox'),
+                ('Opera', Path(roaming) / 'Opera Software/Opera Stable', 'chromium'),
+            ])
+        return entries
+
+    def send_desktop_notification(self, title, message, *, warning=False, on_open=None):
+        # A toast through PowerShell's registered app ID needs no tray icon or
+        # COM registration. Text travels in the environment, never in the script.
+        import base64
+        script = r'''
+$ErrorActionPreference = 'Stop'
+[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
+[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
+$title = [Security.SecurityElement]::Escape($env:LIBREWARD_TITLE)
+$text = [Security.SecurityElement]::Escape($env:LIBREWARD_TEXT)
+$scenario = if ($env:LIBREWARD_WARNING -eq '1') { " scenario='reminder'" } else { '' }
+$xml = New-Object Windows.Data.Xml.Dom.XmlDocument
+$xml.LoadXml("<toast$scenario><visual><binding template='ToastGeneric'><text>$title</text><text>$text</text></binding></visual></toast>")
+$app = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe'
+[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($app).Show([Windows.UI.Notifications.ToastNotification]::new($xml))
+'''
+        environment = dict(os.environ, LIBREWARD_TITLE=title, LIBREWARD_TEXT=message,
+                           LIBREWARD_WARNING='1' if warning else '0')
+        try:
+            result = subprocess.run(
+                ['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+                 '-EncodedCommand', base64.b64encode(script.encode('utf-16-le')).decode('ascii')],
+                env=environment, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL, timeout=20,
+                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0), check=False)
+            return result.returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+
+    def application_command(self, *arguments):
+        command = super().application_command(*arguments)
+        # pythonw.exe: no console window for the GUI or the background agent.
+        windowless = Path(command[0]).with_name('pythonw.exe')
+        if command[0].lower().endswith('python.exe') and windowless.is_file():
+            command[0] = str(windowless)
+        return command
+
+    def open_application(self):
+        subprocess.Popen(self.application_command(), stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+
+    def acquire_instance_lock(self, path):
+        import msvcrt
+        path.parent.mkdir(parents=True, exist_ok=True)
+        stream = open(path, 'a+', encoding='utf-8')  # noqa: SIM115 - held until the caller closes it
+        try:
+            stream.seek(0)
+            msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+        except OSError:
+            stream.close()
+            return None
+        return stream
+
+    RUN_KEY = r'Software\Microsoft\Windows\CurrentVersion\Run'
+    RUN_VALUE = 'LibreWard Monitor'
+
+    def set_monitor_service(self, enabled):
+        import winreg
+        if not enabled:
+            # The agent exits by itself once the saved settings turn monitoring off.
+            try:
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, self.RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
+                    winreg.DeleteValue(key, self.RUN_VALUE)
+            except FileNotFoundError:
+                pass
+            return
+        command = self.application_command('--monitor')
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, self.RUN_KEY) as key:
+            winreg.SetValueEx(key, self.RUN_VALUE, 0, winreg.REG_SZ, subprocess.list2cmdline(command))
+        if not self.monitor_agent_running():
+            subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL,
+                             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW)
+
     def clamd_endpoints(self):
         endpoints = super().clamd_endpoints()
         for folder in self._candidate_runtime_dirs():
