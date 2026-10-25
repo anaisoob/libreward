@@ -164,11 +164,6 @@ class QtMainWindow(QMainWindow):
             self.switch_page('scan')
             self.restore_window()  # the question never appears without its window
             QApplication.alert(self)
-            # The question replaces the notification about these files.
-            numbers = read_state().get('threat_notifications') or {}
-            for path, _threat, _found in threats:
-                if isinstance(numbers.get(path), int):
-                    backend.close_notification_number(numbers[path])
             choice = self.threat_dialog.exec()
             if choice not in (ThreatsFoundDialog.QUARANTINE, ThreatsFoundDialog.DELETE, ThreatsFoundDialog.KEEP):
                 return  # closed: asked again next time

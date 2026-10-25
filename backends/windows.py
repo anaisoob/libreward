@@ -103,7 +103,7 @@ class WindowsBackend(PlatformBackend):
             ])
         return entries
 
-    def send_desktop_notification(self, title, message, *, warning=False, on_open=None, replace=None):
+    def send_desktop_notification(self, title, message, *, warning=False, replace=None):
         # A toast through PowerShell's registered app ID needs no tray icon or
         # COM registration. Text travels in the environment, never in the script.
         import base64

@@ -287,12 +287,9 @@ class PlatformBackend(ABC):
         from watchdog.observers import Observer
         return Observer()
 
-    def send_desktop_notification(self, title, message, *, warning=False, on_open=None, replace=None):
+    def send_desktop_notification(self, title, message, *, warning=False, replace=None):
         """Send without a tray; called from a worker. True when the desktop accepted it.
 
-        `on_open`, when given, adds an "Open LibreWard" action. It is called from a
-        background thread with the desktop's activation token (or None) when the
-        user chooses it; the token lets the opened window come to the front.
         Notifications sent with the same `replace` key update one notification
         where the desktop supports it, for example from "Checking…" to the result.
         """
@@ -300,14 +297,6 @@ class PlatformBackend(ABC):
 
     def forget_desktop_notification(self, replace):
         """The notification of this key is final: a later one with the key starts anew."""
-
-    def notification_number(self, replace):
-        """The desktop's number of the notification last sent with this key, or None."""
-        return None
-
-    def close_notification_number(self, number):
-        """Close a notification by the desktop's number (also from another process)."""
-        return False
 
     def close_desktop_notification(self, replace):
         """Remove the notification last sent with this `replace` key; True when closed."""

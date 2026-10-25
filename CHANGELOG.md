@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Simpler, reliable notifications: one notification per checked file that updates in
+  place (Waiting, Checking, result) and is never closed or replaced by the window. The
+  dangerous file notification has no button: LibreWard opens by itself, or asks at once
+  when it is open. A file checked again gets a new notification, which GNOME shows.
+
 - Dangerous file notifications are no longer critical: GNOME moves them to the
   notification list after a few seconds instead of keeping them on screen. LibreWard
   closes the notification as soon as its window asks about the file, and the service log

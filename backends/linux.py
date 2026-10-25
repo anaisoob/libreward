@@ -101,9 +101,8 @@ class LinuxBackend(PlatformBackend):
     _notification_lock = threading.Lock()
     _notification_ids = {}
 
-    def send_desktop_notification(self, title, message, *, warning=False, on_open=None, replace=None):
-        # libnotify sends to the desktop notification service (GNOME Shell,
-        # Plasma, …) independently of status icons. Never wait for it on the GUI thread.
+    def send_desktop_notification(self, title, message, *, warning=False, replace=None):
+        # Each notification is one short notify-send call; nothing waits for clicks.
         from html import escape
         executable = shutil.which('notify-send')
         if not executable:
@@ -112,40 +111,15 @@ class LinuxBackend(PlatformBackend):
         # Warnings (dangerous files, failed checks) show the theme's exclamation mark icon.
         icon = 'dialog-warning' if warning else icon if icon.is_file() else 'libreward'
         # Normal urgency also for warnings: GNOME moves the banner to the notification
-        # list after a few seconds. LibreWard opens and asks about a dangerous file
-        # anyway, and critical banners stayed on screen and piled up.
+        # list after a few seconds. No desktop-entry hint and no --transient: with
+        # either, GNOME Shell removes the banner almost at once (for the hint, while
+        # LibreWard has focus).
         basic = [executable, '--app-name=LibreWard', f'--icon={icon}', '--urgency=normal']
-        # No desktop-entry hint and no --transient: with either, GNOME Shell
-        # removes the banner almost at once (for the hint, while LibreWard has
-        # focus, as when testing notifications from the window).
         text = ['--', title, escape(message)]
-        with self._notification_lock:
-            previous = self._notification_ids.get(replace) if replace else None
-        if previous and on_open is not None:
-            # A warning never updates an earlier notification in place: GNOME may keep
-            # the earlier one ("Checking…", an older warning) underneath it, or not
-            # show the update again. Close that one and show the warning on its own.
-            self.close_desktop_notification(replace)
-            previous = None
-        replacing = [f'--replace-id={previous}'] if previous else []
-        if on_open is not None:
-            actions = basic + ['--action=default=Open LibreWard', '--action=open=Open LibreWard']
-            # One notify-send process shows the warning and waits for the user. Its
-            # number lets LibreWard close it once the file is handled; GNOME then tells
-            # that same process, which ends. (Showing it first without actions to learn
-            # the number left a second, identical notification whenever the
-            # replacement did not take effect.)
-            for token in (True, False):  # libnotify 0.8.4+ hands over the activation token
-                shown = self._notify_with_action(actions, text, on_open, token=token, read_id=bool(replace))
-                if shown:
-                    with self._notification_lock:
-                        if isinstance(shown, int) and shown is not True:
-                            self._notification_ids[replace] = shown
-                        elif replace:
-                            self._notification_ids.pop(replace, None)
-                    return True
-            return bool(self._notify(basic + text))
         if replace:
+            with self._notification_lock:
+                previous = self._notification_ids.get(replace)
+            replacing = [f'--replace-id={previous}'] if previous else []
             number = self._notify(basic + replacing + ['--print-id'] + text, read_id=True)
             if number:
                 with self._notification_lock:
@@ -168,68 +142,6 @@ class LinuxBackend(PlatformBackend):
             return True
         first = (result.stdout.strip().splitlines() or [''])[0]
         return int(first) if first.isdigit() and int(first) > 0 else False
-
-    @staticmethod
-    def _read_all(descriptor):
-        chunks = []
-        with os.fdopen(descriptor, 'rb') as stream:
-            while chunk := stream.read(4096):
-                chunks.append(chunk)
-        return b''.join(chunks).decode('utf-8', 'replace').strip()
-
-    def _notify_with_action(self, command, text, on_open, *, token, read_id=False):
-        """notify-send waits with actions; answer in a thread once it was shown.
-
-        Returns False when not shown, otherwise the notification's number when
-        `read_id` and it could be read, else True.
-        """
-        import select
-        pipes = [os.pipe(), os.pipe()] if token else []
-        if pipes:
-            # Written directly by notify-send, unlike its buffered standard output.
-            command = command + [f'--selected-action-fd={pipes[0][1]}', f'--activation-token-fd={pipes[1][1]}']
-        stdbuf = shutil.which('stdbuf') if read_id else None
-        if stdbuf:
-            # Line-buffered output: the number arrives at once, not when it ends.
-            command = [stdbuf, '-oL', *command, '--print-id']
-        try:
-            process = subprocess.Popen(command + text, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                       stderr=subprocess.DEVNULL, text=True,
-                                       pass_fds=[write for _read, write in pipes])
-        except OSError:
-            process = None
-        finally:
-            for _read, write in pipes:
-                os.close(write)
-        number = None
-        if process is not None and stdbuf and select.select([process.stdout], [], [], 3)[0]:
-            first = process.stdout.readline().strip()
-            number = int(first) if first.isdigit() and int(first) > 0 else None
-        try:
-            if process is None or process.wait(timeout=0 if number else 2) != 0:
-                raise ChildProcessError
-        except subprocess.TimeoutExpired:
-            pass  # shown and waiting for the user
-        except ChildProcessError:
-            if process is not None:
-                process.stdout.close()
-            for read, _write in pipes:
-                os.close(read)
-            return False
-
-        def answer():
-            with process.stdout:
-                printed = process.stdout.read().strip()
-            process.wait()
-            choice, activation = printed, None
-            if pipes:
-                choice = self._read_all(pipes[0][0]) or printed
-                activation = self._read_all(pipes[1][0]) or None
-            if choice in ('default', 'open'):
-                on_open(activation)
-
-        threading.Thread(target=answer, name='notification-action', daemon=True).start()
-        return number or True
 
     # Display variables a session sets after the user manager started this agent.
     SESSION_VARIABLES = ('WAYLAND_DISPLAY', 'DISPLAY', 'XAUTHORITY', 'XDG_SESSION_TYPE',
@@ -260,18 +172,11 @@ class LinuxBackend(PlatformBackend):
         with self._notification_lock:
             self._notification_ids.pop(replace, None)
 
-    def notification_number(self, replace):
-        with self._notification_lock:
-            return self._notification_ids.get(replace)
-
     def close_desktop_notification(self, replace):
         with self._notification_lock:
             number = self._notification_ids.pop(replace, None)
-        return self.close_notification_number(number) if number else False
-
-    def close_notification_number(self, number):
         gdbus = shutil.which('gdbus')
-        if not gdbus or not isinstance(number, int) or number <= 0:
+        if not number or not gdbus:
             return False
         try:
             return subprocess.run(

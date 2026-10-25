@@ -52,7 +52,9 @@ class MonitorAgentTests(unittest.TestCase):
 
     def agent(self, gui_running=False):
         self.close_notification = Mock(return_value=True)
+        self.forget_notification = Mock()
         return MonitorAgent(notify=self.notify, close_notification=self.close_notification,
+                            forget_notification=self.forget_notification,
                             open_application=self.open_application,
                             gui_running=lambda: gui_running, log=self.logged.append)
 
@@ -113,7 +115,8 @@ class MonitorAgentTests(unittest.TestCase):
         _title, message = self.notify.call_args.args
         self.assertIn('No threats found', message)
         self.assertIn('clean.zip', message)
-        self.assertEqual(self.notify.call_args.kwargs, {'warning': False, 'on_open': None, 'replace': f'check:{path}'})
+        self.assertEqual(self.notify.call_args.kwargs, {'warning': False, 'replace': f'check:{path}'})
+        self.forget_notification.assert_called_with(f'check:{path}')  # the next check is a new notification
         state = read_state()
         self.assertEqual(state['last_scan']['outcome'], 'No threats found')
         self.assertEqual(state.get('threats', []), [])
@@ -128,11 +131,9 @@ class MonitorAgentTests(unittest.TestCase):
         self.assertEqual(self.notify.call_args.args[0], '⚠ LibreWard — dangerous file found')
         self.assertIn('eicar.com', self.notify.call_args.args[1])
         self.assertTrue(self.notify.call_args.kwargs['warning'])
-        self.assertEqual(self.notify.call_args.kwargs['on_open'], agent.show_threats)
+        self.assertIn('LibreWard asks what to do with it', self.notify.call_args.args[1])
         # Nobody had LibreWard open, so it opens to ask what to do.
-        self.open_application.assert_called_with('--threats', activation_token=None)
-        self.notify.call_args.kwargs['on_open']('token-1')
-        self.open_application.assert_called_with('--threats', activation_token='token-1')
+        self.open_application.assert_called_with('--threats')
         threats = read_state()['threats']
         self.assertEqual([(entry['path'], entry['threat']) for entry in threats],
                          [(path, 'Eicar-Signature FOUND')])
@@ -249,40 +250,6 @@ class MonitorAgentTests(unittest.TestCase):
             agent.config['scan_profile'] = 'extended'
             agent.scan([str(self.watched / 'd')])
             self.assertIsNot(agent.clamd, first)
-
-    def test_threat_notification_numbers_are_shared_with_the_window(self):
-        path = str(self.watched / 'eicar.com')
-        Path(path).write_text('sample')
-        agent, scan = self.scanning_agent({'infected': [(path, 'Eicar FOUND')], 'infected_found': True,
-                                           'errors': False, 'warnings': False, 'stopped': False, 'scanned': 1})
-        with scan, patch.object(monitor_agent.backend, 'notification_number', return_value=57):
-            agent.scan([path])
-        self.assertEqual(read_state()['threat_notifications'], {path: 57})
-        self.assertIn('Threat notification 57 for eicar.com.', self.logged)
-        Path(path).unlink()
-        agent.forget_handled_threats()
-        self.assertEqual(read_state()['threat_notifications'], {})
-
-    def test_threat_notification_is_removed_once_the_file_is_handled(self):
-        quarantined = self.watched / 'eicar.com'
-        kept = self.watched / 'kept.exe'
-        for path in (quarantined, kept):
-            path.write_text('sample')
-        result = {'infected': [(str(quarantined), 'Eicar FOUND')], 'infected_found': True, 'errors': False,
-                  'warnings': False, 'stopped': False, 'scanned': 1}
-        agent, scan = self.scanning_agent(result)
-        with scan:
-            agent.scan([str(quarantined)])
-        agent.forget_handled_threats()
-        self.close_notification.assert_not_called()  # still waiting for a decision
-        quarantined.unlink()
-        agent.forget_handled_threats()
-        self.close_notification.assert_called_once_with(f'check:{quarantined}')
-        # "Keep file" in LibreWard marks the threat as decided.
-        agent.threat_notices[str(kept)] = ('check:kept.exe', 50)
-        agent.config['threats_reviewed_at'] = 60
-        agent.forget_handled_threats()
-        self.close_notification.assert_called_with('check:kept.exe')
 
     def test_cancelled_download_loses_its_waiting_notification(self):
         agent = self.agent()

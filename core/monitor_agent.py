@@ -126,7 +126,7 @@ def scan_notification(result, paths):
     if threats or result.get('infected_found'):
         return ('⚠ LibreWard — dangerous file found',
                 (f'{scan_outcome(result)}\n{file_names(threats or paths)}\n'
-                 'Open LibreWard to move it to quarantine or delete it.'), True)
+                 'Do not open it. LibreWard asks what to do with it.'), True)
     return ('LibreWard — new files checked',
             f"{scan_outcome(result)}\nChecked: {result.get('scanned', 0)} file(s).\n{file_names(paths)}",
             bool(result.get('warnings')))
@@ -139,11 +139,11 @@ class _Discard:
 
 
 class MonitorAgent:
-    def __init__(self, *, notify=None, close_notification=None, open_application=None, gui_running=None,
-                 log=None):
+    def __init__(self, *, notify=None, close_notification=None, forget_notification=None, open_application=None,
+                 gui_running=None, log=None):
         self.notify = notify or backend.send_desktop_notification
         self.close_notification = close_notification or backend.close_desktop_notification
-        self.forget_notification = backend.forget_desktop_notification
+        self.forget_notification = forget_notification or backend.forget_desktop_notification
         self.open_application = open_application or backend.open_application
         self.gui_running = gui_running or backend.gui_running
         self.log = log or _log
@@ -173,8 +173,6 @@ class MonitorAgent:
         # Downloads announced in a notification, which later shows their result:
         # partial file -> None while downloading, or when it disappeared.
         self.announced = {}
-        # Threat notifications by file, removed once the file is gone (quarantined, deleted).
-        self.threat_notices = {}
         self.notification_lock = threading.Lock()
         previous = read_state()
         self.state = {key: previous[key] for key in
@@ -378,7 +376,6 @@ class MonitorAgent:
         downloads = monitor.downloads()
         self.update_state(downloading=['a download'] * min(len(downloads), 5))
         self.announce(downloads)
-        self.forget_handled_threats()
         if time.monotonic() < self.retry_at:
             return
         paths = [path for path in monitor.ready(BATCH_SIZE) if os.path.isfile(path)]
@@ -404,23 +401,6 @@ class MonitorAgent:
             elif gone is not None and now - gone > STALE_DOWNLOAD:
                 del self.announced[partial]
                 self.close_notification(f'download:{partial}')
-
-    def forget_handled_threats(self):
-        """Remove a threat notification once its file was handled in LibreWard."""
-        reviewed = self.config.get('threats_reviewed_at', 0)
-        reviewed = reviewed if isinstance(reviewed, (int, float)) else 0
-        for path, (key, found) in list(self.threat_notices.items()):
-            # Quarantined or deleted, or kept with "Keep file".
-            if not os.path.lexists(path) or found <= reviewed:
-                del self.threat_notices[path]
-                notices = dict(self.state.get('threat_notifications') or {})
-                notices.pop(path, None)
-                self.update_state(threat_notifications=notices)
-                if all(other != key for other, _found in self.threat_notices.values()):
-                    number = backend.notification_number(key)
-                    closed = self.close_notification(key)
-                    self.log(f'{os.path.basename(path)} was handled; notification {number} was '
-                             f"{'closed' if closed else 'not closed (already closed, or the desktop did not confirm it)'}.")
 
     def scan(self, paths):
         _roots, patterns = self.settings
@@ -515,35 +495,25 @@ class MonitorAgent:
             done.set()
             if dangerous or not threats_only(self.config):
                 self.send(title, message, warning, replace=key)
-            if not dangerous:
-                self.forget_notification(key)  # finished; a later check starts a new one
-        number = backend.notification_number(key)
-        if dangerous:
-            self.log(f'Threat notification {number or "(number unknown)"} for {file_names(paths)}.')
-        for path, _threat in result.get('infected', []):
-            self.threat_notices[path] = (key, found)
-        # The window closes the notification once it shows the question.
-        notices = dict(self.state.get('threat_notifications') or {})
-        notices.update({path: number for path, _threat in result.get('infected', []) if number})
-        self.update_state(threat_notifications=notices)
+            # Final: the next check of this file gets a notification of its own, which
+            # GNOME shows again (an update in place would not be shown).
+            self.forget_notification(key)
         if result.get('infected') and not self.gui_running():
             # An open window asks what to do by itself; otherwise LibreWard opens to ask.
             self.show_threats()
         return False
 
-    def show_threats(self, activation_token=None):
-        # Without a token GNOME may only say "LibreWard is ready" instead of showing it.
-        self.log(f"Opening LibreWard {'with' if activation_token else 'without'} an activation token.")
+    def show_threats(self):
+        self.log('Opening LibreWard to ask about a dangerous file.')
         try:
-            self.open_application('--threats', activation_token=activation_token)
+            self.open_application('--threats')
         except OSError as exc:
             self.log(f'Cannot open LibreWard: {exc}')
 
     # ── notifications ───────────────────────────────────────────────
 
     def send(self, title, message, warning, replace=None):
-        delivered = self.notify(title, message, warning=warning,
-                                on_open=self.show_threats if warning else None, replace=replace)
+        delivered = self.notify(title, message, warning=warning, replace=replace)
         if not delivered and warning:
             # Threats and failures must reach the user, for example when the
             # desktop's notification service starts later than this agent.
@@ -558,7 +528,7 @@ class MonitorAgent:
                 continue
             if now < next_try:
                 self.undelivered.append((queued, next_try, title, message))
-            elif not self.notify(title, message, warning=True, on_open=self.show_threats):
+            elif not self.notify(title, message, warning=True):
                 self.undelivered.append((queued, now + NOTIFICATION_RETRY, title, message))
 
     # ── virus database ──────────────────────────────────────────────

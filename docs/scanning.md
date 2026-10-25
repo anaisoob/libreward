@@ -196,15 +196,10 @@ moves the file once a folder is chosen; the notification then shows the result f
 the moved file. A download that is cancelled loses its notification after half a
 minute.
 
-When a file is dangerous, the notification shows a warning sign, stays until the
-file is handled (moved to quarantine, deleted or kept in LibreWard) and offers
-**Open LibreWard**, and:
-
-- if LibreWard is closed, it opens by itself;
-- if it is open, it comes forward (with the desktop’s activation token, so GNOME on
-  Wayland shows the window instead of a “LibreWard is ready” notice; this needs
-  libnotify 0.8.4 or newer);
-
+When a file is dangerous, the notification shows a warning sign and says not to
+open the file. Like the others, it moves to the notification list after a few
+seconds; every notification is one short `notify-send` call and nothing waits for a
+click. LibreWard opens by itself if it is closed (if it is open, it asks right away)
 and asks what to do: **Move to quarantine** (recommended), **Delete** (after a
 confirmation) or **Keep file**. Closing the question asks again next time while the
 file is still there. The file is also listed under Detected files on the Virus scan
