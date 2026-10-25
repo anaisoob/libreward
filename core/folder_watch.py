@@ -47,6 +47,7 @@ class FolderMonitor:
             def on_any_event(self, event):
                 # Reads performed by ClamAV must not trigger another scan.
                 if event.event_type == 'deleted' and not event.is_directory:
+                    monitor.forget(event.src_path)
                     # Removing a sidecar may be the only completion event for
                     # an existing final file (Firefox / aria2).
                     if incomplete_download(event.src_path):
@@ -61,6 +62,8 @@ class FolderMonitor:
                     monitor.reconcile.set()
                     return
                 destination = getattr(event, 'dest_path', '') or event.src_path
+                if event.event_type == 'moved':
+                    monitor.forget(event.src_path)  # e.g. moved to quarantine
                 renamed_partial = event.event_type == 'moved' and incomplete_download(event.src_path)
                 if incomplete_download(destination):
                     # Chrome renames "Unconfirmed 123.crdownload" to "name.crdownload".
@@ -119,6 +122,11 @@ class FolderMonitor:
                     self.reasons[path] = reason
                 # Otherwise unchanged since it was queued, e.g. the folder check after a
                 # finished download: keep its place (and reason) instead of waiting again.
+
+    def forget(self, path):
+        """A file was deleted or moved away: a new file at this path is checked again."""
+        with self.lock:
+            self.dispatched.pop(os.path.abspath(path), None)
 
     def started(self, partial):
         partial = os.path.abspath(partial)
@@ -216,8 +224,10 @@ class FolderMonitor:
                     self.pending[path] = (now, current)
                     continue
                 digest = file_digest(path, stat.st_size)
-                if checked is not None and digest is not None and checked[1] == digest:
-                    # Same contents with a new modification time: checked already.
+                same_file = checked is not None and checked[0][:2] == current[:2]  # device and inode
+                if same_file and digest is not None and checked[1] == digest:
+                    # The same file with a new modification time only: checked already.
+                    # A new file with the same contents (downloaded again) is checked.
                     self.dispatched[path] = (current, digest)
                     del self.pending[path]
                     continue

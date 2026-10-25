@@ -160,6 +160,51 @@ class FolderMonitorTests(unittest.TestCase):
             monitor.ready()
             self.assertEqual(monitor.ready(), [str(path)])
 
+    def test_the_same_file_downloaded_again_is_checked_again(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'eicar.com'
+            path.write_text('same test contents')
+            monitor = FolderMonitor([folder], [], settle=0)
+            monitor.changed(str(path))
+            monitor.ready()
+            self.assertEqual(monitor.ready(), [str(path)])
+            # Deleted without the monitor noticing, then downloaded again: a new file.
+            path.unlink()
+            replacement = Path(folder) / 'other'
+            replacement.write_text('keeps the old inode from being reused')
+            path.write_text('same test contents')
+            monitor.changed(str(path))
+            monitor.ready()
+            self.assertEqual(monitor.ready(), [str(path)])
+            monitor.forget(str(path))  # deleted while watched
+            self.assertNotIn(str(path), monitor.dispatched)
+
+    def test_native_delete_and_download_again_is_checked(self):
+        try:
+            import watchdog  # noqa: F401
+        except ImportError:
+            self.skipTest('watchdog required')
+        with tempfile.TemporaryDirectory() as folder:
+            monitor = FolderMonitor([folder], [], settle=.05)
+            monitor.start()
+            try:
+                self.assertTrue(monitor.baseline_ready.wait(3))
+                path = Path(folder) / 'eicar.com'
+                for attempt in range(2):
+                    partial = Path(str(path) + '.part')
+                    partial.write_text('same test contents')
+                    partial.rename(path)
+                    found = []
+                    deadline = time.monotonic() + 3
+                    while time.monotonic() < deadline and not found:
+                        found.extend(monitor.ready())
+                        time.sleep(.02)
+                    self.assertEqual(found, [str(path)], f'download {attempt + 1}')
+                    path.unlink()
+                    time.sleep(.2)
+            finally:
+                monitor.stop()
+
     def test_chrome_naming_its_download_keeps_it_in_progress(self):
         try:
             import watchdog  # noqa: F401

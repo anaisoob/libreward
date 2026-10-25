@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fix a file downloaded again under the same name and with the same contents (like a
+  test file) not being checked: unchanged contents are only recognized for the same file.
+
 - Fix the dangerous file question opening a second time while its delete confirmation was
   open, which asked to delete an already deleted file. Files already gone are removed from
   Detected files without a question or error, and the window comes forward with the question.
