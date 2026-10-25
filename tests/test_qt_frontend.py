@@ -343,6 +343,21 @@ class QtFrontendTests(unittest.TestCase):
             QLocalServer.removeServer(name)
         self.assertFalse(show_running_instance(name, 'show'))
 
+    def test_token_is_read_before_qt_can_use_it_up(self):
+        import ui.main_window as module
+
+        def start_qt(*_args):
+            os.environ.pop('XDG_ACTIVATION_TOKEN', None)  # as a toolkit may do at startup
+            return Mock()
+
+        from unittest.mock import Mock
+        with patch.dict(os.environ, {'XDG_ACTIVATION_TOKEN': 'token-7'}), \
+                patch.object(module, 'QApplication', side_effect=start_qt) as application, \
+                patch.object(module, 'show_running_instance', return_value=True) as forward:
+            application.setDesktopFileName = Mock()
+            self.assertEqual(module.run(threats=True), 0)
+        self.assertEqual(forward.call_args.args[1], 'threats token-7')
+
     def test_instance_request_carries_the_token(self):
         from ui.main_window import instance_request
         with patch.dict(os.environ, {'XDG_ACTIVATION_TOKEN': 'abc'}):

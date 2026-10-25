@@ -332,6 +332,8 @@ class MonitorAgent:
             self.show_threats()
 
     def show_threats(self, activation_token=None):
+        # Without a token GNOME may only say "LibreWard is ready" instead of showing it.
+        self.log(f"Opening LibreWard {'with' if activation_token else 'without'} an activation token.")
         try:
             self.open_application('--threats', activation_token=activation_token)
         except OSError as exc:

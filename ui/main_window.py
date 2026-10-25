@@ -1608,6 +1608,8 @@ def handle_instance_request(window, request):
     if token:
         # Qt's Wayland integration activates the window with this token once.
         os.environ['XDG_ACTIVATION_TOKEN'] = token
+    window.log.appendPlainText('Brought forward by another start of LibreWard '
+                               f"({'with' if token else 'without'} an activation token from the desktop).")
     window.restore_window()
     if action == 'threats':
         QTimer.singleShot(0, lambda: window.open_background_threats(activated=True))
@@ -1642,6 +1644,8 @@ def run(autostart=False, threats=False):
         # Launched by a login entry from an earlier version: remove it, show nothing.
         backend.remove_autostart()
         return 0
+    # Read before Qt starts, which may use up the desktop's activation token.
+    request = instance_request(threats)
     # Before the application exists: lets Wayland compositors match the window to
     # libreward.desktop, and Qt registers this app ID with the desktop portal once.
     QApplication.setDesktopFileName('libreward')
@@ -1650,7 +1654,7 @@ def run(autostart=False, threats=False):
     app.setOrganizationName(APP_NAME)
     app.setStyle("Fusion")
     name = instance_server_name()
-    if show_running_instance(name, instance_request(threats)):
+    if show_running_instance(name, request):
         return 0
     from core.monitor_agent import gui_lock_file
     # Tells the background agent that a window is open and asks about threats itself.
