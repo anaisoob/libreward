@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Dangerous files found while the question is open join it (“LibreWard found 2
+  dangerous files”), and one answer covers them all. While LibreWard is in the
+  background, the question opens as its own window so that GNOME shows it.
+
 - Fix a dangerous file found while the question about an earlier one was open never being
   asked about: LibreWard now asks about it right after.
 

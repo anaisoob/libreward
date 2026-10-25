@@ -57,6 +57,7 @@ class QtMainWindow(QMainWindow):
         self.last_result = None
         self.monitor_state_mtime = None
         self.threat_dialog = None
+        self.threat_found = {}
         self.quarantine_items = 0
         # Pages built earlier (Live protection) may report state before later ones exist.
         self.shell_ready = False
@@ -128,7 +129,7 @@ class QtMainWindow(QMainWindow):
         if updated == self.monitor_state_mtime:
             return
         self.monitor_state_mtime = updated
-        if self.list_background_threats():
+        if self.list_background_threats() or self.threat_dialog is not None:
             self.open_background_threats()
 
     def list_background_threats(self):
@@ -153,18 +154,29 @@ class QtMainWindow(QMainWindow):
             self.switch_page('scan')
         self.list_background_threats()
         if self.threat_dialog is not None:
+            self.add_to_open_question()
             return  # already asking, or confirming the answer
         threats = [(path, threat, found) for path, threat, found, new in self.background_threats() if new]
         if not threats:
             return
+        self.threat_found = {path: found for path, _threat, found in threats}
+        # While LibreWard is in the background, the question is a window of its own:
+        # GNOME shows a new window, but does not raise an existing one (or a dialog
+        # attached to it) without a click. It still blocks the main window.
+        parent = self if self.isActiveWindow() else None
         # Set for the question and the confirmation that may follow: status updates
         # meanwhile must not ask about the same files a second time.
-        self.threat_dialog = ThreatsFoundDialog(self, [(path, threat) for path, threat, _found in threats])
+        self.threat_dialog = ThreatsFoundDialog(parent, [(path, threat) for path, threat, _found in threats])
+        if parent is None:
+            self.threat_dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
+            self.threat_dialog.setWindowIcon(self.windowIcon())
         try:
             self.switch_page('scan')
             self.restore_window()  # the question never appears without its window
             QApplication.alert(self)
             choice = self.threat_dialog.exec()
+            # Files added while the question was open are part of the decision.
+            threats = [(path, threat, self.threat_found[path]) for path, threat in self.threat_dialog.threats]
             if choice not in (ThreatsFoundDialog.QUARANTINE, ThreatsFoundDialog.DELETE, ThreatsFoundDialog.KEEP):
                 return  # closed: asked again next time
             files = [(path, threat) for path, threat, _found in threats]
@@ -185,9 +197,22 @@ class QtMainWindow(QMainWindow):
         finally:
             self.threat_dialog.deleteLater()
             self.threat_dialog = None
-            # Files found while this question was open were not in it: ask about them next.
+            # Files found during the confirmation were not in the question: ask about them next.
             shown = {path for path, _threat, _found in threats}
             QTimer.singleShot(0, self, lambda: self.ask_about_threats_found_meanwhile(shown))
+
+    def add_to_open_question(self):
+        """New dangerous files join the question that is already open."""
+        dialog = self.threat_dialog
+        if dialog is None or not dialog.isVisible():
+            return  # confirming the answer: asked about separately afterwards
+        shown = {path for path, _threat in dialog.threats}
+        new = [(path, threat, found) for path, threat, found, is_new in self.background_threats()
+               if is_new and path not in shown]
+        if new:
+            self.threat_found.update({path: found for path, _threat, found in new})
+            dialog.add_threats([(path, threat) for path, threat, _found in new])
+            QApplication.alert(dialog)
 
     def ask_about_threats_found_meanwhile(self, shown):
         if any(new and path not in shown for path, _threat, _found, new in self.background_threats()):

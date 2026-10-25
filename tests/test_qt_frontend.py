@@ -357,6 +357,61 @@ class QtFrontendTests(unittest.TestCase):
                 self.app.processEvents()
             self.assertEqual(len(asked), 2)  # nothing left to ask
 
+    def test_files_found_while_the_question_is_open_join_it(self):
+        from ui.dialogs import ThreatsFoundDialog
+        self.window.show()
+        for _ in range(20):
+            self.app.processEvents()
+            time.sleep(.01)
+        with tempfile.TemporaryDirectory() as folder:
+            first = self.background_threat(folder)
+            second = Path(folder) / 'second.exe'
+            second.write_text('sample')
+            seen = []
+
+            def answer(dialog):
+                dialog.show()
+                self.monitor_state.return_value = {'updated': 20, 'threats': [
+                    {'path': str(first), 'threat': 'Eicar-Signature FOUND', 'time': 10},
+                    {'path': str(second), 'threat': 'Other FOUND', 'time': 20}]}
+                self.window.file_protection.refresh()  # the agent reports the second file
+                seen.append((list(dialog.threats), dialog.title.text()))
+                return ThreatsFoundDialog.QUARANTINE
+
+            with patch.object(ThreatsFoundDialog, 'exec', answer) as asked, \
+                    patch('ui.main_window.quarantine_file', return_value='Quarantined') as quarantine:
+                self.window.open_background_threats()
+                self.wait_idle()
+                for _ in range(5):
+                    self.app.processEvents()
+            self.assertEqual(len(seen), 1)  # one question for both
+            paths, title = seen[0]
+            self.assertEqual([path for path, _threat in paths], [str(first), str(second)])
+            self.assertEqual(title, 'LibreWard found 2 dangerous files')
+            self.assertEqual(sorted(call.args[0] for call in quarantine.call_args_list),
+                             sorted([str(first), str(second)]))
+            self.assertEqual(self.window.config['threats_reviewed_at'], 20)
+
+    def test_in_the_background_the_question_is_a_window_of_its_own(self):
+        from ui.dialogs import ThreatsFoundDialog
+        from PySide6.QtCore import Qt as QtCore
+        with tempfile.TemporaryDirectory() as folder:
+            self.background_threat(folder)
+            created = []
+
+            def answer(dialog):
+                created.append((dialog.parent(), dialog.windowModality()))
+                return QDialog.DialogCode.Rejected
+
+            with patch.object(self.window, 'isActiveWindow', return_value=False), \
+                    patch.object(ThreatsFoundDialog, 'exec', answer):
+                self.window.open_background_threats()
+            self.assertEqual(created, [(None, QtCore.WindowModality.ApplicationModal)])
+            with patch.object(self.window, 'isActiveWindow', return_value=True), \
+                    patch.object(ThreatsFoundDialog, 'exec', answer):
+                self.window.open_background_threats()
+            self.assertIs(created[1][0], self.window)
+
     def test_threat_question_stands_out_from_ordinary_dialogs(self):
         from ui.dialogs import ThreatsFoundDialog
         from PySide6.QtWidgets import QWidget

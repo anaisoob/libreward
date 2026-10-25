@@ -127,11 +127,9 @@ class ThreatsFoundDialog(QDialog):
     KEEP = 4
 
     def __init__(self, parent, threats):
-        import os
-        from html import escape
         super().__init__(parent)
+        self.threats = []
         self.setObjectName('dangerDialog')
-        self.setWindowTitle('Dangerous file found' if len(threats) == 1 else 'Dangerous files found')
         self.setMinimumWidth(560)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 16)
@@ -148,11 +146,10 @@ class ThreatsFoundDialog(QDialog):
         band.addWidget(icon, 0, Qt.AlignmentFlag.AlignTop)
         heading = QVBoxLayout()
         heading.setSpacing(4)
-        title = QLabel('LibreWard found a dangerous file' if len(threats) == 1 else
-                       f'LibreWard found {len(threats)} dangerous files')
-        title.setObjectName('dangerTitle')
-        title.setWordWrap(True)
-        heading.addWidget(title)
+        self.title = QLabel()
+        self.title.setObjectName('dangerTitle')
+        self.title.setWordWrap(True)
+        heading.addWidget(self.title)
         text = QLabel('It contains a virus or other harmful software. Do not open it.')
         text.setObjectName('dangerSubtitle')
         text.setWordWrap(True)
@@ -162,15 +159,9 @@ class ThreatsFoundDialog(QDialog):
         body = QVBoxLayout()
         body.setContentsMargins(20, 4, 20, 0)
         body.setSpacing(10)
-        for path, threat in threats[:8]:
-            row = QLabel(f'<b>{escape(os.path.basename(path))}</b> &nbsp;·&nbsp; {escape(threat.removesuffix(" FOUND"))}<br>'
-                         f'<span style="font-size: 11px;">{escape(os.path.dirname(path))}</span>')
-            row.setObjectName('dangerFile')
-            row.setTextFormat(Qt.TextFormat.RichText)
-            row.setWordWrap(True)
-            body.addWidget(row)
-        if len(threats) > 8:
-            body.addWidget(QLabel(f'…and {len(threats) - 8} more, listed on the Virus scan page.'))
+        self.files = QVBoxLayout()
+        self.files.setSpacing(8)
+        body.addLayout(self.files)
         note = QLabel('Quarantine moves it to a safe place where it cannot do harm. '
                       'If it was a mistake, you can restore it later from Quarantine.')
         note.setObjectName('muted')
@@ -189,6 +180,40 @@ class ThreatsFoundDialog(QDialog):
         body.addSpacing(4)
         body.addWidget(buttons)
         layout.addLayout(body)
+        self.add_threats(threats)
+
+    def add_threats(self, threats):
+        """Add files found while the question is open; one decision covers them all."""
+        import os
+        from html import escape
+        known = {path for path, _threat in self.threats}
+        self.threats += [(path, threat) for path, threat in threats if path not in known]
+        count = len(self.threats)
+        self.setWindowTitle('Dangerous file found' if count == 1 else 'Dangerous files found')
+        self.title.setText('LibreWard found a dangerous file' if count == 1 else
+                           f'LibreWard found {count} dangerous files')
+        while self.files.count():
+            self.files.takeAt(0).widget().deleteLater()
+        for path, threat in self.threats[:8]:
+            folder = os.path.dirname(path)
+            folder = folder if len(folder) <= 70 else '…' + folder[-69:]
+            # No word wrap: wrapped rich text makes Qt size the dialog too small.
+            row = QLabel(f'<b>{escape(os.path.basename(path))}</b> &nbsp;·&nbsp; {escape(threat.removesuffix(" FOUND"))}<br>'
+                         f'<span style="font-size: 11px;">{escape(folder)}</span>')
+            row.setObjectName('dangerFile')
+            row.setTextFormat(Qt.TextFormat.RichText)
+            row.setToolTip(path)
+            row.setMinimumHeight(row.sizeHint().height())  # never squeezed
+            self.files.addWidget(row)
+        if count > 8:
+            self.files.addWidget(QLabel(f'…and {count - 8} more, listed on the Virus scan page.'))
+        # Grow for the new rows once the layout has measured them (the wrapped note
+        # below makes the height depend on the width).
+        layout = self.layout()
+        layout.activate()
+        width = max(self.width(), self.sizeHint().width())
+        height = layout.totalHeightForWidth(width) if layout.hasHeightForWidth() else self.sizeHint().height()
+        self.resize(width, max(height, self.minimumSizeHint().height()))
 
 
 class ClamAVConsentDialog(QDialog):
