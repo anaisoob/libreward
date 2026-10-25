@@ -354,15 +354,19 @@ class LinuxBackend(PlatformBackend):
         ):
             entries.append((label + ' (Flatpak)', home / '.var/app' / package / 'config' / relative, kind))
         entries.append(('Firefox (Flatpak)', home / '.var/app/org.mozilla.firefox/.mozilla/firefox', 'firefox'))
-        # Firefox-based browsers keep the same profile layout in their own folder.
-        for label, folder, package in (
-            ('LibreWolf', '.librewolf', 'io.gitlab.librewolf-community'),
-            ('Waterfox', '.waterfox', 'net.waterfox.waterfox'),
-            ('Floorp', '.floorp', 'one.ablaze.floorp'),
-            ('Zen', '.zen', 'app.zen_browser.zen'),
+        # Firefox-based browsers keep the same profile layout in their own folder:
+        # ~/.name, or ~/.config/name/name like Firefox's ~/.config/mozilla/firefox.
+        for label, name, package in (
+            ('LibreWolf', 'librewolf', 'io.gitlab.librewolf-community'),
+            ('Waterfox', 'waterfox', 'net.waterfox.waterfox'),
+            ('Floorp', 'floorp', 'one.ablaze.floorp'),
+            ('Zen', 'zen', 'app.zen_browser.zen'),
         ):
-            entries.append((label, home / folder, 'firefox'))
-            entries.append((label + ' (Flatpak)', home / '.var/app' / package / folder, 'firefox'))
+            flatpak = home / '.var/app' / package
+            for folder in (home / f'.{name}', config / name / name, config / name):
+                entries.append((label, folder, 'firefox'))
+            for folder in (flatpak / f'.{name}', flatpak / 'config' / name / name, flatpak / 'config' / name):
+                entries.append((label + ' (Flatpak)', folder, 'firefox'))
         override = os.environ.get('CHROME_USER_DATA_DIR')
         if override and os.path.isabs(override):
             entries.append(('Chrome / Chromium (custom)', Path(override), 'chromium'))

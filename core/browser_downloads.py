@@ -17,6 +17,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 from backends import backend
+from core.download_folders import firefox_profiles
 
 # Copying a much larger history database on every change would cost too much.
 MAX_DATABASE_BYTES = 512 * 1024 * 1024
@@ -31,15 +32,17 @@ def history_databases(platform_backend=None):
     found = []
     for _label, root, kind in platform_backend.browser_profile_locations():
         root = Path(root)
-        name = 'places.sqlite' if kind == 'firefox' else 'History'
-        parents = [root, root / 'Profiles'] if kind == 'firefox' else [root]
-        for parent in parents:
+        if kind == 'firefox':
+            profiles = firefox_profiles(root)
+        else:
             try:
-                profiles = [child for child in parent.iterdir() if child.is_dir()]
+                profiles = [child for child in root.iterdir() if child.is_dir()]
             except OSError:
                 continue
-            found += [(kind, profile / name) for profile in profiles if (profile / name).is_file()]
-    return found
+        name = 'places.sqlite' if kind == 'firefox' else 'History'
+        found += [(kind, profile / name) for profile in profiles if (profile / name).is_file()]
+    # The same profile can be reached through two locations (for example a symlink).
+    return list(dict.fromkeys((kind, path.resolve()) for kind, path in found))
 
 
 def _copy(path, directory):

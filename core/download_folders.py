@@ -56,7 +56,8 @@ def _chromium_folders(root, default):
 _PREF = re.compile(r'^\s*user_pref\(\s*("(?:[^"\\]|\\.)*")\s*,\s*(.*?)\s*\);\s*$')
 
 
-def _firefox_folders(root, default, desktop):
+def firefox_profiles(root):
+    """Profile folders of a Firefox-style browser: from profiles.ini, and standard ones."""
     root = Path(root)
     profiles = set()
     config = configparser.ConfigParser(interpolation=None)
@@ -74,11 +75,15 @@ def _firefox_folders(root, default, desktop):
     # Standard profiles may be available even if profiles.ini is missing.
     for parent in (root, root / 'Profiles'):
         try:
-            profiles.update(child for child in parent.iterdir()
-                            if child.is_dir() and (child / 'prefs.js').is_file())
+            profiles.update(child for child in parent.iterdir() if child.is_dir() and (
+                (child / 'prefs.js').is_file() or (child / 'places.sqlite').is_file()))
         except OSError:
             pass
-    for profile in sorted(profiles):
+    return sorted(profiles)
+
+
+def _firefox_folders(root, default, desktop):
+    for profile in firefox_profiles(root):
         preferences = {}
         found = False
         for name in ('prefs.js', 'user.js'):
@@ -113,13 +118,16 @@ def settings_signature(platform_backend=None):
     files = [platform_backend.user_directories_file()]
     for _label, root, kind in platform_backend.browser_profile_locations():
         root = Path(root)
-        files += [root / 'profiles.ini'] if kind == 'firefox' else [root / 'Preferences']
+        if kind == 'firefox':
+            files.append(root / 'profiles.ini')
+            for profile in firefox_profiles(root):
+                files += [profile / 'prefs.js', profile / 'user.js']
+            continue
+        files.append(root / 'Preferences')
         try:
-            profiles = [child for child in root.iterdir() if child.is_dir()]
+            files += [child / 'Preferences' for child in root.iterdir() if child.is_dir()]
         except OSError:
             continue
-        for profile in profiles:
-            files += [profile / 'prefs.js', profile / 'user.js'] if kind == 'firefox' else [profile / 'Preferences']
     signature = []
     for path in files:
         if path is None:

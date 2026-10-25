@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Firefox-based browsers (LibreWolf, Waterfox, Floorp, Zen) are also found in the newer
+  `~/.config/<name>` locations, and profiles anywhere listed in `profiles.ini`.
+
 - Threat notifications close reliably after quarantine or delete, also after testing
   the same file name several times. “Waiting” no longer shows the temporary random
   name Firefox uses while its save dialog is open (“Waiting for a download…”), and a

@@ -62,6 +62,25 @@ class DownloadHistoryTests(unittest.TestCase):
         kinds = sorted(kind for kind, _path in history_databases(self.backend))
         self.assertEqual(kinds, ['chromium', 'firefox'])
 
+    def test_profiles_in_new_locations_and_from_profiles_ini_are_found(self):
+        from backends.linux import LinuxBackend
+        with patch.dict(os.environ, {'XDG_CONFIG_HOME': str(self.root / 'config')}), \
+                patch('backends.linux.Path.home', return_value=self.root / 'home'):
+            roots = {str(root) for label, root, _kind in LinuxBackend().browser_profile_locations()
+                     if label == 'LibreWolf'}
+        self.assertIn(str(self.root / 'config/librewolf/librewolf'), roots)
+        self.assertIn(str(self.root / 'home/.librewolf'), roots)
+        # A profile somewhere else, named in profiles.ini.
+        elsewhere = self.root / 'elsewhere-profile'
+        firefox_profile(elsewhere.parent, [])
+        (self.root / 'elsewhere-profile').mkdir(exist_ok=True)
+        (self.root / 'elsewhere-profile' / 'places.sqlite').write_bytes(
+            (self.root / 'abcd.default-release' / 'places.sqlite').read_bytes())
+        self.firefox.mkdir()
+        (self.firefox / 'profiles.ini').write_text(f'[Profile0]\nPath={elsewhere}\nIsRelative=0\n')
+        paths = [path for _kind, path in history_databases(self.backend)]
+        self.assertIn((elsewhere / 'places.sqlite').resolve(), paths)
+
     def test_reports_downloads_saved_anywhere_once_and_only_new_ones(self):
         start = time.time()
         saved = str(self.root / 'Some folder' / 'setup me.zip')
