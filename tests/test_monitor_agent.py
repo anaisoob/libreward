@@ -285,6 +285,13 @@ class MonitorAgentTests(unittest.TestCase):
         self.close_notification.assert_called_once_with('download:/d/setup.zip.part')
         self.assertEqual(agent.announced, {})
 
+    def test_an_unfinished_check_never_leaves_checking_behind(self):
+        agent, scan = self.scanning_agent({'infected': [], 'errors': True, 'stopped': False, 'scanned': 0})
+        path = str(self.watched / 'gone.zip')  # deleted while it was checked
+        with scan:
+            agent.scan([path])
+        self.close_notification.assert_called_once_with(f'check:{path}')
+
     def test_failed_scans_retry_and_notify_once(self):
         agent, scan = self.scanning_agent({'infected': [], 'errors': True, 'stopped': False, 'scanned': 0})
         path = str(self.watched / 'file')

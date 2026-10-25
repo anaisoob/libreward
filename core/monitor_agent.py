@@ -415,7 +415,9 @@ class MonitorAgent:
             if not os.path.lexists(path) or found <= reviewed:
                 del self.threat_notices[path]
                 if all(other != key for other, _found in self.threat_notices.values()):
-                    self.close_notification(key)
+                    closed = self.close_notification(key)
+                    self.log(f'{os.path.basename(path)} was handled; its notification was '
+                             f"{'closed' if closed else 'not closed (the desktop did not confirm it)'}.")
 
     def scan(self, paths):
         _roots, patterns = self.settings
@@ -438,14 +440,19 @@ class MonitorAgent:
         timer = threading.Timer(SLOW_CHECK, slow)
         timer.daemon = True
         timer.start()
+        failed = True
         try:
-            self._scan(paths, patterns, key)
+            failed = self._scan(paths, patterns, key)
         finally:
             with self.notification_lock:
                 done.set()
             timer.cancel()
+            if failed:
+                # No result to show: never leave "Checking…" behind (tried again later).
+                self.close_notification(key)
 
     def _scan(self, paths, patterns, key):
+        """Check files and report the result; True when the check did not finish."""
         service = ScanService(_Discard(), scan_profile=self.config.get('scan_profile', 'standard'),
                               workers=self.config.get('scan_workers', 'auto'))
         self.service = service
@@ -470,7 +477,7 @@ class MonitorAgent:
             self.clamd_used = time.monotonic()
         result = service.result or {'errors': True}
         if self.stopped.is_set():
-            return  # self.scanning is saved as pending for the next start
+            return True  # self.scanning is saved as pending for the next start
         self.scanning = []
         if result.get('errors') or result.get('stopped'):
             self.failures += 1
@@ -483,7 +490,7 @@ class MonitorAgent:
                 self.send('⚠ LibreWard — automatic scan failed',
                           f'New files could not be checked: {file_names(paths)}\n'
                           'LibreWard keeps trying. Open LibreWard to check the antivirus setup.', True)
-            return
+            return True
         self.failures = 0
         found = time.time()
         threats = [entry for entry in self.state.get('threats', [])
@@ -505,6 +512,7 @@ class MonitorAgent:
         if result.get('infected') and not self.gui_running():
             # An open window asks what to do by itself; otherwise LibreWard opens to ask.
             self.show_threats()
+        return False
 
     def show_threats(self, activation_token=None):
         # Without a token GNOME may only say "LibreWard is ready" instead of showing it.

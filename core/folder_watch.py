@@ -1,5 +1,6 @@
 """Native notifications plus periodic reconciliation, independent of the GUI."""
 import os
+import re
 import threading
 import time
 
@@ -9,6 +10,9 @@ from excludes import path_is_excluded
 
 
 DOWNLOAD_SUFFIXES = ('.crdownload', '.part', '.download', '.aria2', '.!qb', '.!ut', '.filepart')
+# Files up to this size remember a digest, so a new modification time alone (as
+# set by browsers from the server's Last-Modified) does not check them again.
+DIGEST_LIMIT = 256 * 1024 * 1024
 
 
 def incomplete_download(path):
@@ -192,14 +196,21 @@ class FolderMonitor:
                     self.dispatched.pop(path, None)
                     continue
                 current = self._signature(stat)
-                if self.dispatched.get(path) == current:
+                checked = self.dispatched.get(path)
+                if checked is not None and checked[0] == current:
                     del self.pending[path]
                     continue
                 if signature != current:
                     self.pending[path] = (now, current)
                     continue
+                digest = file_digest(path, stat.st_size)
+                if checked is not None and digest is not None and checked[1] == digest:
+                    # Same contents with a new modification time: checked already.
+                    self.dispatched[path] = (current, digest)
+                    del self.pending[path]
+                    continue
                 ready.append(path)
-                self.dispatched[path] = current
+                self.dispatched[path] = (current, digest)
                 del self.pending[path]
                 if len(ready) == limit:
                     break
@@ -220,7 +231,25 @@ def download_name(partial):
     suffix = next(s for s in DOWNLOAD_SUFFIXES if partial.lower().endswith(s))
     name = os.path.basename(partial[:-len(suffix)])
     # Chrome says "Unconfirmed 12345" until the download is saved; Firefox uses a
-    # random name without extension while its save dialog is open.
-    if name.startswith('Unconfirmed ') or '.' not in name.strip('.'):
+    # random eight-character name (keeping the extension) while its save dialog is open.
+    stem = name.split('.', 1)[0]
+    random = bool(re.fullmatch(r'[A-Za-z0-9]{8}', stem)) and (
+        any(char.isdigit() for char in stem) or not (stem.islower() or stem.isupper()))
+    if name.startswith('Unconfirmed ') or '.' not in name.strip('.') or random:
         return None
     return name
+
+
+def file_digest(path, size):
+    """SHA-256 of a file up to DIGEST_LIMIT, or None."""
+    import hashlib
+    if size > DIGEST_LIMIT:
+        return None
+    digest = hashlib.sha256()
+    try:
+        with open(path, 'rb') as stream:
+            while chunk := stream.read(1024 * 1024):
+                digest.update(chunk)
+    except OSError:
+        return None
+    return digest.hexdigest()

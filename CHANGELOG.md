@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- A download whose modification time the browser changes afterwards (to the server's
+  Last-Modified) is no longer checked a second time: unchanged contents are recognized
+  by their SHA-256. “Checking…” no longer stays when a check could not finish, and the
+  random names Firefox uses while its save dialog is open are not shown.
+
 - Firefox-based browsers (LibreWolf, Waterfox, Floorp, Zen) are also found in the newer
   `~/.config/<name>` locations, and profiles anywhere listed in `profiles.ini`.
 

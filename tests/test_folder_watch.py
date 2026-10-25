@@ -149,6 +149,32 @@ class FolderMonitorTests(unittest.TestCase):
         self.assertIsNone(download_name('/d/Xq7Lp2.part'))  # Firefox while its save dialog is open
         self.assertIsNone(download_name('/d/Unconfirmed 4711.crdownload'))
 
+    def test_firefox_random_names_with_extension_are_not_shown(self):
+        from core.folder_watch import download_name
+        self.assertIsNone(download_name('/d/aK3fQ9zX.zip.part'))
+        self.assertIsNone(download_name('/d/7fT2kPq1.exe.part'))
+        self.assertIsNone(download_name('/d/k3f9zq1x.zip.part'))  # lowercase letters and digits
+        self.assertEqual(download_name('/d/document.pdf.part'), 'document.pdf')  # a real word, all lowercase
+        self.assertEqual(download_name('/d/setup-2024.zip.part'), 'setup-2024.zip')
+
+    def test_new_modification_time_with_same_contents_is_not_checked_again(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'download.zip'
+            path.write_text('contents')
+            monitor = FolderMonitor([folder], [], settle=0)
+            monitor.changed(str(path))
+            monitor.ready()
+            self.assertEqual(monitor.ready(), [str(path)])
+            os.utime(path, (1_000_000, 1_000_000))  # the server's Last-Modified, set by the browser
+            monitor.changed(str(path))
+            monitor.ready()
+            self.assertEqual(monitor.ready(), [])
+            path.write_text('CONTENTS')  # same size, different contents
+            os.utime(path, (2_000_000, 2_000_000))
+            monitor.changed(str(path))
+            monitor.ready()
+            self.assertEqual(monitor.ready(), [str(path)])
+
     def test_chrome_naming_its_download_keeps_it_in_progress(self):
         try:
             import watchdog  # noqa: F401
