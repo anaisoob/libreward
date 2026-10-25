@@ -2,6 +2,17 @@
 
 Planned work that has been discussed but is not implemented yet.
 
+## Next steps, in this order
+
+1. **Scheduled scans in Live protection**: for example a weekly Quick scan, run by
+   the background service so it also happens while LibreWard is closed.
+2. **Virus database updates without the window or Live protection**: the database
+   is refreshed while LibreWard is open or while protection for new files runs, but
+   not when both are off. A small user timer could refresh it regardless.
+3. **New repository owner**: replace `anaisoob` (GitHub URLs, AUR/RPM/Debian
+   maintainer lines, AppStream metadata, update manifest URL) with the new owner.
+4. Continue with the plan below: plain wording on the other pages, then packaging.
+
 ## Protection
 
 - **Block opening a file until it is checked (on-access scanning).** ClamAV's
