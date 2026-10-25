@@ -160,6 +160,24 @@ class MonitorAgentTests(unittest.TestCase):
         self.assertIsNotNone(lock)
         lock.close()
 
+    def test_missing_watchdog_is_reported_and_not_restarted(self):
+        self.save(watch_folders_enabled=True, watched_folders=[str(self.watched)])
+        with patch('core.monitor_agent.missing_components', return_value={'watchdog': 'No module'}), \
+                patch('core.dependencies.backend.dependency_install_commands',
+                      return_value=['sudo dnf install python3-watchdog']):
+            self.assertEqual(self.agent().run(), monitor_agent.MISSING_COMPONENT_EXIT)
+        state = read_state()
+        self.assertEqual(state['status'], 'error')
+        self.assertIn('sudo dnf install python3-watchdog', state['message'])
+        self.assertFalse(state['running'])
+
+    def test_notification_availability_is_recorded(self):
+        agent = self.agent()
+        with patch.object(monitor_agent.backend, 'notifications_available', return_value=False), \
+                patch('core.monitor_agent.check_startup', return_value=self.ready):
+            agent.check_status()
+        self.assertIs(read_state()['notifications'], False)
+
     def test_unreadable_settings_keep_the_previous_ones(self):
         self.save(watch_folders_enabled=True, watched_folders=[str(self.watched)])
         agent = self.agent()

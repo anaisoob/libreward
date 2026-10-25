@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Launch the LibreWard Qt desktop application."""
 import argparse
+import sys
 
 
 def main():
@@ -15,12 +16,19 @@ def main():
         # Headless: no Qt, so the agent also runs before or without a desktop session.
         from core.monitor_agent import main as monitor
         return monitor()
-    try:
-        from ui.main_window import run
-    except ModuleNotFoundError as exc:
-        if exc.name and exc.name.startswith("PySide6"):
-            parser.error("Install LibreWard dependencies first: python -m pip install -r requirements.txt")
-        raise
+    from core.dependencies import missing_components, missing_message
+    missing = missing_components(["pyside6", "qtnetwork"])
+    if missing:
+        # Started from the desktop menu there is no terminal: show it there too.
+        from backends import backend
+        message = missing_message(missing, "LibreWard")
+        print(message, file=sys.stderr)
+        for component, reason in missing.items():
+            print(f"{component}: {reason}", file=sys.stderr)
+        if not args.autostart:
+            backend.show_error_without_gui("LibreWard cannot start", message)
+        return 1
+    from ui.main_window import run
     return run(autostart=args.autostart)
 
 

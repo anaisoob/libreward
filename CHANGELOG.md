@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Missing components are explained with the install command for the distribution
+  (dnf, zypper, apt, pacman; uv or pip when running from a virtual environment):
+  missing PySide6 opens an error dialog (zenity or kdialog, otherwise a notification)
+  instead of failing silently from the desktop menu; missing watchdog is shown under
+  Folder monitoring and the service is not restarted in a loop; missing notify-send is
+  shown under Folder monitoring and by Test notification.
+
 - Folder monitoring: automatically scan new and changed files in chosen folders,
   with suggestions for the system Downloads folder and browser download folders.
   It runs as a background service (`libreward --monitor`; a systemd user service on

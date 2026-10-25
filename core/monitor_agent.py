@@ -20,6 +20,7 @@ from core.db_manager import (
     own_database_needs_refresh,
     run_freshclam_update,
 )
+from core.dependencies import missing_components, missing_message
 from core.runtime import check_startup, is_update_locked
 from core.scan_service import ScanService, scan_outcome
 from excludes import get_active_exclude_patterns
@@ -35,6 +36,8 @@ FAILURES_BEFORE_NOTICE = 3
 BATCH_SIZE = 64
 MAX_THREATS = 100
 MAX_LOG_BYTES = 1024 * 1024
+# EX_CONFIG: a component is missing; restarting does not help.
+MISSING_COMPONENT_EXIT = 78
 
 
 def monitor_dir():
@@ -138,8 +141,15 @@ class MonitorAgent:
             self.log('LibreWard folder monitoring is already running.')
             return 0
         try:
+            missing = missing_components(['watchdog'])
+            if missing:
+                message = missing_message(missing, 'Folder monitoring')
+                self.update_state(status='error', message=message)
+                self.log(message)
+                return MISSING_COMPONENT_EXIT
             self.update_state(running=True, pid=os.getpid(), started=time.time(),
-                              status='starting', message='Starting folder monitoring…')
+                              status='starting', message='Starting folder monitoring…',
+                              notifications=backend.notifications_available())
             self.log('LibreWard folder monitoring started.')
             return self._loop()
         finally:
@@ -237,6 +247,8 @@ class MonitorAgent:
         if time.monotonic() - self.status_checked < interval:
             return
         self.status_checked = time.monotonic()
+        # Installing libnotify later is noticed without restarting the agent.
+        self.update_state(notifications=backend.notifications_available())
         try:
             self.status = check_startup()
         except Exception as exc:  # noqa: BLE001 - a broken runtime must not end monitoring

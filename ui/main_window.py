@@ -18,6 +18,7 @@ from backends import backend
 from config import load_config, save_config
 from core.authorization import AuthorizationError
 from core.constants import APP_NAME, APP_VERSION, CLAMAV_HOMEPAGE, CLAMAV_SOURCE
+from core.dependencies import install_hint, missing_components, missing_message
 from core.download_folders import discover_download_folders
 from core.monitor_agent import monitor_settings, read_state
 from core.db_manager import auto_update_due, database_summary, own_database_needs_refresh, run_freshclam_update
@@ -142,6 +143,12 @@ class QtMainWindow(QMainWindow):
         """
         enabled = monitor_settings(self.config) is not None
         self.monitor_service_error = None
+        missing = missing_components(['watchdog']) if enabled else {}
+        if missing:
+            # The service runs this interpreter: it would fail the same way.
+            self.monitor_service_error = missing_message(missing, 'Folder monitoring')
+            self.poll_monitor_state()
+            return
         if enabled:
             self.watch_status.setText('Starting background monitoring…')
 
@@ -161,6 +168,8 @@ class QtMainWindow(QMainWindow):
         state = read_state()
         if self.monitor_service_error and enabled:
             text = f'Background monitoring could not start: {self.monitor_service_error}'
+        elif enabled and not running and state.get('status') == 'error' and state.get('message'):
+            text = f"Background monitoring stopped: {state['message']}"
         elif not enabled:
             text = 'Folder monitoring is off.'
         elif not running and time.monotonic() - self.monitor_started_at < 15:
@@ -173,8 +182,17 @@ class QtMainWindow(QMainWindow):
             if isinstance(last, dict) and last.get('outcome'):
                 checked = time.strftime('%H:%M', time.localtime(last.get('time', 0)))
                 text += f"\nLast check {checked}: {last['outcome']} ({last.get('names', '')})"
+            if state.get('notifications') is False:
+                text += '\n' + self.notifications_unavailable_text()
         self.watch_status.setText(text)
         self.show_monitor_threats(state)
+
+    @staticmethod
+    def notifications_unavailable_text():
+        text = 'Desktop notifications are unavailable; results are only shown here.'
+        if not backend.notifications_available():
+            text += ' ' + install_hint(['notify-send'])
+        return text
 
     def show_monitor_threats(self, state):
         """Threats found in the background, while they are still at their location."""
@@ -1454,9 +1472,7 @@ class QtMainWindow(QMainWindow):
             if kind == '__NOTIFICATION__':
                 self.notification_status.setText(
                     'Notification sent. Check desktop notification settings and Do Not Disturb if no banner appears.'
-                    if values[0] else
-                    'Desktop notifications are unavailable. On Linux, install notify-send (libnotify) '
-                    'and allow notifications for LibreWard.')
+                    if values[0] else self.notifications_unavailable_text())
                 continue
             if kind == '__MONITOR_SERVICE__':
                 enabled, error = values

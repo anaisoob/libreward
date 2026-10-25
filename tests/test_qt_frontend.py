@@ -155,6 +155,31 @@ class QtFrontendTests(unittest.TestCase):
             self.window.poll_monitor_state()
             self.assertIn('not running', self.window.watch_status.text())
 
+    def test_missing_watchdog_is_explained_and_service_not_started(self):
+        with patch('ui.main_window.missing_components', return_value={'watchdog': 'No module'}), \
+                patch('core.dependencies.backend.dependency_install_commands',
+                      return_value=['sudo dnf install python3-watchdog']):
+            self.enable_monitoring()
+        self.app.processEvents()
+        self.assertNotIn(((True,),), [call[:1] for call in self.monitor_service.call_args_list])
+        self.assertIn('needs watchdog', self.window.watch_status.text())
+        self.assertIn('sudo dnf install python3-watchdog', self.window.watch_status.text())
+
+    def test_agent_errors_and_missing_notifications_are_shown(self):
+        self.enable_monitoring()
+        self.monitor_state.return_value = {'status': 'error', 'message': 'Folder monitoring needs watchdog.'}
+        self.window.poll_monitor_state()
+        self.assertIn('stopped: Folder monitoring needs watchdog.', self.window.watch_status.text())
+        self.agent_running.return_value = True
+        self.monitor_state.return_value = {'status': 'watching', 'message': 'Monitoring 1 folder(s).',
+                                           'notifications': False}
+        with patch('ui.main_window.backend.notifications_available', return_value=False), \
+                patch('core.dependencies.backend.dependency_install_commands',
+                      return_value=['sudo dnf install libnotify']):
+            self.window.poll_monitor_state()
+        self.assertIn('Desktop notifications are unavailable', self.window.watch_status.text())
+        self.assertIn('sudo dnf install libnotify', self.window.watch_status.text())
+
     def test_closing_explains_once_that_monitoring_keeps_running(self):
         from PySide6.QtGui import QCloseEvent
         info = self.patch('ui.internet_page.QMessageBox.information')
@@ -177,10 +202,14 @@ class QtFrontendTests(unittest.TestCase):
         self.assertFalse(self.window.maybe_auto_update_database())
 
     def test_notification_test_reports_delivery(self):
-        with patch('ui.main_window.backend.send_desktop_notification', return_value=False) as send:
+        with patch('ui.main_window.backend.send_desktop_notification', return_value=False) as send, \
+                patch('ui.main_window.backend.notifications_available', return_value=False), \
+                patch('core.dependencies.backend.dependency_install_commands',
+                      return_value=['sudo dnf install libnotify']):
             self.window.notify_desktop('Test', 'Hello')
             self.wait_for(lambda: 'unavailable' in self.window.notification_status.text())
         send.assert_called_once_with('Test', 'Hello')
+        self.assertIn('sudo dnf install libnotify', self.window.notification_status.text())
         self.window.events.put(('__NOTIFICATION__', True))
         self.window.poll_events()
         self.assertIn('Notification sent', self.window.notification_status.text())

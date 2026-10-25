@@ -176,3 +176,10 @@ desktop notification settings and Do Not Disturb can still suppress banners.
 Monitoring requires `watchdog`, included in the packages and in `requirements.txt`.
 When running from source, install dependencies in the Python environment used to
 launch LibreWard; the service uses the same interpreter.
+
+LibreWard checks these components and shows the install command for your
+distribution under Folder monitoring: a missing `watchdog` keeps the service from
+starting (it is not restarted in a loop), and missing `notify-send` is noted next to
+the monitoring status. After installing, select **Save settings** to start
+monitoring again. If PySide6 itself is missing, starting LibreWard from the menu
+shows an error dialog with the command instead of the window.

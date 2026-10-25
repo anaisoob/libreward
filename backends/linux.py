@@ -33,6 +33,25 @@ def _parse_version(raw: str | None) -> str | None:
 
 MONITOR_UNIT = 'libreward-monitor.service'
 
+# Distribution packages providing LibreWard's components, by package manager.
+DEPENDENCY_INSTALL = {
+    'dnf': 'sudo dnf install',
+    'zypper': 'sudo zypper install',
+    'apt': 'sudo apt install',
+    'pacman': 'sudo pacman -S --needed',
+}
+DEPENDENCY_PACKAGES = {
+    'dnf': {'pyside6': 'python3-pyside6', 'qtnetwork': 'python3-pyside6',
+            'watchdog': 'python3-watchdog', 'notify-send': 'libnotify'},
+    # openSUSE names packages per Python version (python313-…); the capability matches.
+    'zypper': {'pyside6': 'python3dist(pyside6)', 'qtnetwork': 'python3dist(pyside6)',
+               'watchdog': 'python3dist(watchdog)', 'notify-send': 'libnotify-tools'},
+    'apt': {'pyside6': 'python3-pyside6.qtwidgets', 'qtnetwork': 'python3-pyside6.qtnetwork',
+            'watchdog': 'python3-watchdog', 'notify-send': 'libnotify-bin'},
+    'pacman': {'pyside6': 'pyside6', 'qtnetwork': 'pyside6',
+               'watchdog': 'python-watchdog', 'notify-send': 'libnotify'},
+}
+
 SYSTEM_DATABASE = Path('/var/lib/clamav')
 # The system database is used while its newest file is at most this old.
 SYSTEM_DATABASE_MAX_AGE = 3 * 24 * 3600
@@ -60,6 +79,42 @@ class LinuxBackend(PlatformBackend):
             return True
         # Older libnotify versions reject the newer options.
         return any(self._notify(command + text) for command in (extended, basic))
+
+    def notifications_available(self):
+        return shutil.which('notify-send') is not None
+
+    def show_error_without_gui(self, title, message):
+        from html import escape
+        for command in (['zenity', '--error', f'--title={title}', f'--text={escape(message)}'],
+                        ['kdialog', '--title', title, '--error', message]):
+            executable = shutil.which(command[0])
+            if executable:
+                try:
+                    subprocess.run([executable, *command[1:]], stdin=subprocess.DEVNULL,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                    return
+                except OSError:
+                    continue
+        self.send_desktop_notification(title, message, warning=True)
+
+    def dependency_install_commands(self, components):
+        import shlex
+        import sys
+        from core.dependencies import PYTHON_MODULES
+        wanted = list(components)
+        commands = []
+        if sys.prefix != sys.base_prefix and any(c in PYTHON_MODULES for c in wanted):
+            # A virtual environment does not see the distribution's Python packages.
+            commands.append(self.python_requirements_command())
+            wanted = [c for c in wanted if c not in PYTHON_MODULES]
+        manager = self.distro_info().get('pkg_manager')
+        packages = DEPENDENCY_PACKAGES.get(manager)
+        if wanted and packages:
+            names = dict.fromkeys(packages[c] for c in wanted)
+            commands.append(' '.join([DEPENDENCY_INSTALL[manager], *map(shlex.quote, names)]))
+        elif any(c in PYTHON_MODULES for c in wanted):
+            commands.append(self.python_requirements_command())
+        return commands
 
     @staticmethod
     def _notify(command):
@@ -1157,6 +1212,7 @@ class LinuxBackend(PlatformBackend):
             escaped = argument.replace('\\', '\\\\').replace('"', '\\"')
             return '"' + escaped.replace('%', '%%').replace('$', '$$') + '"'
 
+        from core.monitor_agent import MISSING_COMPONENT_EXIT
         command = self.application_command('--monitor')
         # A package removal leaves this per-user file behind; it is then skipped.
         conditions = ''.join(f'ConditionPathExists={path.replace("%", "%%")}\n'
@@ -1170,6 +1226,8 @@ class LinuxBackend(PlatformBackend):
                 f'ExecStart={" ".join(quote(argument) for argument in command)}\n'
                 'Restart=on-failure\n'
                 'RestartSec=30\n'
+                # A missing component is reported to the GUI instead of restarting forever.
+                f'RestartPreventExitStatus={MISSING_COMPONENT_EXIT}\n'
                 '# Background scans give way to what the user is doing.\n'
                 'Nice=10\n'
                 'IOSchedulingClass=best-effort\n'

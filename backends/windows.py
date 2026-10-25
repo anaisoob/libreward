@@ -128,6 +128,19 @@ $app = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell
         except (OSError, subprocess.TimeoutExpired):
             return False
 
+    def notifications_available(self):
+        return shutil.which('powershell.exe') is not None
+
+    def show_error_without_gui(self, title, message):
+        import ctypes
+        try:
+            ctypes.windll.user32.MessageBoxW(None, message, title, 0x10)  # MB_ICONERROR
+        except (AttributeError, OSError):
+            pass
+
+    def quote_argument(self, argument):
+        return subprocess.list2cmdline([argument])
+
     def application_command(self, *arguments):
         command = super().application_command(*arguments)
         # pythonw.exe: no console window for the GUI or the background agent.

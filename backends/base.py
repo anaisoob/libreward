@@ -283,6 +283,34 @@ class PlatformBackend(ABC):
         """
         return False
 
+    def notifications_available(self):
+        """Whether send_desktop_notification can reach the desktop at all."""
+        return False
+
+    def show_error_without_gui(self, title, message):
+        """Last-resort message when the Qt interface itself cannot start."""
+
+    # ── dependencies ────────────────────────────────────────────────
+
+    def quote_argument(self, argument):
+        import shlex
+        return shlex.quote(argument)
+
+    def python_requirements_command(self):
+        """Install the Python dependencies into the interpreter running LibreWard."""
+        import shutil
+        import sys
+        root = Path(__file__).resolve().parent.parent
+        if (root / 'uv.lock').is_file() and shutil.which('uv'):
+            return f'cd {self.quote_argument(str(root))} && uv sync'
+        return (f'{self.quote_argument(sys.executable)} -m pip install -r '
+                f'{self.quote_argument(str(root / "requirements.txt"))}')
+
+    def dependency_install_commands(self, components):
+        """Commands installing components ('pyside6', 'qtnetwork', 'watchdog', 'notify-send')."""
+        from core.dependencies import PYTHON_MODULES
+        return [self.python_requirements_command()] if any(c in PYTHON_MODULES for c in components) else []
+
     # ── folder monitoring agent ─────────────────────────────────────
 
     def application_command(self, *arguments):
