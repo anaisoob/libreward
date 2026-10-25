@@ -166,11 +166,11 @@ class NotificationActionTests(unittest.TestCase):
         self.assertNotIn('--hint=string:desktop-entry:libreward', plain)
         self.assertEqual(plain[-2:], ['Title', 'Text'])
 
-    def test_routine_results_are_transient(self):
+    def test_routine_results_stay_visible(self):
         with patch('backends.linux.shutil.which', return_value='/usr/bin/notify-send'), \
                 patch('backends.linux.subprocess.run', return_value=Mock(returncode=0)) as run:
             self.assertTrue(LinuxBackend().send_desktop_notification('Title', 'Text'))
-        self.assertIn('--transient', run.call_args.args[0])
+        self.assertNotIn('--transient', run.call_args.args[0])  # GNOME hides those at once
         self.assertIn('--urgency=normal', run.call_args.args[0])
 
 

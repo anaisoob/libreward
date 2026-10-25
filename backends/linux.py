@@ -71,8 +71,9 @@ class LinuxBackend(PlatformBackend):
         basic = [executable, '--app-name=LibreWard', f'--icon={icon if icon.is_file() else "libreward"}',
                  '--urgency=' + ('critical' if warning else 'normal')]
         # The desktop entry lets GNOME group notifications under LibreWard and
-        # list it in notification settings; routine results are not kept there.
-        extended = basic + ['--hint=string:desktop-entry:libreward'] + ([] if warning else ['--transient'])
+        # list it in notification settings. No --transient: GNOME Shell then
+        # removes the banner almost at once.
+        extended = basic + ['--hint=string:desktop-entry:libreward']
         text = ['--', title, escape(message)]
         if on_open is not None:
             actions = extended + ['--action=default=Open LibreWard', '--action=open=Open LibreWard']

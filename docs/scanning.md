@@ -160,8 +160,8 @@ login.
 ### Notifications and dangerous files
 
 Each automatic check sends a desktop notification with its result and file names.
-Results without threats are not kept in the notification list. When a file is
-dangerous, the notification stays until dismissed and offers **Open LibreWard**, and:
+When a file is dangerous, the notification stays until dismissed and offers
+**Open LibreWard**, and:
 
 - if LibreWard is closed, it opens by itself;
 - if it is open, it comes forward (with the desktop’s activation token, so GNOME on

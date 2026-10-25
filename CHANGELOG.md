@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fix the test notification and results without threats vanishing at once on GNOME:
+  routine notifications are no longer sent as transient.
+
 - Live protection page (formerly Internet protection): protection for new files and
   downloads is one Turn on / Turn off switch at the top, finds the Downloads folders by
   itself, and folders can be changed with Choose folders…; website blocking follows
