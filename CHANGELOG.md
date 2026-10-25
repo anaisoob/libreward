@@ -3,7 +3,8 @@
 ## Unreleased
 
 - Fix the test notification and results without threats vanishing at once on GNOME:
-  routine notifications are no longer sent as transient.
+  notifications are no longer sent as transient or with a desktop-entry hint (GNOME
+  hides banners of the focused application).
 
 - Live protection page (formerly Internet protection): protection for new files and
   downloads is one Turn on / Turn off switch at the top, finds the Downloads folders by

@@ -112,7 +112,7 @@ class NotificationActionTests(unittest.TestCase):
         self.assertEqual(chosen, ['activation-123'])
         command = popen.call_args.args[0]
         self.assertIn('--action=open=Open LibreWard', command)
-        self.assertIn('--hint=string:desktop-entry:libreward', command)
+        self.assertNotIn('--hint=string:desktop-entry:libreward', command)
         self.assertIn('--urgency=critical', command)
         self.assertTrue(any(argument.startswith('--activation-token-fd=') for argument in command))
 
@@ -157,21 +157,23 @@ class NotificationActionTests(unittest.TestCase):
         failed.wait.return_value = 1
         with patch('backends.linux.shutil.which', return_value='/usr/bin/notify-send'), \
                 patch('backends.linux.subprocess.Popen', return_value=failed) as popen, \
-                patch('backends.linux.subprocess.run',
-                      side_effect=[Mock(returncode=1), Mock(returncode=0)]) as run:
+                patch('backends.linux.subprocess.run', return_value=Mock(returncode=0)) as run:
             self.assertTrue(LinuxBackend().send_desktop_notification('Title', 'Text', warning=True,
                                                                      on_open=lambda _token: None))
         self.assertEqual(popen.call_count, 2)  # with and without the token descriptor
         plain = run.call_args.args[0]
-        self.assertNotIn('--hint=string:desktop-entry:libreward', plain)
+        self.assertFalse(any(argument.startswith('--action') for argument in plain))
         self.assertEqual(plain[-2:], ['Title', 'Text'])
 
     def test_routine_results_stay_visible(self):
         with patch('backends.linux.shutil.which', return_value='/usr/bin/notify-send'), \
                 patch('backends.linux.subprocess.run', return_value=Mock(returncode=0)) as run:
             self.assertTrue(LinuxBackend().send_desktop_notification('Title', 'Text'))
-        self.assertNotIn('--transient', run.call_args.args[0])  # GNOME hides those at once
-        self.assertIn('--urgency=normal', run.call_args.args[0])
+        command = run.call_args.args[0]
+        # GNOME Shell removes these banners at once (the hint while LibreWard has focus).
+        self.assertNotIn('--transient', command)
+        self.assertNotIn('--hint=string:desktop-entry:libreward', command)
+        self.assertIn('--urgency=normal', command)
 
 
 if __name__ == '__main__':

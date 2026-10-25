@@ -70,19 +70,17 @@ class LinuxBackend(PlatformBackend):
         icon = Path(__file__).resolve().parent.parent / 'assets/icons/libreward-256.png'
         basic = [executable, '--app-name=LibreWard', f'--icon={icon if icon.is_file() else "libreward"}',
                  '--urgency=' + ('critical' if warning else 'normal')]
-        # The desktop entry lets GNOME group notifications under LibreWard and
-        # list it in notification settings. No --transient: GNOME Shell then
-        # removes the banner almost at once.
-        extended = basic + ['--hint=string:desktop-entry:libreward']
+        # No desktop-entry hint and no --transient: with either, GNOME Shell
+        # removes the banner almost at once (for the hint, while LibreWard has
+        # focus, as when testing notifications from the window).
         text = ['--', title, escape(message)]
         if on_open is not None:
-            actions = extended + ['--action=default=Open LibreWard', '--action=open=Open LibreWard']
+            actions = basic + ['--action=default=Open LibreWard', '--action=open=Open LibreWard']
             # libnotify 0.8.4+ hands over the activation token; older versions only the action.
             if self._notify_with_action(actions, text, on_open, token=True) or \
                     self._notify_with_action(actions, text, on_open, token=False):
                 return True
-        # Older libnotify versions reject the newer options.
-        return any(self._notify(command + text) for command in (extended, basic))
+        return self._notify(basic + text)
 
     @staticmethod
     def _notify(command):
