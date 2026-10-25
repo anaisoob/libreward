@@ -1265,6 +1265,9 @@ class LinuxBackend(PlatformBackend):
         code, output = self._firewall_query([resolvectl, 'dns'], timeout=5)
         return code == 0 and filter_is_global(output)
 
+    def internet_protection_available(self):
+        return True
+
     def internet_protection_state_directory(self):
         # The installer and the recovery service replace dns-state.json here.
         from .linux_dns_service import DIRECTORY
@@ -1336,6 +1339,9 @@ class LinuxBackend(PlatformBackend):
         if result.returncode != 0:
             raise OSError((result.stderr or result.stdout).strip()
                           or f'systemctl --user {arguments[0]} failed.')
+
+    def monitor_service_installed(self):
+        return self.monitor_unit_path().exists()
 
     def set_monitor_service(self, enabled):
         path = self.monitor_unit_path()

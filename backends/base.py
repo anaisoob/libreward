@@ -255,6 +255,10 @@ class PlatformBackend(ABC):
         """Stop a privileged helper that is still waiting for the password; True if stopped."""
         return False
 
+    def internet_protection_available(self):
+        """Whether this platform offers Internet protection at all (cheap, no checks)."""
+        return False
+
     def internet_protection_state_directory(self):
         """Directory whose changes mean the protection state changed, or None."""
         return None
@@ -368,6 +372,10 @@ class PlatformBackend(ABC):
         """True while a LibreWard window of this user is open."""
         from core.monitor_agent import gui_lock_file
         return self.instance_running(gui_lock_file())
+
+    def monitor_service_installed(self):
+        """Whether the login entry of the agent exists (removed by Turn off or uninstall)."""
+        return False
 
     def set_monitor_service(self, enabled):
         """Start the agent at login and now, or remove it. Raises OSError with a message."""

@@ -51,6 +51,7 @@ class QtFrontendTests(unittest.TestCase):
         # Never install, start or stop the developer's background service.
         self.monitor_service = self.patch('ui.main_window.backend.set_monitor_service')
         self.agent_running = self.patch('ui.main_window.backend.monitor_agent_running', return_value=False)
+        self.service_installed = self.patch('ui.main_window.backend.monitor_service_installed', return_value=True)
         self.monitor_state = self.patch('ui.main_window.read_state', return_value={})
         self.patch('ui.file_protection.read_state', new=self.monitor_state)
         self.monitor_directory = tempfile.TemporaryDirectory()
@@ -110,6 +111,32 @@ class QtFrontendTests(unittest.TestCase):
         self.assertEqual(self.window.nav_buttons['internet'].text(), 'Live protection')
         self.assertFalse(hasattr(self.window, 'watch_enabled'))  # no longer hidden in Settings
 
+    def test_navigation_order_and_quarantine_only_when_needed(self):
+        order = [self.window.nav_buttons[key] for key in ('scan', 'internet', 'quarantine', 'firewall', 'settings')]
+        positions = [button.mapTo(self.window, button.rect().topLeft()).y() for button in order]
+        self.assertEqual(positions, sorted(positions))
+        self.assertTrue(self.window.nav_buttons['quarantine'].isHidden())
+        self.window.show_quarantine([])
+        self.assertTrue(self.window.nav_buttons['quarantine'].isHidden())
+
+    def test_protection_badge_counts_parts_that_are_on(self):
+        button = self.window.nav_buttons['internet']
+        page = self.window.internet_page
+        section = self.window.file_protection
+        page.show_state({'supported': True, 'active': False, 'count': 0, 'engine': 'sqlite-setup'})
+        self.assertEqual((button.on, button.total, button.level()), (0, 2, 'none'))
+        page.show_state({'supported': True, 'active': True, 'count': 0, 'engine': 'sqlite-dns', 'upstream': 'quad9'})
+        self.assertEqual((button.on, button.total, button.level()), (1, 2, 'some'))
+        self.agent_running.return_value = True
+        self.monitor_state.return_value = {'status': 'watching'}
+        self.enable_monitoring()
+        section.refresh()
+        self.assertEqual((button.on, button.total, button.level()), (2, 2, 'all'))
+        self.assertIn('Websites: on', button.toolTip())
+        # Where website protection is unavailable, only new files count.
+        page.show_state({'supported': False, 'active': False, 'count': 0})
+        self.assertEqual((button.on, button.total), (1, 1))
+
     def test_turning_on_protects_downloads_and_starts_the_service_off_the_gui_thread(self):
         section = self.window.file_protection
         self.wait_for(lambda: self.monitor_service.call_count == 1)
@@ -130,6 +157,23 @@ class QtFrontendTests(unittest.TestCase):
         self.monitor_service.assert_called_with(False)
         self.assertFalse(self.window.config['watch_folders_enabled'])
         self.assertEqual(self.window.config['watched_folders'], [str(Path.home() / 'Downloads')])
+
+    def test_removed_service_is_not_turned_back_on_after_reinstalling(self):
+        from ui.file_protection import FileProtectionSection
+        from PySide6.QtWidgets import QVBoxLayout, QWidget
+        self.window.config = dict(self.window.config, watch_folders_enabled=True,
+                                  watched_folders=['/home/user/Downloads'])
+        self.service_installed.return_value = False  # uninstall deleted it
+        self.monitor_service.reset_mock()
+        holder = QWidget()
+        self.addCleanup(holder.deleteLater)
+        section = FileProtectionSection(self.window, QVBoxLayout(holder))
+        self.wait_for(lambda: self.monitor_service.called)
+        self.monitor_service.assert_called_once_with(False)
+        self.assertFalse(self.window.config['watch_folders_enabled'])
+        self.assertEqual(self.window.config['watched_folders'], ['/home/user/Downloads'])
+        self.assertEqual(section.status.text(), 'Off')
+        section.stop()
 
     def test_service_failure_needs_attention_and_settings_save_retries(self):
         self.monitor_service.side_effect = OSError('Background folder monitoring needs systemd (systemctl --user).')
@@ -1066,11 +1110,17 @@ class QtFrontendTests(unittest.TestCase):
                 self.assertFalse(original.exists())
                 self.assertEqual(self.window.results.rowCount(), 0)
                 self.assertEqual(self.window.quarantine_table.rowCount(), 1)
+                self.assertFalse(self.window.nav_buttons['quarantine'].isHidden())
+                self.window.switch_page('quarantine')
                 self.window.quarantine_table.selectRow(0)
                 self.window.restore_selected()
                 self.wait_idle()
                 self.assertEqual(original.read_text(), 'harmless test payload')
                 self.assertEqual(self.window.quarantine_table.rowCount(), 0)
+                # Still visible while open; hidden once the empty quarantine is left.
+                self.assertFalse(self.window.nav_buttons['quarantine'].isHidden())
+                self.window.switch_page('scan')
+                self.assertTrue(self.window.nav_buttons['quarantine'].isHidden())
 
     def test_database_button_click_requires_confirmation(self):
         update = self.patch('ui.main_window.run_freshclam_update')

@@ -169,6 +169,15 @@ $app = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell
     RUN_KEY = r'Software\Microsoft\Windows\CurrentVersion\Run'
     RUN_VALUE = 'LibreWard Monitor'
 
+    def monitor_service_installed(self):
+        import winreg
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, self.RUN_KEY) as key:
+                winreg.QueryValueEx(key, self.RUN_VALUE)
+            return True
+        except FileNotFoundError:
+            return False
+
     def set_monitor_service(self, enabled):
         import winreg
         if not enabled:

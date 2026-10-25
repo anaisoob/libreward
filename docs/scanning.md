@@ -130,7 +130,9 @@ executing a file.
 Monitoring runs in the background, independently of the window, like Internet
 protection: it keeps working when LibreWard is closed and starts again when you log
 in. Closing the window explains this once. To stop it, select **Turn off** on the
-Live protection page. Folder and exclusion changes reach the running service within
+Live protection page. When its service was removed outside LibreWard, for
+example by uninstalling, LibreWard shows it as off and does not turn it back on by
+itself; the folders are kept for the next **Turn on**. Folder and exclusion changes reach the running service within
 a few seconds.
 
 On Linux, LibreWard writes the systemd user service

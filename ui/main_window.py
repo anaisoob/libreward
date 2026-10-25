@@ -31,7 +31,7 @@ from excludes import get_active_exclude_patterns, get_common_excludes
 from .dialogs import ClamAVConsentDialog, UpdateProgressDialog, ScanReportDialog, AntivirusSetupDialog, AuthorizationHelpDialog, ThreatsFoundDialog
 from .firewall_dialog import FirewallRuleDialog
 from .theme import app_icon, palette, stylesheet, navigation_icon
-from .widgets import ElidedPathLabel, BusyNavigationButton
+from .widgets import ElidedPathLabel, BusyNavigationButton, ProtectionNavigationButton
 
 
 class QtMainWindow(QMainWindow):
@@ -57,6 +57,7 @@ class QtMainWindow(QMainWindow):
         self.last_result = None
         self.monitor_state_mtime = None
         self.threat_dialog = None
+        self.quarantine_items = 0
         self.build_shell()
         self.setup_window_icon()
         # Earlier versions started LibreWard at login; protection no longer needs it.
@@ -191,15 +192,16 @@ class QtMainWindow(QMainWindow):
         self.page_indices = {}
         definitions = [
             ("scan", "Virus scan", self.build_scan_page),
+            ("internet", "Live protection", self.build_internet_page),
             ("quarantine", "Quarantine", self.build_quarantine_page),
             ("firewall", "Firewall", self.build_firewall_page),
-            ("internet", "Live protection", self.build_internet_page),
             ("settings", "Settings", self.build_settings_page),
             ("about", "About", self.build_about_page),
         ]
         for key, text, builder in definitions:
             self.page_indices[key] = self.pages.addWidget(builder())
-            nav = BusyNavigationButton(text) if key == "scan" else QPushButton(text)
+            nav = (BusyNavigationButton(text) if key == "scan" else
+                   ProtectionNavigationButton(text) if key == "internet" else QPushButton(text))
             nav.setObjectName("navButton")
             nav.setCheckable(True)
             nav.setMinimumHeight(46)
@@ -216,8 +218,11 @@ class QtMainWindow(QMainWindow):
         layout.addWidget(sidebar)
         layout.addWidget(self.pages, 1)
         self.setCentralWidget(shell)
+        # Shown once something is in quarantine.
+        self.nav_buttons["quarantine"].hide()
         self.switch_page("scan")
         self.update_exclude_summary()
+        self.update_protection_badge()
 
     def switch_page(self, key):
         leaving_internet = (key != 'internet' and self.pages.currentIndex() == self.page_indices.get('internet')
@@ -233,6 +238,8 @@ class QtMainWindow(QMainWindow):
         self.pages.setCurrentIndex(self.page_indices[key])
         for name, button in self.nav_buttons.items():
             button.setChecked(name == key)
+        if key != "quarantine" and not self.quarantine_items:
+            self.nav_buttons["quarantine"].hide()
         self.update_scan_indicator()
         if key == 'internet':
             self.internet_page.request_refresh()
@@ -241,6 +248,24 @@ class QtMainWindow(QMainWindow):
             if self.operation:
                 self.firewall_status.setText('Waiting for the current operation before checking firewall…')
             self.maybe_refresh_firewall()
+
+    def update_protection_badge(self):
+        """How many Live protection parts are on, next to its navigation entry."""
+        button = self.nav_buttons.get("internet") if hasattr(self, "nav_buttons") else None
+        if button is None or not hasattr(self, "file_protection"):
+            return
+        state = self.internet_page.state
+        if state is None:
+            websites_available = backend.internet_protection_available()
+            websites_on = websites_available and backend.internet_protection_enabled()
+        else:
+            websites_available = bool(state.get("supported") or state.get("active"))
+            websites_on = bool(state.get("active") and state.get("supported"))
+        files_on = self.file_protection.is_on
+        parts = [f"New files and downloads: {'on' if files_on else 'off'}"]
+        if websites_available:
+            parts.append(f"Websites: {'on' if websites_on else 'off'}")
+        button.set_protection(int(files_on) + int(websites_on), 1 + int(websites_available), "\n".join(parts))
 
     def update_scan_indicator(self):
         away = self.pages.currentIndex() != self.page_indices["scan"]
@@ -1353,6 +1378,10 @@ class QtMainWindow(QMainWindow):
         self.quarantine_table.setRowCount(0)
         self.quarantine_count.setText(f"{len(items)} quarantined file(s)" if items else "No quarantined files")
         self.nav_buttons["quarantine"].setText(f"Quarantine  ({len(items)})" if items else "Quarantine")
+        self.quarantine_items = len(items)
+        # An empty quarantine stays visible while it is open, e.g. after restoring the last file.
+        current = self.pages.currentIndex() == self.page_indices["quarantine"]
+        self.nav_buttons["quarantine"].setVisible(bool(items) or current)
         for item in items:
             row = self.quarantine_table.rowCount()
             self.quarantine_table.insertRow(row)

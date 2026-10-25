@@ -450,6 +450,7 @@ class InternetProtectionPage:
         self.info.setText(text)
         self.method_info.setText(state.get('message', '') if supported else '')
         self.toggle_button.setText('Turn off' if active else 'Turn on')
+        self.window.update_protection_badge()
         self.toggle_button.setObjectName('secondaryButton' if active else 'primaryButton')
         self.toggle_button.style().unpolish(self.toggle_button)
         self.toggle_button.style().polish(self.toggle_button)

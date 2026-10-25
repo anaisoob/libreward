@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Live protection is right below Virus scan and shows how many protections are on:
+  a green check when all are on, otherwise 1/2 in amber or 0/2 in red. Quarantine
+  appears in the sidebar only when it holds files.
+- Reinstalling no longer turns protection for new files back on by itself: when its
+  service was removed outside LibreWard (for example by uninstalling), it shows as off.
+
 - The Live protection page no longer checks the status every 30 seconds (which briefly
   disabled the buttons) or every 3 seconds: it reacts when a service records a new state.
 

@@ -36,6 +36,7 @@ class FileProtectionSection:
         self.service_error = None
         self.started_at = float('-inf')
         self.busy = False
+        self.is_on = False
         card, box = window.card()
         box.addWidget(window.label('NEW FILES AND DOWNLOADS', 'eyebrow'))
         self.status = window.label('Checking…', 'statusValue')
@@ -74,6 +75,10 @@ class FileProtectionSection:
         self.timer = QTimer(card)
         self.timer.timeout.connect(self.refresh)
         self.timer.start(30000)
+        if self.enabled and not backend.monitor_service_installed():
+            # Removed outside LibreWard, for example by uninstalling: never turn it
+            # back on by itself. The folders are kept for the next Turn on.
+            self.save(watch_folders_enabled=False)
         self.apply_service()
 
     # ── settings ────────────────────────────────────────────────────
@@ -232,6 +237,8 @@ class FileProtectionSection:
                 info += f"\nLast check at {checked}: {last['outcome']} ({last.get('names', '')})."
             if state.get('notifications') is False:
                 info += '\n' + self.notifications_unavailable_text()
+        self.is_on = status == 'On'
+        self.window.update_protection_badge()
         self.status.setText(status)
         self.status.setProperty('severity', severity)
         self.status.style().unpolish(self.status)
