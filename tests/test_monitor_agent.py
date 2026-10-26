@@ -450,6 +450,116 @@ class MonitorAgentTests(unittest.TestCase):
         update.assert_called_once_with('freshclam', wait=False)
         self.assertTrue(read_state()['database_update_ok'])
 
+    # ── scheduled scans ─────────────────────────────────────────────
+
+    def scheduled_agent(self, result, schedule='weekly'):
+        agent = self.agent()
+        agent.config = {'scheduled_scan': schedule}
+        agent.status = self.ready
+        agent.schedule_not_before = 0
+        calls = []
+
+        def run(service, roots, *_args, **kwargs):
+            calls.append((roots, kwargs))
+            service.result = result
+
+        return agent, calls, patch('core.monitor_agent.ScanService.run', autospec=True, side_effect=run)
+
+    def finish(self, agent):
+        agent.scheduled_thread.join(timeout=3)
+        agent.run_schedule()  # the agent's loop reports the result
+
+    def test_schedule_is_due_after_its_interval_or_when_never_run(self):
+        week = monitor_agent.SCHEDULES['weekly']
+        self.assertFalse(monitor_agent.scheduled_scan_due(1000, None, None))
+        self.assertTrue(monitor_agent.scheduled_scan_due(1000, None, week))
+        self.assertFalse(monitor_agent.scheduled_scan_due(1000 + week - 1, 1000, week))
+        self.assertTrue(monitor_agent.scheduled_scan_due(1000 + week, 1000, week))
+        # The clock was set back: never wait for a date that is far away.
+        self.assertTrue(monitor_agent.scheduled_scan_due(1000, 5000, week))
+        self.assertIsNone(monitor_agent.scheduled_interval({'scheduled_scan': 'hourly'}))
+        self.assertTrue(monitor_agent.agent_needed({'scheduled_scan': 'daily'}))
+        self.assertFalse(monitor_agent.agent_needed({'scheduled_scan': 'off'}))
+
+    def test_scheduled_quick_scan_runs_once_and_is_recorded(self):
+        agent, calls, scan = self.scheduled_agent({'infected': [], 'errors': False, 'warnings': False,
+                                                   'stopped': False, 'scanned': 120})
+        with scan, patch.object(monitor_agent.backend, 'quick_scan_paths', return_value=[str(self.watched)]):
+            agent.run_schedule()
+            self.assertIsNotNone(read_state()['scheduled_scan_running'])
+            self.finish(agent)
+            agent.run_schedule()  # not due again for a week
+        self.assertEqual(calls, [([str(self.watched)], {'parallel': False})])
+        state = read_state()
+        self.assertIsNone(state['scheduled_scan_running'])
+        self.assertEqual(state['scheduled_scan']['outcome'], 'No threats found')
+        self.assertEqual(state['scheduled_scan']['files'], 120)
+        title, message = self.notify.call_args.args
+        self.assertEqual(title, 'LibreWard — scheduled scan')
+        self.assertIn('Checked: 120 file(s).', message)
+        # Remembered after a restart, so the next start does not scan again.
+        self.assertEqual(self.agent().state['scheduled_scan'], state['scheduled_scan'])
+
+    def test_scheduled_scan_waits_after_login_and_for_the_antivirus_engine(self):
+        agent, calls, scan = self.scheduled_agent({'errors': False})
+        agent.schedule_not_before = time.monotonic() + 60
+        with scan:
+            agent.run_schedule()
+            self.assertIsNone(agent.scheduled_thread)
+            agent.schedule_not_before = 0
+            agent.status = None
+            agent.run_schedule()
+        self.assertIsNone(agent.scheduled_thread)
+        self.assertEqual(calls, [])
+        self.assertIn('antivirus engine', read_state()['scheduled_scan_waiting'])
+
+    def test_scheduled_scan_threat_is_asked_about_like_a_new_file(self):
+        path = str(self.watched / 'old.exe')
+        agent, _calls, scan = self.scheduled_agent({'infected': [(path, 'Win.Test FOUND')], 'infected_found': True,
+                                                    'errors': False, 'stopped': False, 'scanned': 3})
+        agent.config['notify_threats_only'] = True
+        with scan, patch.object(monitor_agent.backend, 'quick_scan_paths', return_value=[str(self.watched)]):
+            agent.run_schedule()
+            self.finish(agent)
+        self.assertEqual(read_state()['threats'][0]['path'], path)
+        title, message = self.notify.call_args.args
+        self.assertIn('dangerous file found', title)
+        self.assertIn('old.exe', message)
+        self.open_application.assert_called_once_with('--threats')
+
+    def test_unfinished_scheduled_scan_is_tried_again_in_an_hour(self):
+        agent, calls, scan = self.scheduled_agent({'errors': True, 'stopped': False})
+        with scan, patch.object(monitor_agent.backend, 'quick_scan_paths', return_value=[str(self.watched)]):
+            agent.run_schedule()
+            self.finish(agent)
+            agent.run_schedule()
+        self.assertEqual(len(calls), 1)
+        self.assertGreater(agent.schedule_not_before, time.monotonic() + 59 * 60)
+        state = read_state()
+        self.assertNotIn('scheduled_scan', state)
+        self.assertIsNotNone(state['scheduled_scan_error'])
+        self.notify.assert_not_called()
+
+    def test_agent_for_scheduled_scans_only_needs_no_folder_watching(self):
+        self.save(scheduled_scan='weekly')
+        agent = self.agent()
+        with patch('core.monitor_agent.check_startup', return_value=self.ready),                 patch('core.monitor_agent.missing_components', return_value={'watchdog': 'No module'}):
+            thread = threading.Thread(target=agent.run)
+            thread.start()
+            try:
+                deadline = time.monotonic() + 5
+                while read_state().get('status') != 'off' and time.monotonic() < deadline:
+                    time.sleep(.02)
+                self.assertTrue(read_state()['running'])
+                self.assertIsNone(agent.monitor)
+                self.save(scheduled_scan='off')
+                thread.join(timeout=5)
+                self.assertFalse(thread.is_alive())
+            finally:
+                agent.stop()
+                thread.join(timeout=5)
+        self.assertFalse(read_state()['running'])
+
 
 if __name__ == '__main__':
     unittest.main()

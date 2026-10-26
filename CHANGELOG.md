@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Scheduled scans: under Live protection, choose a Quick scan every day or every
+  week. The background service runs it also when LibreWard is closed, about ten
+  minutes after login if it was missed while the computer was off, and reports the
+  result as a notification. A dangerous file is handled like one in a new download.
+  The service now runs while protection for new files or a scheduled scan is on.
+
 - Fix the dangerous file notification appearing only at the next download, while the
   window already asked: the result of a check is now always a new notification, and
   the download's “Waiting” or “Checking” notification closes. GNOME did not always show

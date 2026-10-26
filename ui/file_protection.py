@@ -11,6 +11,7 @@ from config import save_config
 from core.dependencies import install_hint, missing_components, missing_message
 from core.download_folders import discover_download_folders
 from core.monitor_agent import (
+    agent_needed,
     follows_browsers,
     monitor_dir,
     monitoring_enabled,
@@ -86,10 +87,11 @@ class FileProtectionSection:
         self.timer = QTimer(card)
         self.timer.timeout.connect(self.refresh)
         self.timer.start(30000)
-        if self.enabled and not backend.monitor_service_installed() and not backend.monitor_agent_running():
+        if (agent_needed(window.config) and not backend.monitor_service_installed()
+                and not backend.monitor_agent_running()):
             # Removed outside LibreWard, for example by uninstalling: never turn it
             # back on by itself. The folders are kept for the next Turn on.
-            self.save(watch_folders_enabled=False)
+            self.save(watch_folders_enabled=False, scheduled_scan='off')
         self.apply_service()
 
     # ── settings ────────────────────────────────────────────────────
@@ -165,18 +167,19 @@ class FileProtectionSection:
     def apply_service(self):
         """Start or remove the background agent to match the saved settings.
 
-        Starting also repairs a service that points to an older installation.
-        systemctl can take a moment, so this never runs on the GUI thread.
+        It runs for protection of new files and for scheduled scans. Starting also
+        repairs a service that points to an older installation. systemctl can take
+        a moment, so this never runs on the GUI thread.
         """
-        enabled = self.enabled
+        enabled = agent_needed(self.window.config)
         self.service_error = None
-        missing = missing_components(['watchdog']) if enabled else {}
+        missing = missing_components(['watchdog']) if self.enabled else {}
         if missing:
             # The service runs this interpreter: it would fail the same way.
             self.service_error = missing_message(missing, 'Protection for new files')
             self.refresh()
             return
-        self.busy = enabled
+        self.busy = self.enabled
         self.refresh()
 
         def work():
@@ -189,11 +192,11 @@ class FileProtectionSection:
         self.in_background(work, lambda error: self.service_changed(enabled, error))
 
     def service_changed(self, enabled, error):
-        if enabled != self.enabled:
+        if enabled != agent_needed(self.window.config):
             return  # switched again meanwhile; the newer request decides
         self.busy = False
         self.service_error = error
-        if enabled and not error:
+        if self.enabled and not error:
             self.started_at = time.monotonic()
             # Shows a failed start once "Turning on…" is over.
             QTimer.singleShot(16000, self.refresh)
@@ -203,7 +206,7 @@ class FileProtectionSection:
 
     def ensure_running(self):
         """After settings changes elsewhere: start the agent again if it stopped."""
-        if self.service_error or (self.enabled and not backend.monitor_agent_running()):
+        if self.service_error or (agent_needed(self.window.config) and not backend.monitor_agent_running()):
             self.apply_service()
 
     # ── status ──────────────────────────────────────────────────────
@@ -276,6 +279,9 @@ class FileProtectionSection:
         self.folders_label.setText('' if not folders else
                                    f'Protected folders: {names}' if self.is_on else
                                    f'Folders to protect: {names}')
+        scheduled = getattr(self.window, 'scheduled_scan', None)
+        if scheduled is not None:
+            scheduled.refresh(state)
         self.window.show_monitor_threats(state)
 
     @staticmethod

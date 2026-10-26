@@ -149,7 +149,8 @@ executing a file.
 Monitoring runs in the background, independently of the window, like Internet
 protection: it keeps working when LibreWard is closed and starts again when you log
 in. Closing the window explains this once. To stop it, select **Turn off** on the
-Live protection page. When its service was removed outside LibreWard, for
+Live protection page; with a scheduled scan chosen, the service keeps running for
+the schedule only. When its service was removed outside LibreWard, for
 example by uninstalling, LibreWard shows it as off and does not turn it back on by
 itself; the folders are kept for the next **Turn on**. Folder and exclusion changes reach the running service within
 a few seconds.
@@ -181,6 +182,33 @@ while the antivirus engine or virus database is missing and while ClamAV is bein
 updated. A failed scan is retried every minute, with one notification after
 repeated failures. Files still waiting when you log out are checked after the next
 login.
+
+## Scheduled scans
+
+Open **Live protection** and choose **Every day** or **Every week** under
+**Scheduled scan**. The background service then runs a Quick scan (the same places
+as **Quick system scan**, such as Downloads, the Desktop, temporary files and
+browser caches), also when LibreWard is closed. Scan exclusions
+and the scan profile from Settings apply.
+
+There is no fixed time: a scan runs when a day or a week has passed since the last
+one started. If the computer was off or you were logged out at that time, it runs
+about ten minutes after the next login, never right at login. The first scan
+starts a few minutes after choosing a schedule. A scan that does not finish (for
+example a missing virus database) is tried again an hour later; a scan interrupted
+by logging out runs again after the next login.
+
+The scan runs alongside protection for new files, with low CPU and disk priority.
+It uses a running system `clamd` when parallel scanning is enabled, otherwise one
+`clamscan`; it does not start its own `clamd`. The card shows when the last scan
+ran, its result and when the next one is due. The result comes as a notification
+(only for dangerous files with **Notify me only when a dangerous file is found**).
+A dangerous file is handled like one found in a new download: LibreWard opens by
+itself and asks what to do, and the file is listed under Detected files.
+
+Scheduled scans use the same background service as protection for new files and
+work without it being turned on: the service runs while either is on, and stops
+when both are off.
 
 ### Notifications and dangerous files
 

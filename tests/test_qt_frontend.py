@@ -54,6 +54,7 @@ class QtFrontendTests(unittest.TestCase):
         self.service_installed = self.patch('ui.main_window.backend.monitor_service_installed', return_value=True)
         self.monitor_state = self.patch('ui.main_window.read_state', return_value={})
         self.patch('ui.file_protection.read_state', new=self.monitor_state)
+        self.patch('ui.scheduled_scan.read_state', new=self.monitor_state)
         self.monitor_directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.monitor_directory.cleanup)
         self.patch('ui.file_protection.monitor_dir', return_value=Path(self.monitor_directory.name))
@@ -166,7 +167,7 @@ class QtFrontendTests(unittest.TestCase):
         from ui.file_protection import FileProtectionSection
         from PySide6.QtWidgets import QVBoxLayout, QWidget
         self.window.config = dict(self.window.config, watch_folders_enabled=True,
-                                  watched_folders=['/home/user/Downloads'])
+                                  watched_folders=['/home/user/Downloads'], scheduled_scan='weekly')
         self.service_installed.return_value = False  # uninstall deleted it
         self.monitor_service.reset_mock()
         holder = QWidget()
@@ -175,9 +176,63 @@ class QtFrontendTests(unittest.TestCase):
         self.wait_for(lambda: self.monitor_service.called)
         self.monitor_service.assert_called_once_with(False)
         self.assertFalse(self.window.config['watch_folders_enabled'])
+        self.assertEqual(self.window.config['scheduled_scan'], 'off')
         self.assertEqual(self.window.config['watched_folders'], ['/home/user/Downloads'])
         self.assertEqual(section.status.text(), 'Off')
         section.stop()
+
+    def test_scheduled_scan_choice_starts_and_removes_the_service(self):
+        section = self.window.scheduled_scan
+        self.wait_for(lambda: self.monitor_service.call_count == 1)
+        self.assertEqual(section.status.text(), 'Off')
+        section.choice.setCurrentIndex(section.choice.findData('weekly'))
+        self.wait_for(lambda: self.monitor_service.call_count == 2)
+        self.monitor_service.assert_called_with(True)
+        self.assertEqual(self.window.config['scheduled_scan'], 'weekly')
+        self.assertEqual(section.status.text(), 'Turning on…')
+        # Protection for new files stays off and does not claim to be turning on.
+        self.assertEqual(self.window.file_protection.status.text(), 'Off')
+        section.choice.setCurrentIndex(section.choice.findData('off'))
+        self.wait_for(lambda: self.monitor_service.call_count == 3)
+        self.monitor_service.assert_called_with(False)
+
+    def test_scheduled_scan_keeps_the_service_for_protection_of_new_files(self):
+        section = self.enable_monitoring()
+        self.agent_running.return_value = True
+        self.monitor_service.reset_mock()
+        scheduled = self.window.scheduled_scan
+        scheduled.choice.setCurrentIndex(scheduled.choice.findData('daily'))
+        scheduled.choice.setCurrentIndex(scheduled.choice.findData('off'))
+        self.app.processEvents()
+        self.monitor_service.assert_not_called()  # the running agent reads the setting
+        section.toggle()
+        self.wait_for(lambda: self.monitor_service.called)
+        self.monitor_service.assert_called_with(False)
+
+    def test_scheduled_scan_state_is_shown_in_plain_words(self):
+        section = self.window.scheduled_scan
+        self.window.config = dict(self.window.config, scheduled_scan='weekly')
+        self.agent_running.return_value = True
+        started = time.time() - 3600
+        self.monitor_state.return_value = {'scheduled_scan': {'started': started, 'time': started + 600,
+                                                              'outcome': 'No threats found', 'files': 1200}}
+        self.window.file_protection.refresh()
+        self.assertEqual(section.status.text(), 'Every week')
+        self.assertIn('also when LibreWard is closed', section.info.text())
+        self.assertIn('No threats found (1200 files checked)', section.info.text())
+        self.assertIn('Next scan: ' + time.strftime('%A %d %B', time.localtime(started + 7 * 86400)),
+                      section.info.text())
+        self.monitor_state.return_value = {'scheduled_scan_running': time.time()}
+        self.window.file_protection.refresh()
+        self.assertEqual(section.status.text(), 'Scanning now…')
+        self.monitor_state.return_value = {'scheduled_scan_waiting': 'Waiting for the antivirus engine and virus database.'}
+        self.window.file_protection.refresh()
+        self.assertEqual(section.status.text(), 'Needs attention')
+        self.assertIn('The first scan starts in a few minutes.', section.info.text())
+        self.agent_running.return_value = False
+        section.changed_at = float('-inf')
+        self.window.file_protection.refresh()
+        self.assertIn('background service is not running', section.info.text())
 
     def test_folders_are_only_called_protected_while_protection_is_on(self):
         section = self.enable_monitoring(str(Path.home() / 'Downloads'))

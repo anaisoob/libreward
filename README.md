@@ -21,6 +21,8 @@ ClamAV, Linux firewall management and Linux domain blocking.
   folders) for viruses in the background, also when the window is closed, with
   desktop notifications (GNOME, KDE and others; no tray icon needed). A dangerous
   file opens LibreWard and asks whether to quarantine or delete it.
+- Scheduled scans: a Quick scan every day or every week in the background, also
+  when LibreWard is closed; a scan missed while the computer was off runs after login.
 - Parallel scanning with `clamd` and standard scanning with `clamscan`.
 - Live progress, current-file information, cancellation and scan reports.
 - Threat detection and warnings for files that could not be fully checked.

@@ -489,11 +489,13 @@ class QtMainWindow(QMainWindow):
         return page
 
     def build_internet_page(self):
-        """Live protection: new files first, then websites; both keep working when closed."""
+        """Live protection: new files, scheduled scans, then websites; all keep working when closed."""
         from .file_protection import FileProtectionSection
         from .internet_page import InternetProtectionPage
+        from .scheduled_scan import ScheduledScanSection
         self.internet_page = InternetProtectionPage(self)
         self.file_protection = FileProtectionSection(self, self.internet_page.header_layout)
+        self.scheduled_scan = ScheduledScanSection(self, self.internet_page.header_layout)
         return self.internet_page.page
 
     def maybe_refresh_firewall(self):

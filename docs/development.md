@@ -70,6 +70,12 @@ Verify on Windows and a desktop Linux installation:
   brings an open window forward on the Virus scan page (no “is ready” notice). Log out
   and in, turn it off and confirm `systemctl --user status libreward-monitor.service`
   shows no service. Start LibreWard twice and confirm the open window comes forward.
+- Scheduled scans: with protection for new files off, choose **Every day**, put the
+  EICAR test file in `~/Downloads`, close the window and confirm that within about
+  ten minutes the scan runs (`journalctl --user -u libreward-monitor.service`), a
+  notification appears and LibreWard opens with the threat question. Reopen it: the
+  card shows the last scan and the next one. Choose **Off** and confirm the service
+  stops.
 - Linux Internet protection in a disposable VM: enable, cancel authorization,
   allow/block an exact domain, update lists, pause, restart, and check IPv4/IPv6
   resolution. Verify VPN/DNS connection settings remain intact.

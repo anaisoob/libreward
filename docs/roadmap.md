@@ -4,19 +4,18 @@ Planned work that has been discussed but is not implemented yet.
 
 ## Next steps, in this order
 
-1. **Scheduled scans in Live protection**: for example a weekly Quick scan, run by
-   the background service so it also happens while LibreWard is closed.
-2. **Virus database updates without the window or Live protection**: the database
-   is refreshed while LibreWard is open or while protection for new files runs, but
-   not when both are off. A small user timer could refresh it regardless.
-3. **New repository owner**: replace `anaisoob` (GitHub URLs, AUR/RPM/Debian
+1. **Virus database updates without the window or Live protection**: the database
+   is refreshed while LibreWard is open or while the background service runs (for
+   protection of new files or scheduled scans), but not when all are off. A small
+   user timer could refresh it regardless.
+2. **New repository owner**: replace `anaisoob` (GitHub URLs, AUR/RPM/Debian
    maintainer lines, AppStream metadata, update manifest URL) with the new owner.
-4. **Bring the dangerous file question to the front while LibreWard is open in the
+3. **Bring the dangerous file question to the front while LibreWard is open in the
    background.** GNOME on Wayland only shows a new process's window in front without
    a click, not a window of a running one (also not a separate window of it). A
    small question program started by the background service could work; keep it
    simple and avoid duplicating the question code.
-5. Continue with the plan below: plain wording on the other pages, then packaging.
+4. Continue with the plan below: plain wording on the other pages, then packaging.
 
 ## Protection
 

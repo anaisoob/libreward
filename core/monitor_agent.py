@@ -3,8 +3,8 @@
 `libreward --monitor` runs this agent from the platform's user service (a
 systemd user unit on Linux, the Run key on Windows): it starts at login, keeps
 running when the window is closed, follows the saved settings, scans new and
-changed files, notifies the desktop and keeps LibreWard's own virus database
-current. The GUI reads its state file; the agent never writes config.json.
+changed files, runs scheduled Quick scans, notifies the desktop and keeps
+LibreWard's own virus database current. The GUI reads its state file; the agent never writes config.json.
 """
 import json
 import os
@@ -46,6 +46,12 @@ SLOW_CHECK = 2
 # in its dialog; the browser's download list then finds it well within this time.
 STALE_DOWNLOAD = 30
 MAX_LOG_BYTES = 1024 * 1024
+# Scheduled Quick scans: run when this long has passed since the last one started,
+# so a scan missed while the computer was off runs soon after the next login.
+SCHEDULES = {'daily': 24 * 60 * 60, 'weekly': 7 * 24 * 60 * 60}
+# Not right at login, while the desktop and applications start.
+SCHEDULE_DELAY = 10 * 60
+SCHEDULE_RETRY = 60 * 60
 # EX_CONFIG: a component is missing; restarting does not help.
 MISSING_COMPONENT_EXIT = 78
 
@@ -83,6 +89,30 @@ def threats_only(config):
 
 def monitoring_enabled(config):
     return bool(config.get('watch_folders_enabled', False)) and bool(chosen_folders(config) or follows_browsers(config))
+
+
+def scheduled_interval(config):
+    """Seconds between scheduled Quick scans, or None when they are off."""
+    return SCHEDULES.get(config.get('scheduled_scan'))
+
+
+def agent_needed(config):
+    """The background agent runs for protection of new files or for scheduled scans."""
+    return monitoring_enabled(config) or scheduled_interval(config) is not None
+
+
+def scheduled_scan_due(now, last, interval):
+    """`last`: when the last finished scheduled scan started (time.time())."""
+    if interval is None:
+        return False
+    if not isinstance(last, (int, float)):
+        return True
+    return not 0 <= now - last < interval  # also when the clock was set back
+
+
+def last_scheduled_scan(state):
+    last = state.get('scheduled_scan')
+    return last if isinstance(last, dict) else {}
 
 
 def monitor_settings(config, discovered=()):
@@ -168,6 +198,10 @@ class MonitorAgent:
         self.scanning = []
         self.database_thread = None
         self.database_checked = time.monotonic() - DATABASE_INTERVAL + 60
+        self.scheduled_thread = None
+        self.scheduled_service = None
+        self.scheduled_started = None
+        self.schedule_not_before = time.monotonic() + SCHEDULE_DELAY
         self.undelivered = []
         # Downloads announced in a notification, which later shows their result:
         # partial file -> None while downloading, or when it disappeared.
@@ -175,7 +209,8 @@ class MonitorAgent:
         self.notification_lock = threading.Lock()
         previous = read_state()
         self.state = {key: previous[key] for key in
-                      ('threats', 'last_scan', 'pending', 'database_update_at', 'database_update_ok')
+                      ('threats', 'last_scan', 'pending', 'database_update_at', 'database_update_ok',
+                       'scheduled_scan', 'scheduled_scan_error')
                       if key in previous}
 
     # ── lifecycle ───────────────────────────────────────────────────
@@ -186,7 +221,8 @@ class MonitorAgent:
             self.log('LibreWard folder monitoring is already running.')
             return 0
         try:
-            missing = missing_components(['watchdog'])
+            self.reload_config()
+            missing = missing_components(['watchdog']) if monitoring_enabled(self.config) else {}
             if missing:
                 message = missing_message(missing, 'Folder monitoring')
                 self.update_state(status='error', message=message)
@@ -200,18 +236,19 @@ class MonitorAgent:
         finally:
             self._stop_monitor()
             self.release_clamd(force=True)
+            self.stop_scheduled_scan()
             thread = self.database_thread
             if thread is not None:
                 thread.join(timeout=5)
-            self.update_state(running=False, pid=None)
+            self.update_state(running=False, pid=None, scheduled_scan_running=None)
             self.log('LibreWard folder monitoring stopped.')
             lock.close()
 
     def stop(self):
         self.stopped.set()
-        service = self.service
-        if service is not None:
-            service.stop()
+        for service in (self.service, self.scheduled_service):
+            if service is not None:
+                service.stop()
 
     def reload(self):
         """Read the settings again at the next check (SIGHUP)."""
@@ -225,15 +262,22 @@ class MonitorAgent:
                 self.config_checked = now
                 self.reload_config()
                 self.follow_browsers(now)
+                if not agent_needed(self.config):
+                    self.update_state(status='off', message='Folder monitoring is off.')
+                    self.log('Folder monitoring and scheduled scans are turned off in the settings.')
+                    return 0
                 settings = monitor_settings(self.config, self.discovered)
                 if settings is None:
+                    if self.monitor is not None:
+                        self._stop_monitor()
+                        self.settings = None
+                        self.log('Folder monitoring is turned off in the settings.')
                     self.update_state(status='off', message='Folder monitoring is off.')
-                    self.log('Folder monitoring is turned off in the settings.')
-                    return 0
-                if settings != self.settings or (self.monitor_failed() and now >= self.monitor_retry_at):
+                elif settings != self.settings or (self.monitor_failed() and now >= self.monitor_retry_at):
                     self.start_monitor(settings)
             self.check_status()
             self.maybe_update_database()
+            self.run_schedule()
             self.follow_downloads(now)
             self.scan_ready()
             self.release_clamd()
@@ -244,7 +288,8 @@ class MonitorAgent:
     def follow_browsers(self, now):
         """Pick up a download folder chosen in a browser after protection was turned on."""
         from core.download_folders import discover_download_folders, settings_signature
-        if not follows_browsers(self.config) or now - self.browser_checked < BROWSER_INTERVAL:
+        if (not monitoring_enabled(self.config) or not follows_browsers(self.config)
+                or now - self.browser_checked < BROWSER_INTERVAL):
             return
         self.browser_checked = now
         try:
@@ -497,10 +542,7 @@ class MonitorAgent:
             return True
         self.failures = 0
         found = time.time()
-        threats = [entry for entry in self.state.get('threats', [])
-                   if not any(entry.get('path') == path for path, _threat in result.get('infected', []))]
-        threats += [{'path': path, 'threat': threat, 'time': found} for path, threat in result.get('infected', [])]
-        self.update_state(threats=threats[-MAX_THREATS:], last_scan={
+        self.update_state(threats=self.add_threats(result.get('infected', []), found), last_scan={
             'time': found, 'outcome': scan_outcome(result), 'files': len(paths),
             'names': file_names(paths)})
         self.log(f"Automatic scan of {len(paths)} file(s): {scan_outcome(result)}")
@@ -519,12 +561,95 @@ class MonitorAgent:
             self.show_threats()
         return False
 
+    def add_threats(self, infected, found):
+        """The listed threats with `infected` [(path, threat)] found again or for the first time."""
+        threats = [entry for entry in self.state.get('threats', [])
+                   if not any(entry.get('path') == path for path, _threat in infected)]
+        threats += [{'path': path, 'threat': threat, 'time': found} for path, threat in infected]
+        return threats[-MAX_THREATS:]
+
     def show_threats(self):
         self.log('Opening LibreWard to ask about a dangerous file.')
         try:
             self.open_application('--threats')
         except OSError as exc:
             self.log(f'Cannot open LibreWard: {exc}')
+
+    # ── scheduled scans ─────────────────────────────────────────────
+
+    def run_schedule(self):
+        """Start a scheduled Quick scan when it is due; report one that has finished."""
+        if self.scheduled_thread is not None:
+            if not self.scheduled_thread.is_alive():
+                self.finish_scheduled_scan()
+            return
+        interval = scheduled_interval(self.config)
+        if (time.monotonic() < self.schedule_not_before or not scheduled_scan_due(
+                time.time(), last_scheduled_scan(self.state).get('started'), interval)):
+            self.update_state(scheduled_scan_waiting=None)
+        elif self.status is None or not self.status.can_scan:
+            self.update_state(scheduled_scan_waiting='Waiting for the antivirus engine and virus database.')
+        elif is_update_locked():
+            self.update_state(scheduled_scan_waiting='Waiting until ClamAV has been updated.')
+        else:
+            self.start_scheduled_scan()
+
+    def start_scheduled_scan(self):
+        """The same Quick scan as the window's button, in a thread: new files are still checked meanwhile."""
+        roots = backend.quick_scan_paths()
+        patterns = get_active_exclude_patterns(set(self.config.get('enabled_common_excludes', [])),
+                                               self.config.get('user_excludes', []))
+        service = ScanService(_Discard(), scan_profile=self.config.get('scan_profile', 'standard'),
+                              workers=self.config.get('scan_workers', 'auto'))
+        # A running clamd checks files in parallel; otherwise one clamscan does it,
+        # without starting a daemon for a scan that runs rarely.
+        parallel = bool(self.config.get('parallel_scanning', True) and self.status.clamd_running)
+        clamscan = self.status.runtime.clamscan
+
+        def work():
+            try:
+                service.run(roots, patterns, clamscan, parallel=parallel)
+            except Exception as exc:  # noqa: BLE001 - reported as a scan that did not finish
+                self.log(f'Scheduled scan failed: {exc}')
+
+        self.scheduled_service = service
+        self.scheduled_started = time.time()
+        self.update_state(scheduled_scan_running=self.scheduled_started, scheduled_scan_waiting=None)
+        self.log(f'Scheduled Quick scan of {len(roots)} folder(s) started.')
+        self.scheduled_thread = threading.Thread(target=work, name='scheduled-scan', daemon=True)
+        self.scheduled_thread.start()
+
+    def finish_scheduled_scan(self):
+        service, started = self.scheduled_service, self.scheduled_started
+        self.scheduled_thread = self.scheduled_service = self.scheduled_started = None
+        self.update_state(scheduled_scan_running=None)
+        if self.stopped.is_set():
+            return  # it runs again after the next start
+        result = service.result or {'errors': True}
+        outcome = scan_outcome(result)
+        if result.get('errors') or result.get('stopped'):
+            self.schedule_not_before = time.monotonic() + SCHEDULE_RETRY
+            self.update_state(scheduled_scan_error=time.time())
+            self.log(f'Scheduled Quick scan did not finish ({outcome}); trying again in an hour.')
+            return
+        found = time.time()
+        infected = result.get('infected', [])
+        self.update_state(threats=self.add_threats(infected, found), scheduled_scan_error=None, scheduled_scan={
+            'started': started, 'time': found, 'outcome': outcome, 'files': result.get('scanned', 0)})
+        self.log(f"Scheduled Quick scan of {result.get('scanned', 0)} file(s): {outcome}")
+        if infected or result.get('infected_found'):
+            self.send(*scan_notification(result, []))
+            if infected and not self.gui_running():
+                self.show_threats()
+        elif not threats_only(self.config):
+            self.send('LibreWard — scheduled scan', f"{outcome}\nChecked: {result.get('scanned', 0)} file(s).",
+                      bool(result.get('warnings')))
+
+    def stop_scheduled_scan(self):
+        if self.scheduled_service is not None:
+            self.scheduled_service.stop()
+        if self.scheduled_thread is not None:
+            self.scheduled_thread.join(timeout=10)
 
     # ── notifications ───────────────────────────────────────────────
 
