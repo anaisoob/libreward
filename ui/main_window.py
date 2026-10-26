@@ -752,7 +752,7 @@ class QtMainWindow(QMainWindow):
         actions = QHBoxLayout()
         actions.setSpacing(10)
         self.scan_button = self.button("Start scan", lambda: self.start_scan([self.path.text().strip()]), scan_action=True, variant="primary")
-        self.quick_button = self.button("Quick system scan", lambda: self.start_scan(backend.quick_scan_paths()), scan_action=True)
+        self.quick_button = self.button("Quick system scan", self.start_quick_scan, scan_action=True)
         self.stop_button = QPushButton("Stop")
         self.stop_button.setObjectName("dangerButton")
         self.stop_button.setMinimumHeight(38)
@@ -1184,11 +1184,16 @@ class QtMainWindow(QMainWindow):
         else:
             QMessageBox.warning(self, "Virus database missing", "Scanning is blocked until the virus database is available. Install a working ClamAV runtime first.")
 
-    def start_scan(self, roots):
+    def start_quick_scan(self):
+        from core.quick_scan import quick_scan_excludes, quick_scan_targets
+        self.start_scan(quick_scan_targets(), quick_scan_excludes())
+
+    def start_scan(self, roots, excludes=()):
         if self.operation is not None:
             return
         self.opened_for_threats = False
-        if not roots or any(not root or not os.path.isdir(root) for root in roots):
+        # A Quick scan also checks single files, such as programs started at login.
+        if not roots or any(not root or not os.path.exists(root) for root in roots):
             QMessageBox.information(self, "Scan folder", "Choose an existing folder to scan.")
             return
         if not self.save_settings():
@@ -1204,6 +1209,7 @@ class QtMainWindow(QMainWindow):
         self.service = ScanService(self.events, scan_profile=self.config.get('scan_profile', 'standard'),
                                    workers=self.config.get('scan_workers', 'auto'))
         patterns = get_active_exclude_patterns(set(self.config.get("enabled_common_excludes", [])), self.config.get("user_excludes", []))
+        patterns += excludes
 
         def run_scan():
             status = self.check_runtime()

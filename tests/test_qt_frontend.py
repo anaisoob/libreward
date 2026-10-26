@@ -1302,6 +1302,23 @@ class QtFrontendTests(unittest.TestCase):
         self.assertFalse(self.window.scan_button.isEnabled())
         self.assertTrue(self.window.database_button.isEnabled())
 
+    def test_quick_scan_checks_startup_programs_and_skips_private_service_folders(self):
+        program = tempfile.NamedTemporaryFile(prefix='libreward-autostart-', delete=False)
+        program.close()
+        self.addCleanup(lambda: Path(program.name).unlink(missing_ok=True))
+        scanned = []
+
+        def run(_service, roots, patterns, *_args, **_kwargs):
+            scanned.append((roots, patterns))
+
+        with patch('core.quick_scan.quick_scan_targets', return_value=['/tmp', program.name]), \
+                patch('core.quick_scan.quick_scan_excludes', return_value=['^/tmp/private']), \
+                patch('ui.main_window.ScanService.run', autospec=True, side_effect=run):
+            self.window.quick_button.click()
+            self.wait_idle()
+        self.assertEqual(scanned[0][0], ['/tmp', program.name])  # a single file is a valid target
+        self.assertIn('^/tmp/private', scanned[0][1])
+
     def test_concurrent_operation_cannot_start(self):
         release = threading.Event()
         self.addCleanup(release.set)

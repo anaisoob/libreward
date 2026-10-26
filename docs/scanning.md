@@ -3,8 +3,20 @@
 ## Starting and excluding files
 
 Choose a folder and select **Start scan**, or use **Quick system scan** to check
-platform-specific locations such as downloads, temporary directories, startup
-locations and browser data. Quick scan does not check every file on the machine.
+the small places where threats arrive or start by themselves. It takes minutes, not
+hours, and does not check every file on the machine; scan a folder for that.
+
+| Platform | Quick scan checks |
+|---|---|
+| Linux | `/tmp`, `/var/tmp`, `/dev/shm`; the Downloads and Desktop folders (also translated names from the user folder settings) and the trash; `~/.config/autostart`, `~/.config/systemd/user`, `~/.local/share/applications`, `~/.local/bin`, `~/bin`; shell and session startup files such as `~/.profile` and `~/.bashrc` |
+| Windows | `%TEMP%`, `%LOCALAPPDATA%\Temp`, the Downloads and Desktop folders, `C:\Users\Public`, and the Startup folders of the user and of all users |
+| Both | the folders browsers download to (never the whole home folder), and the programs started at login wherever they are stored: from autostart entries and systemd user services on Linux, from the `Run` and `RunOnce` registry entries on Windows, including the script or library such an entry runs |
+
+Private temporary folders of system services (`/tmp/systemd-private-*`), which only
+root can read, are skipped instead of being reported as files that could not be
+checked. Browser caches, `~/.cache` and `%APPDATA%` are not part of a Quick scan:
+they are large, change all the time, and new downloads are checked by Live
+protection when they arrive.
 
 Common and custom exclusions in Settings apply to both scan types. Only checked
 common groups are active. A custom excluded folder includes its children, but
@@ -187,8 +199,7 @@ login.
 
 Open **Live protection** and choose **Every day** or **Every week** under
 **Scheduled scan**. The background service then runs a Quick scan (the same places
-as **Quick system scan**, such as Downloads, the Desktop, temporary files and
-browser caches), also when LibreWard is closed. Scan exclusions
+as **Quick system scan**, see above), also when LibreWard is closed. Scan exclusions
 and the scan profile from Settings apply.
 
 There is no fixed time: a scan runs when a day or a week has passed since the last

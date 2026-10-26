@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Quick scan checks what matters and finishes in minutes: temporary folders,
+  Downloads and Desktop (also translated folder names), the trash, the folders
+  browsers download to, login startup locations, and the programs started at login
+  wherever they are stored (autostart entries, systemd user services, Windows `Run`
+  entries). It no longer scans browser caches, `~/.cache`, `~/snap` or `%APPDATA%`,
+  and skips the private temporary folders of system services, which only root can
+  read.
+
 - Scheduled scans: under Live protection, choose a Quick scan every day or every
   week. The background service runs it also when LibreWard is closed, about ten
   minutes after login if it was missed while the computer was off, and reports the

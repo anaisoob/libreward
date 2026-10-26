@@ -533,31 +533,62 @@ $app = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell
 
     def quick_scan_paths(self) -> list[str]:
         """Return Windows-specific quick scan paths."""
-        home = os.path.expanduser("~")
         local_appdata = os.environ.get("LOCALAPPDATA", "")
         appdata = os.environ.get("APPDATA", "")
-        windir = os.environ.get("WINDIR", "C:\\Windows")
-
+        programdata = os.environ.get("PROGRAMDATA", "")
+        startup = os.path.join("Microsoft", "Windows", "Start Menu", "Programs", "Startup")
         candidates = [
-            # Temp directories — #1 malware location on Windows
+            # Temporary folders, where downloaded installers and droppers unpack
             os.environ.get("TEMP", ""),
             os.environ.get("TMP", ""),
-            os.path.join(windir, "Temp"),
             os.path.join(local_appdata, "Temp") if local_appdata else "",
-            # User folders
-            os.path.join(home, "Downloads"),
-            os.path.join(home, "Desktop"),
-            # Perzistencija — startup folder
-            os.path.join(appdata, "Microsoft", "Windows", "Start Menu", "Programs", "Startup") if appdata else "",
-            # Roaming appdata (common malware hiding spot)
-            appdata,
-            # Browser cache / profiles
-            os.path.join(local_appdata, "Google", "Chrome", "User Data") if local_appdata else "",
-            os.path.join(local_appdata, "Microsoft", "Edge", "User Data") if local_appdata else "",
-            os.path.join(appdata, "Mozilla", "Firefox") if appdata else "",
-            os.path.join(local_appdata, "BraveSoftware", "Brave-Browser", "User Data") if local_appdata else "",
+            # Where files arrive; Public is writable by every user
+            str(self.downloads_directory() or ""),
+            str(self.desktop_directory() or ""),
+            os.environ.get("PUBLIC", ""),
+            # Startup folders of this user and of all users
+            os.path.join(appdata, startup) if appdata else "",
+            os.path.join(programdata, startup) if programdata else "",
         ]
         return [p for p in candidates if p and os.path.isdir(p)]
+
+    RUN_KEYS = (r'Software\Microsoft\Windows\CurrentVersion\Run',
+                r'Software\Microsoft\Windows\CurrentVersion\RunOnce')
+
+    @staticmethod
+    def command_arguments(command):
+        """Split a Run entry; an unquoted program path may contain spaces."""
+        command = os.path.expandvars(command.strip())
+        if command.startswith('"'):
+            program, _quote, rest = command[1:].partition('"')
+            return [program, *rest.split()]
+        parts = command.split()
+        for end in range(len(parts), 0, -1):
+            if os.path.isfile(' '.join(parts[:end])):
+                return [' '.join(parts[:end]), *parts[end:]]
+        return parts
+
+    def autostart_programs(self) -> list[str]:
+        """Programs started at login by the Run and RunOnce registry entries."""
+        import winreg
+        files = []
+        for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+            for path in self.RUN_KEYS:
+                try:
+                    key = winreg.OpenKey(hive, path)
+                except OSError:
+                    continue
+                with key:
+                    index = 0
+                    while True:
+                        try:
+                            _name, value, kind = winreg.EnumValue(key, index)
+                        except OSError:
+                            break
+                        index += 1
+                        if kind in (winreg.REG_SZ, winreg.REG_EXPAND_SZ) and isinstance(value, str):
+                            files += self.command_files(self.command_arguments(value))
+        return list(dict.fromkeys(files))
 
     # ── platform info ───────────────────────────────────────────────
 

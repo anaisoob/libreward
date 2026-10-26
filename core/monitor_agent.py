@@ -596,9 +596,10 @@ class MonitorAgent:
 
     def start_scheduled_scan(self):
         """The same Quick scan as the window's button, in a thread: new files are still checked meanwhile."""
-        roots = backend.quick_scan_paths()
+        from core.quick_scan import quick_scan_excludes, quick_scan_targets
+        roots = quick_scan_targets()
         patterns = get_active_exclude_patterns(set(self.config.get('enabled_common_excludes', [])),
-                                               self.config.get('user_excludes', []))
+                                               self.config.get('user_excludes', [])) + quick_scan_excludes()
         service = ScanService(_Discard(), scan_profile=self.config.get('scan_profile', 'standard'),
                               workers=self.config.get('scan_workers', 'auto'))
         # A running clamd checks files in parallel; otherwise one clamscan does it,
@@ -615,7 +616,7 @@ class MonitorAgent:
         self.scheduled_service = service
         self.scheduled_started = time.time()
         self.update_state(scheduled_scan_running=self.scheduled_started, scheduled_scan_waiting=None)
-        self.log(f'Scheduled Quick scan of {len(roots)} folder(s) started.')
+        self.log(f'Scheduled Quick scan of {len(roots)} folder(s) and file(s) started.')
         self.scheduled_thread = threading.Thread(target=work, name='scheduled-scan', daemon=True)
         self.scheduled_thread.start()
 

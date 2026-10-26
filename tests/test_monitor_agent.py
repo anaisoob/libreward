@@ -484,7 +484,7 @@ class MonitorAgentTests(unittest.TestCase):
     def test_scheduled_quick_scan_runs_once_and_is_recorded(self):
         agent, calls, scan = self.scheduled_agent({'infected': [], 'errors': False, 'warnings': False,
                                                    'stopped': False, 'scanned': 120})
-        with scan, patch.object(monitor_agent.backend, 'quick_scan_paths', return_value=[str(self.watched)]):
+        with scan, patch('core.quick_scan.quick_scan_targets', return_value=[str(self.watched)]):
             agent.run_schedule()
             self.assertIsNotNone(read_state()['scheduled_scan_running'])
             self.finish(agent)
@@ -518,7 +518,7 @@ class MonitorAgentTests(unittest.TestCase):
         agent, _calls, scan = self.scheduled_agent({'infected': [(path, 'Win.Test FOUND')], 'infected_found': True,
                                                     'errors': False, 'stopped': False, 'scanned': 3})
         agent.config['notify_threats_only'] = True
-        with scan, patch.object(monitor_agent.backend, 'quick_scan_paths', return_value=[str(self.watched)]):
+        with scan, patch('core.quick_scan.quick_scan_targets', return_value=[str(self.watched)]):
             agent.run_schedule()
             self.finish(agent)
         self.assertEqual(read_state()['threats'][0]['path'], path)
@@ -529,7 +529,7 @@ class MonitorAgentTests(unittest.TestCase):
 
     def test_unfinished_scheduled_scan_is_tried_again_in_an_hour(self):
         agent, calls, scan = self.scheduled_agent({'errors': True, 'stopped': False})
-        with scan, patch.object(monitor_agent.backend, 'quick_scan_paths', return_value=[str(self.watched)]):
+        with scan, patch('core.quick_scan.quick_scan_targets', return_value=[str(self.watched)]):
             agent.run_schedule()
             self.finish(agent)
             agent.run_schedule()

@@ -168,11 +168,34 @@ class PlatformBackend(ABC):
     def quick_scan_paths(self) -> list[str]:
         """Return platform-specific paths for a Quick System Scan.
 
-        These are common locations where malware is most likely to be found:
-        temp directories, downloads, browser caches, startup folders, etc.
-        Only paths that currently exist on the filesystem should be returned.
+        Small places where threats arrive or start by themselves: temporary
+        folders, Downloads, the Desktop and login startup locations. Only paths
+        that currently exist on the filesystem should be returned.
         """
         ...
+
+    def quick_scan_excludes(self) -> list[str]:
+        """Exclude patterns for parts of quick scan folders a user cannot read."""
+        return []
+
+    def autostart_programs(self) -> list[str]:
+        """Existing program files this user's login startup entries run."""
+        return []
+
+    @staticmethod
+    def command_files(arguments):
+        """Absolute paths of existing files in a split command line.
+
+        The program and its file arguments, for example the script an
+        interpreter runs or the library rundll32 loads ("x.dll,Entry").
+        """
+        import os
+        files = []
+        for argument in arguments:
+            path = argument.strip('"').split(',', 1)[0]
+            if os.path.isabs(path) and os.path.isfile(path):
+                files.append(path)
+        return files
 
     # ── platform info ───────────────────────────────────────────────
 

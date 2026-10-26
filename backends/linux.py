@@ -556,30 +556,56 @@ class LinuxBackend(PlatformBackend):
 
     def quick_scan_paths(self) -> list[str]:
         """Return Linux-specific quick scan paths."""
-        home = os.path.expanduser("~")
+        home = Path.home()
+        config = Path(os.environ.get('XDG_CONFIG_HOME') or home / '.config')
+        data = Path(os.environ.get('XDG_DATA_HOME') or home / '.local' / 'share')
         candidates = [
-            # Temp / shared memory (common malware staging)
-            "/tmp",
-            "/var/tmp",
-            "/dev/shm",
-            # User-writable common locations
-            os.path.join(home, "Downloads"),
-            os.path.join(home, "Desktop"),
-            os.path.join(home, ".cache"),
-            # Perzistencija
-            os.path.join(home, ".config", "autostart"),
-            # Trash
-            os.path.join(home, ".local", "share", "Trash"),
-            # Browser caches
-            os.path.join(home, ".cache", "mozilla"),
-            os.path.join(home, ".config", "chromium"),
-            os.path.join(home, ".config", "google-chrome"),
-            os.path.join(home, ".config", "microsoft-edge"),
-            os.path.join(home, ".cache", "BraveSoftware"),
-            # Snap tmp area (if it exists)
-            os.path.join(home, "snap"),
+            # Temporary folders anyone can write to
+            '/tmp', '/var/tmp', '/dev/shm',
+            # Where files arrive
+            self.downloads_directory(), self.desktop_directory(), data / 'Trash',
+            # What starts by itself at login or replaces a command
+            config / 'autostart', config / 'systemd' / 'user', data / 'applications',
+            home / '.local' / 'bin', home / 'bin',
+            *(home / name for name in ('.profile', '.bash_profile', '.bash_login', '.bashrc',
+                                       '.zprofile', '.zshrc', '.xprofile', '.xsessionrc')),
         ]
-        return [p for p in candidates if os.path.isdir(p)]
+        return [str(path) for path in candidates if path and os.path.exists(path)]
+
+    def quick_scan_excludes(self) -> list[str]:
+        # Private temporary folders of system services: readable only by root.
+        return ['^/(var/)?tmp/systemd-private-[^/]+']
+
+    def autostart_programs(self) -> list[str]:
+        """Programs of this user's autostart entries and systemd user services."""
+        import shlex
+        config = Path(os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.config')
+        commands = []
+        for folder, pattern, key in ((config / 'autostart', '*.desktop', 'Exec='),
+                                     (config / 'systemd' / 'user', '*.service', 'ExecStart=')):
+            try:
+                entries = sorted(folder.glob(pattern))
+            except OSError:
+                continue
+            for entry in entries:
+                try:
+                    lines = entry.read_text(encoding='utf-8', errors='replace').splitlines()
+                except OSError:
+                    continue
+                commands += [line.strip()[len(key):] for line in lines if line.strip().startswith(key)]
+        files = []
+        for command in commands:
+            try:
+                arguments = shlex.split(command)
+            except ValueError:
+                continue
+            if not arguments:
+                continue
+            # systemd prefixes such as "-" (failure ignored) are not part of the path.
+            program = arguments[0].lstrip('@-:+!')
+            program = program if os.path.isabs(program) else shutil.which(program) or program
+            files += self.command_files([program, *arguments[1:]])
+        return list(dict.fromkeys(files))
 
     # ── platform info ───────────────────────────────────────────────
 
