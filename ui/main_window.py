@@ -29,6 +29,7 @@ from core.quarantine import (
 from core.runtime import check_startup, setup_components
 from core.scan_service import ScanService, scan_outcome
 from core.system_check import available as system_check_available, run_system_check
+from core.system_check import deep_available as deep_system_check_available, run_deep_system_check
 from core.system_check import summary as system_check_summary
 from core.updater import check_for_updates, perform_update
 from excludes import get_active_exclude_patterns, get_common_excludes
@@ -886,9 +887,15 @@ class QtMainWindow(QMainWindow):
         self.set_status(title, 'warning' if severity == 'warning' else 'normal')
         for entry in result['findings']:
             self.log.appendPlainText(f"System check: {entry['title']}: {entry['detail']}")
-        dialog = SystemCheckDialog(self, result)
-        dialog.exec()
+        dialog = SystemCheckDialog(self, result, deeper=deep_system_check_available())
+        choice = dialog.exec()
         dialog.deleteLater()
+        if choice == SystemCheckDialog.DEEPER:
+            self.start_deep_system_check()
+
+    def start_deep_system_check(self):
+        if self.start_task('system-check', run_deep_system_check, on_done=self.system_check_finished):
+            self.set_status('Checking the system with administrator rights — this takes a few minutes…')
 
     def build_quarantine_page(self):
         page, layout = self.page("Quarantine", "Review isolated files and restore trusted items to their original locations.")

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- System check: **Check deeper…** runs it with administrator rights (polkit, a few
+  minutes): system programs and libraries compared with their packages (`rpm -Va`,
+  `dpkg --verify`, `pacman -Qkk`), SUID/SGID programs and system services that belong
+  to no package, services running programs from temporary or home folders, and the
+  process and scheduled task checks for all users. Root runs only the system's
+  `python3 -I` with standard library code, never files from the application folder.
+
 - System check on Linux (Virus scan page, and after each scheduled scan): looks for
   signs of hidden programs that virus signatures do not find, such as rootkits and
   backdoors: `/etc/ld.so.preload`, `LD_PRELOAD` in startup files, programs running

@@ -189,6 +189,13 @@ class PlatformBackend(ABC):
         """(findings, names of the checks that ran) for signs of a hidden intruder; None when unsupported."""
         return None
 
+    def deep_system_check_available(self):
+        return False
+
+    def deep_system_check(self):
+        """Like system_check, with administrator rights; raises AuthorizationError when refused."""
+        raise OSError('A deeper system check is not available on this platform.')
+
     @staticmethod
     def command_files(arguments):
         """Absolute paths of existing files in a split command line.

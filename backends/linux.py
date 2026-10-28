@@ -602,6 +602,40 @@ class LinuxBackend(PlatformBackend):
         config = Path(os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.config')
         return run_checks(home=Path.home(), config=config, startup_commands=self.autostart_commands())
 
+    PACKAGE_DATABASES = {'dnf': 'rpm', 'yum': 'rpm', 'zypper': 'rpm', 'apt': 'dpkg', 'pacman': 'pacman'}
+
+    def deep_system_check_available(self):
+        return bool(self._trusted_firewall_executable('pkexec') and self._trusted_firewall_executable('python3'))
+
+    def deep_system_check(self):
+        """The system check as root, through pkexec and a trusted python3 -I.
+
+        The helper is the source of linux_system_check (standard library only),
+        so root never imports files from the application folder.
+        """
+        import inspect
+        import json
+        from . import linux_system_check
+        python = self._trusted_firewall_executable('python3')
+        if not python:
+            raise RuntimeError('The deeper system check needs python3 in a system folder.')
+        manager = self.PACKAGE_DATABASES.get(self.distro_info().get('pkg_manager'))
+        tools = {name: self._trusted_firewall_executable(name) for name in ('rpm', 'dpkg', 'pacman', 'find')}
+        if not tools.get(manager):
+            manager = None  # the process and task checks still run
+        source = inspect.getsource(linux_system_check) + '\nimport sys\nroot_main(sys.argv[1:])\n'
+        process = self.start_privileged(
+            [self._require_authorizer(), '--disable-internal-agent', python, '-I', '-c', source,
+             json.dumps({'manager': manager, 'tools': {name: path for name, path in tools.items() if path}})],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace')
+        output, errors = process.communicate()
+        self._privileged_finished(process)
+        self._check_authorization_exit(process.returncode)
+        if process.returncode:
+            raise RuntimeError('The deeper system check did not finish. ' + errors.strip()[-500:])
+        result = json.loads(output)
+        return result['findings'], result['checks']
+
     def autostart_programs(self) -> list[str]:
         """Programs of this user's autostart entries and systemd user services."""
         import shlex

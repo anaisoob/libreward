@@ -145,9 +145,28 @@ executables in system folders) are not reported. A scheduled scan runs the syste
 check afterwards; findings come as a warning notification and are listed in the
 service log, and the Scheduled scan card shows the latest result.
 
+### Check deeper (administrator rights)
+
+The result offers **Check deeper…**, which asks for the administrator password
+(polkit) and takes a few minutes. It repeats the process and task checks for all
+users and adds:
+
+| Check | What is suspicious |
+|---|---|
+| System programs and libraries compared with their packages | contents differ from the package (`rpm -Va`, `dpkg --verify`, `pacman -Qkk`), only in program and library folders; changed configuration is normal and not reported |
+| Programs with special rights (SUID/SGID) | such a program on a local filesystem belongs to no installed package |
+| System services | a unit in the packages' folder belongs to no package, or a service runs a program from a temporary or home folder, or one that belongs to no package (normal for software installed by hand, and said so) |
+| Scheduled tasks of all users | crontabs of all users and `/etc/cron.{hourly,daily,weekly,monthly}` that download, decode or run programs from temporary folders |
+
+As with Internet protection, root never loads files from the application folder:
+pkexec starts the system's `/usr/bin/python3 -I` with the source of
+`backends/linux_system_check.py`, which uses only the Python standard library, and
+the system's own `rpm`, `dpkg`, `pacman` and `find`. Without a supported package
+manager (for example Alpine) the package checks are skipped and listed as not run.
+
 The check cannot prove that a computer is clean: a rootkit in the kernel can hide
-from any check that runs on the same system, and processes of other users and
-system files are not checked without administrator rights.
+from any check that runs on the same system. For certainty, check the disk from a
+system started from a USB stick.
 
 ## Live protection for new files
 

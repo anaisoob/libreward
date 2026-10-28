@@ -15,11 +15,6 @@ Planned work that has been discussed but is not implemented yet.
 
 ## Protection
 
-- **Deeper system check with administrator rights (phase 2)**, on request through
-  pkexec: system programs and libraries whose contents differ from their package
-  (`rpm -Va`, `debsums`, `pacman -Qkk`; executables and libraries only, not
-  configuration), SUID programs and system services or cron jobs that belong to no
-  package, and the phase 1 process checks for all users.
 
 - **Block opening a file until it is checked (on-access scanning).** ClamAV's
   `clamonacc` uses the kernel's fanotify interface to hold `open()` on a file until

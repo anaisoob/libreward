@@ -531,10 +531,11 @@ class ScanReportDialog(QDialog):
 
 class SystemCheckDialog(QDialog):
     """Findings of the system check in plain words; suspicious, so nothing to quarantine."""
+    DEEPER = 2
 
-    def __init__(self, parent, result):
+    def __init__(self, parent, result, *, deeper=False):
         from html import escape
-        from core.system_check import NOTE, summary
+        from core.system_check import DEEP_NOTE, NOTE, summary
         super().__init__(parent)
         self.setWindowTitle('System check')
         self.setMinimumWidth(560)
@@ -565,10 +566,16 @@ class SystemCheckDialog(QDialog):
         checked.setObjectName('muted')
         checked.setWordWrap(True)
         layout.addWidget(checked)
-        note = QLabel(NOTE)
+        note = QLabel(DEEP_NOTE if result.get('deep') else NOTE)
         note.setObjectName('muted')
         note.setWordWrap(True)
         layout.addWidget(note)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        self.deeper_button = None
+        if deeper and not result.get('deep'):
+            # Takes a few minutes: every system program is compared with its package.
+            self.deeper_button = buttons.addButton('Check deeper…', QDialogButtonBox.ButtonRole.ActionRole)
+            self.deeper_button.setToolTip('Asks for the administrator password and takes a few minutes')
+            self.deeper_button.clicked.connect(lambda: self.done(self.DEEPER))
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)

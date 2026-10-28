@@ -217,3 +217,215 @@ def run_checks(*, home, config, startup_commands, proc='/proc', sys='/sys', etc=
         except OSError:
             continue  # unavailable here, for example /proc in a container
     return findings, ran
+
+
+# ── deeper checks with administrator rights (run as root through pkexec) ──
+#
+# This module uses only the standard library: its source is passed to a trusted
+# /usr/bin/python3 -I, so root never imports files from the application folder.
+
+PROGRAM_FOLDERS = ('/usr/bin/', '/usr/sbin/', '/bin/', '/sbin/', '/usr/lib/', '/usr/lib64/', '/usr/libexec/',
+                   '/lib/', '/lib64/', '/usr/local/bin/', '/usr/local/sbin/')
+LOCAL_FILESYSTEMS = {'ext2', 'ext3', 'ext4', 'xfs', 'btrfs', 'f2fs', 'jfs', 'reiserfs', 'zfs', 'bcachefs'}
+SKIPPED_MOUNTS = ('/proc', '/sys', '/dev', '/run', '/snap', '/var/lib/snapd', '/var/lib/docker',
+                  '/var/lib/containers', '/tmp/.mount_')
+# /usr merge: Debian's package database may list /bin/x for /usr/bin/x.
+MERGED = (('/usr/bin/', '/bin/'), ('/usr/sbin/', '/sbin/'), ('/usr/lib/', '/lib/'), ('/usr/lib64/', '/lib64/'))
+
+
+def _run(command, timeout):
+    result = subprocess.run(command, capture_output=True, text=True, encoding='utf-8', errors='replace',
+                            timeout=timeout, stdin=subprocess.DEVNULL, check=False)
+    return result.stdout + result.stderr
+
+
+def changed_package_files(manager, output):
+    """Programs and libraries whose contents differ from their package, from verify output."""
+    changed = []
+    for line in output.splitlines():
+        if manager == 'pacman':
+            match = re.match(r'warning: (\S+): (/.+) \((SHA256|MD5) checksum mismatch\)$', line.strip())
+            path = match.group(2) if match else None
+        else:
+            # rpm -Va / dpkg --verify: 9 flags ("5" third: contents differ), a type
+            # ("c" for configuration), then the path.
+            match = re.match(r'^([.?SM5DLUGTP]{9})\s+([cdglr]?)\s*(/.+)$', line.rstrip())
+            path = match.group(3) if match and match.group(1)[2] == '5' and match.group(2) != 'c' else None
+        if path and path.startswith(PROGRAM_FOLDERS):
+            changed.append(path)
+    return list(dict.fromkeys(changed))
+
+
+def verify_packages(manager, tool):
+    command = {'rpm': [tool, '-Va', '--nodeps', '--noscripts'], 'dpkg': [tool, '--verify'],
+               'pacman': [tool, '-Qkk']}[manager]
+    return changed_package_files(manager, _run(command, 3600))
+
+
+def merged_aliases(path):
+    """The same file under the other name of a merged /usr: /usr/bin/x and /bin/x."""
+    return [second + path[len(first):] for one, other in MERGED
+            for first, second in ((one, other), (other, one)) if path.startswith(first)]
+
+
+def unowned_files(manager, tool, paths):
+    """Paths that belong to no installed package."""
+    if not paths:
+        return []
+    queries = list(paths)
+    if manager == 'dpkg':
+        queries += [alias for path in paths for alias in merged_aliases(path)]
+    command = {'rpm': [tool, '-qf', '--', *queries], 'dpkg': [tool, '-S', '--', *queries],
+               'pacman': [tool, '-Qo', '--', *queries]}[manager]
+    output = _run(command, 600)
+    messages = {'rpm': 'file {} is not owned by any package', 'dpkg': 'no path found matching pattern {}',
+                'pacman': 'No package owns {}'}[manager]
+    missing = {query for query in queries if messages.format(query) in output}
+    unowned = []
+    for path in paths:
+        aliases = [path] + (merged_aliases(path) if manager == 'dpkg' else [])
+        if all(alias in missing for alias in aliases):
+            unowned.append(path)
+    return unowned
+
+
+def local_mounts(mounts='/proc/self/mounts'):
+    points = []
+    for line in (_read(mounts) or '').splitlines():
+        parts = line.split()
+        if len(parts) < 3 or parts[2] not in LOCAL_FILESYSTEMS:
+            continue
+        point = parts[1].replace('\\040', ' ')
+        # Single files bind-mounted into place are not folders to search.
+        if not point.startswith(SKIPPED_MOUNTS) and os.path.isdir(point):
+            points.append(point)
+    return sorted(set(points))
+
+
+def special_permission_programs(find, mounts):
+    """Programs that run with their owner's rights (SUID/SGID), on local filesystems."""
+    files = []
+    for point in mounts:
+        output = _run([find, point, '-xdev', '-type', 'f', '-perm', '/6000', '-print'], 1800)
+        files += [line for line in output.splitlines() if line.startswith('/')]
+    return sorted(set(files))
+
+
+def unit_programs(folders):
+    """(unit file, program) of the ExecStart lines of system services in `folders`."""
+    import shlex
+    programs = []
+    for folder in folders:
+        try:
+            units = sorted(Path(folder).glob('*.service'))
+        except OSError:
+            continue
+        for unit in units:
+            if unit.is_symlink() or not unit.is_file():
+                continue  # enabled through a link to a unit elsewhere
+            for line in _settings(_read(unit)):
+                key, _equals, command = line.partition('=')
+                if not key.strip().startswith('Exec') or not command.strip():
+                    continue
+                try:
+                    program = shlex.split(command)[0].lstrip('@-:+!|')
+                except (ValueError, IndexError):
+                    continue
+                if os.path.isabs(program):
+                    programs.append((str(unit), program))
+    return programs
+
+
+def all_crontab_commands(spool=('/var/spool/cron', '/var/spool/cron/crontabs'), etc='/etc'):
+    commands = []
+    for folder in spool:
+        try:
+            files = sorted(path for path in Path(folder).iterdir() if path.is_file())
+        except OSError:
+            continue
+        commands += [(f'crontab of {path.name}', line) for path in files for line in _settings(_read(path))]
+    for period in ('hourly', 'daily', 'weekly', 'monthly'):
+        folder = Path(etc) / f'cron.{period}'
+        if folder.is_dir():
+            commands += [(str(path), line) for path in sorted(folder.iterdir()) if path.is_file()
+                         for line in _settings(_read(path))]
+    return commands + crontab_commands(etc, crontab='')
+
+
+def run_root_checks(manager, tools, *, proc='/proc', sys='/sys', etc='/etc', mounts='/proc/self/mounts',
+                    unit_folders=('/etc/systemd/system', '/usr/local/lib/systemd/system'),
+                    package_unit_folders=('/usr/lib/systemd/system', '/lib/systemd/system'),
+                    spool=('/var/spool/cron', '/var/spool/cron/crontabs')):
+    """Checks that need root: (findings, names of the checks that ran).
+
+    manager: 'rpm', 'dpkg', 'pacman' or None; tools: trusted paths of the
+    manager's command and of find.
+    """
+    tool = tools.get(manager)
+    checks = [
+        ('Extra libraries forced into every program', lambda: preload_file(etc)),
+        ('Programs of all users running from temporary folders or only from memory',
+         lambda: suspicious_processes(proc)),
+        ('Hidden programs of all users', lambda: hidden_processes(proc)),
+        ('Hidden kernel modules', lambda: hidden_modules(proc, sys)),
+        ('Scheduled tasks of all users', lambda: suspicious_startup_commands(all_crontab_commands(spool, etc))),
+    ]
+    if tool:
+        checks += [
+            ('System programs and libraries compared with their packages', lambda: [
+                finding('changed-program', 'A system program was changed',
+                        f'{path} differs from the copy its package installed. Rootkits replace programs such as '
+                        'ps, ls or sshd to hide; reinstalling the package restores the original.', path)
+                for path in verify_packages(manager, tool)]),
+            ('Programs with special rights (SUID/SGID)', lambda: [
+                finding('special-rights', 'A program with administrator rights was not installed by a package',
+                        f'{path} runs with the rights of its owner but belongs to no installed package. '
+                        'Attackers leave such programs to become administrator again later.', path)
+                for path in unowned_files(manager, tool, special_permission_programs(tools['find'], local_mounts(mounts)))]
+             if tools.get('find') else []),
+            ('System services', lambda: system_service_findings(manager, tool, unit_folders, package_unit_folders)),
+        ]
+    findings, ran = [], []
+    for name, check in checks:
+        try:
+            findings += check()
+            ran.append(name)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+    return findings, ran
+
+
+def system_service_findings(manager, tool, unit_folders, package_unit_folders):
+    findings = []
+    package_units = []
+    # With a merged /usr, /lib/systemd/system is the same folder as /usr/lib/systemd/system.
+    package_unit_folders = list({os.path.realpath(folder): folder for folder in package_unit_folders}.values())
+    for folder in package_unit_folders:
+        try:
+            package_units += [str(path) for path in sorted(Path(folder).glob('*.service'))
+                              if path.is_file() and not path.is_symlink()]
+        except OSError:
+            continue
+    for unit in unowned_files(manager, tool, package_units):
+        findings.append(finding('unowned-service', 'A system service was not installed by a package',
+                                f'{unit} is in the folder of installed packages but belongs to none.', unit))
+    programs = unit_programs(list(unit_folders) + list(package_unit_folders))
+    unowned = set(unowned_files(manager, tool, sorted({program for _unit, program in programs
+                                                        if os.path.isfile(program)})))
+    for unit, program in programs:
+        if program.startswith(TEMPORARY) or program.startswith('/home/'):
+            findings.append(finding('service-program', 'A system service runs a program from an unusual folder',
+                                    f'{unit} runs {program} as a system service.', unit))
+        elif program in unowned:
+            findings.append(finding('service-program', 'A system service runs a program not installed by a package',
+                                    f'{unit} runs {program}, which belongs to no installed package. This is normal '
+                                    'for software installed by hand, and unusual otherwise.', unit))
+    return findings
+
+
+def root_main(arguments):
+    """Entry point of the helper that pkexec runs: JSON settings in, JSON result out."""
+    import json
+    settings = json.loads(arguments[0])
+    findings, ran = run_root_checks(settings.get('manager'), settings.get('tools', {}))
+    print(json.dumps({'findings': findings, 'checks': ran}))

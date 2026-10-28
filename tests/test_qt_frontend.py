@@ -1339,6 +1339,26 @@ class QtFrontendTests(unittest.TestCase):
         self.assertIn('found 1 thing to look at', self.window.status.text())
         self.assertIn('System check: A program is running from a temporary folder', self.window.log.toPlainText())
 
+    def test_deeper_system_check_is_offered_and_asks_for_the_password_only_on_request(self):
+        from ui.dialogs import SystemCheckDialog
+        first = {'time': 1, 'checks': ['Hidden programs'], 'findings': []}
+        deep = dict(first, deep=True, checks=['System programs and libraries compared with their packages'])
+        shown = []
+
+        def exec_dialog(dialog):
+            shown.append(dialog.deeper_button is not None)
+            return SystemCheckDialog.DEEPER if dialog.deeper_button is not None else 0
+
+        self.patch('ui.main_window.SystemCheckDialog.exec', new=exec_dialog)
+        self.patch('ui.main_window.deep_system_check_available', return_value=True)
+        deeper = self.patch('ui.main_window.run_deep_system_check', return_value=deep)
+        with patch('ui.main_window.run_system_check', return_value=first):
+            self.window.system_check_button.click()
+            self.wait_idle()
+            self.wait_for(lambda: deeper.called and self.window.operation is None)
+        self.assertEqual(shown, [True, False])  # the deeper result offers no further step
+        deeper.assert_called_once_with()
+
     def test_system_check_without_findings_says_so_plainly(self):
         from ui.dialogs import SystemCheckDialog
         dialog = SystemCheckDialog(self.window, {'time': 1, 'findings': [], 'checks': ['Hidden programs']})
