@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Clearer Firewall page: the state and its buttons in one row, the rules list large
+  enough to show up to eight rules, plain column names with explanations, no column
+  that repeated the same text for every UFW rule, rules without a source or for one
+  network adapter shown in words instead of “See details”, and a page that scrolls
+  in a small window.
+
 - No notification while a download is in progress (“Waiting for a download to
   finish”), so LibreWard does not feel like it watches what people do; the Live
   protection page still shows it. The check still says “Checking…” for large files,

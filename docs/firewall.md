@@ -20,7 +20,17 @@ shows runtime and permanent zones separately when running. nftables and
 iptables show rulesets; rules being present does not establish complete
 network protection.
 
-Select a tool and click **Check protection status** if permission is required.
+The page shows whether protection is on, the buttons to turn it on or off and to
+add a rule, and the rules as a list: action, direction (to this computer is
+incoming, from this computer is outgoing), port or service, and the devices the
+rule is about. Rules without a source or destination, and rules for one network
+adapter, are shown in these words too; only unusual ones say **See details**. The
+list grows to show up to eight rules, and the page scrolls in a small window. For
+firewalld a column shows the zone and whether a rule is saved or for this session.
+The choice of firewall program appears only when more than one was found.
+
+Click **Check protection status** if permission is required (**Check again** once
+the state is known).
 The system polkit dialog authorizes the read operation using pkexec.
 UFW shows status and configured user rules; firewalld shows runtime zones. Reading
 permanent firewalld configuration is part of initial detection and may require

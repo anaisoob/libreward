@@ -193,8 +193,29 @@ def firewall_rule_columns(entry, tool):
         tokens = tokens[:tokens.index('comment')]
     if len(tokens) == 1:
         return action, direction, tokens[0], 'All networks', scope
-    if 'on' in tokens or 'log' in tokens or 'log-all' in tokens:
+    if 'log' in tokens or 'log-all' in tokens or 'app' in tokens or tokens.count('port') > 1:
         return action, direction, 'Custom conditions', 'See details', scope
+
+    def value(word, default='any'):
+        index = tokens.index(word) + 1 if word in tokens else len(tokens)
+        return tokens[index] if index < len(tokens) else default
+
+    if 'from' in tokens or 'to' in tokens or 'on' in tokens:
+        # UFW leaves out "from any" or "to any"; "on" names a network adapter.
+        source, target = value('from'), value('to')
+        network = source if direction == 'To this computer' else target
+        # Destination address constraints remain visible too.
+        if source != 'any' and target != 'any':
+            network = f'{source} → {target}'
+        elif network == 'any':
+            other = target if direction == 'To this computer' else source
+            network = 'All networks' if other == 'any' else f'Address: {other}'
+        if 'on' in tokens:
+            network = f"Network adapter {value('on')}" + ('' if network == 'All networks' else f' · {network}')
+        port = value('port', 'All ports')
+        protocol = value('proto', '').upper()
+        return action, direction, f'{port} {protocol}'.strip(), network, scope
+    return action, direction, 'Custom conditions', 'See details', scope
     if 'from' in tokens and 'to' in tokens:
         source = tokens[tokens.index('from') + 1]
         target = tokens[tokens.index('to') + 1]

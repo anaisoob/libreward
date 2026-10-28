@@ -451,20 +451,22 @@ class QtMainWindow(QMainWindow):
         self.firewall_info = self.label("Checking which firewall is available on your computer…", "muted")
         self.firewall_info.setWordWrap(True)
         box.addWidget(self.firewall_info)
-        row = QHBoxLayout()
+        actions = QHBoxLayout()
+        # Only shown when more than one firewall program was found.
         self.firewall_tools = QComboBox()
         self.firewall_tools.setMinimumHeight(38)
+        self.firewall_tools.setToolTip("Firewall program")
         self.firewall_tools.currentIndexChanged.connect(self.show_firewall_tool)
-        row.addWidget(self.firewall_tools, 1)
-        row.addWidget(self.button("Check protection status", self.authorize_firewall, variant="primary"))
-        box.addLayout(row)
-        actions = QHBoxLayout()
+        self.firewall_tools.hide()
+        actions.addWidget(self.firewall_tools)
         self.firewall_enable_button = self.button("Enable firewall", self.enable_firewall, variant="primary")
         self.firewall_add_button = self.button("Add rule", self.add_firewall_rule)
-        self.firewall_delete_button = self.button('Delete selected rule', self.delete_firewall_rule, variant='danger')
         actions.addWidget(self.firewall_enable_button)
         actions.addWidget(self.firewall_add_button)
         actions.addStretch()
+        self.firewall_check_button = self.button("Check protection status", self.authorize_firewall, variant="primary")
+        self.firewall_check_button.setToolTip("Reads the firewall with administrator rights; may ask for your password")
+        actions.addWidget(self.firewall_check_button)
         box.addLayout(actions)
         self.firewall_management_hint = self.label("Firewall actions will appear after automatic detection.", "muted")
         self.firewall_management_hint.setWordWrap(True)
@@ -472,36 +474,53 @@ class QtMainWindow(QMainWindow):
         self.firewall_change_result = self.label("", "muted")
         self.firewall_change_result.setWordWrap(True)
         box.addWidget(self.firewall_change_result)
-        self.update_firewall_controls()
         layout.addWidget(overview)
         rules, box = self.card()
-        box.addWidget(self.label("CONNECTION RULES", "eyebrow"))
-        self.firewall_rules_help = self.label('Rules decide which connections are allowed or blocked. Checking status does not change your settings.', 'muted')
+        header = QHBoxLayout()
+        header.addWidget(self.label("RULES", "eyebrow"))
+        header.addStretch()
+        self.firewall_delete_button = self.button('Delete selected rule', self.delete_firewall_rule, variant='danger')
+        self.firewall_delete_button.setToolTip('Select a rule in the list first')
+        header.addWidget(self.firewall_delete_button)
+        box.addLayout(header)
+        self.firewall_rules_help = self.label('Rules decide which connections are allowed or blocked. '
+                                              'Checking status does not change your settings.', 'muted')
         self.firewall_rules_help.setWordWrap(True)
         box.addWidget(self.firewall_rules_help)
-        rule_actions = QHBoxLayout()
-        rule_actions.addWidget(self.label('Select a row to delete that rule.', 'muted'))
-        rule_actions.addStretch()
-        rule_actions.addWidget(self.firewall_delete_button)
-        box.addLayout(rule_actions)
-        self.firewall_details_toggle = QCheckBox('Show technical rule details')
-        box.addWidget(self.firewall_details_toggle)
-        self.firewall_rules = QPlainTextEdit()
-        self.firewall_rules.setReadOnly(True)
-        self.firewall_rules.setPlaceholderText("Existing rules and installation instructions will appear here.")
-        self.firewall_rules.hide()
-        self.firewall_details_toggle.toggled.connect(self.firewall_rules.setVisible)
-        self.firewall_rule_list = self.table(['Action', 'Connection', 'App / port', 'Network', 'Applies to'])
+        self.firewall_rule_list = self.table(['Action', 'Direction', 'Port or service', 'From / to', 'Applies to'])
+        directions = ('To this computer: connections other devices start (incoming). '
+                      'From this computer: connections this computer starts (outgoing).')
+        self.firewall_rule_list.horizontalHeaderItem(1).setToolTip(directions)
+        self.firewall_rule_list.horizontalHeaderItem(3).setToolTip(
+            'The devices a rule is about. All networks includes the Internet.')
         self.firewall_rule_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.firewall_rule_list.setMinimumHeight(120)
+        # Short columns take what they need; addresses and ports get the rest.
+        for column in (0, 1):
+            self.firewall_rule_list.horizontalHeader().setSectionResizeMode(
+                column, QHeaderView.ResizeMode.ResizeToContents)
+        self.firewall_rule_list.setMinimumHeight(170)
         self.firewall_rule_list.itemSelectionChanged.connect(self.update_firewall_controls)
         box.addWidget(self.firewall_rule_list, 1)
         self.firewall_empty = self.label('No rules to show yet. Check protection status to load your rules.', 'muted')
         self.firewall_empty.setWordWrap(True)
         box.addWidget(self.firewall_empty)
+        self.firewall_details_toggle = QCheckBox('Show technical rule details')
+        box.addWidget(self.firewall_details_toggle)
+        self.firewall_rules = QPlainTextEdit()
+        self.firewall_rules.setReadOnly(True)
+        self.firewall_rules.setMinimumHeight(220)
+        self.firewall_rules.setPlaceholderText("Existing rules and installation instructions will appear here.")
+        self.firewall_rules.hide()
+        self.firewall_details_toggle.toggled.connect(self.firewall_rules.setVisible)
         box.addWidget(self.firewall_rules, 1)
         layout.addWidget(rules, 1)
-        return page
+        self.update_firewall_controls()
+        # A small window scrolls the page instead of squeezing the rules.
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(page)
+        return scroll
 
     def build_security_page(self):
         from .security_page import SecurityStatusPage
@@ -568,8 +587,9 @@ class QtMainWindow(QMainWindow):
         self.firewall_refresh_pending = False
         self.firewall_snapshot = snapshot
         self.firewall_info.setText(snapshot.instructions if not snapshot.tools else
-                                  'A firewall controls network access to and from your computer. '
-                                  'Checking or changing protected settings may ask for your system password.')
+                                  'The firewall blocks connections from other devices that you did not ask for. '
+                                  'Changing it asks for the administrator password.')
+        self.firewall_tools.setVisible(len(snapshot.tools) > 1)
         self.firewall_tools.blockSignals(True)
         self.firewall_tools.clear()
         self.firewall_tools.addItems([tool.name for tool in snapshot.tools])
@@ -594,6 +614,11 @@ class QtMainWindow(QMainWindow):
         from core.firewall import removable_firewall_rules, firewall_rule_columns
         self.firewall_removals = removable_firewall_rules(tool)
         self.firewall_rule_list.setRowCount(len(self.firewall_removals))
+        # UFW rules all apply the same way; firewalld's differ by zone and session.
+        self.firewall_rule_list.setColumnHidden(4, tool.name != 'firewalld')
+        # Up to eight rules without scrolling inside the list.
+        shown = min(max(len(self.firewall_removals), 3), 8)
+        self.firewall_rule_list.setMinimumHeight(shown * 42 + 64)  # rows, header and frame
         for row, removal in enumerate(self.firewall_removals):
             try:
                 columns = firewall_rule_columns(removal, tool)
@@ -621,12 +646,16 @@ class QtMainWindow(QMainWindow):
         inactive = tool.state in ('Inactive', 'Not running')
         self.firewall_status.setText('Protection is on' if active else
                                      'Protection is off' if inactive else 'Protection status needs checking')
+        # Once the state is known, checking again is no longer the main step.
+        self.firewall_check_button.setText('Check again' if active or inactive else 'Check protection status')
+        self.firewall_check_button.setObjectName('secondaryButton' if active or inactive else 'primaryButton')
+        self.firewall_check_button.style().unpolish(self.firewall_check_button)
+        self.firewall_check_button.style().polish(self.firewall_check_button)
         self.firewall_rules_help.setText(
-            ('This firewall is applying its connection rules. Use “Add rule” to allow or block a specific connection.' if active else
-             'This firewall is not applying its rules. Turn it on to use its network protection.' if inactive else
-             'We could not confirm whether this firewall is protecting your computer. Select “Check protection status”; your system may ask for authorization.')
-            + '\nIncoming means connections to this computer. Outgoing means connections from this computer. '
-            'Home / local network means devices on the selected network. All networks also includes the Internet.')
+            'These rules are in use. Add rule allows or blocks a specific connection.' if active else
+            'These rules are saved but not in use while the firewall is off.' if inactive else
+            'LibreWard could not read whether this firewall is on. Choose Check protection status; '
+            'it may ask for your password.')
         self.firewall_rules.setPlainText(tool.rules)
 
     def selected_firewall_tool(self):
