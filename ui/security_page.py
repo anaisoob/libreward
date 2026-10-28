@@ -94,7 +94,8 @@ class SecurityStatusPage:
         if entry['action']:
             text, key = entry['action']
             button = window.button(text, lambda _checked=False, k=key: self.act(k),
-                                   variant='primary' if entry['severity'] == 'warning' else 'secondary')
+                                   variant='primary' if entry['severity'] == 'warning' else 'secondary',
+                                   track=False)
             line.addWidget(button)
         box.addLayout(line)
         return card

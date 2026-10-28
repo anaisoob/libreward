@@ -417,13 +417,16 @@ class QtMainWindow(QMainWindow):
         layout.setSpacing(12)
         return frame, layout
 
-    def button(self, text, callback, *, scan_action=False, variant="secondary"):
+    def button(self, text, callback, *, scan_action=False, variant="secondary", track=True):
+        """track=False for buttons in content that is rebuilt: a deleted button must not
+        stay in the lists that set_busy enables and disables."""
         button = QPushButton(text)
         button.setObjectName(variant + "Button")
         button.setCursor(Qt.CursorShape.PointingHandCursor)
         button.setMinimumHeight(38)
         button.clicked.connect(callback)
-        (self.scan_actions if scan_action else self.idle_buttons).append(button)
+        if track:
+            (self.scan_actions if scan_action else self.idle_buttons).append(button)
         return button
 
     @staticmethod

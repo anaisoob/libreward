@@ -162,6 +162,18 @@ class QtFrontendTests(unittest.TestCase):
                                   for entry in page.items))
         lock.assert_called_once_with('gnome')
 
+    def test_security_rows_replaced_on_refresh_never_break_later_tasks(self):
+        self.security_facts.update(firewall=False)
+        page = self.window.security_page
+        for _ in range(2):
+            page.refresh()
+            self.security_rows()
+        # The old rows are really deleted, as the running application does.
+        self.app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        self.app.processEvents()
+        self.window.switch_page('firewall')  # starts a task, which disables idle buttons
+        self.wait_idle()
+
     def test_security_status_without_support_says_so(self):
         self.security_facts = None
         self.patch('ui.security_page.backend.security_facts', return_value=None)
