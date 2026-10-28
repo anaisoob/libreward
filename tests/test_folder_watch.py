@@ -105,11 +105,9 @@ class FolderMonitorTests(unittest.TestCase):
             self.assertEqual(sorted(monitor.downloads()), sorted([str(partial), str(chrome)]))
             final = Path(folder) / 'setup.zip'
             partial.rename(final)
-            monitor.finished(str(partial), str(final))
+            monitor.finished(str(partial))
             monitor.changed(str(final), finished=True)
             self.assertEqual(monitor.ready(), [str(final)])  # no 3 second settling
-            self.assertEqual(monitor.came_from(str(final)), str(partial))
-            self.assertIsNone(monitor.came_from(str(final)))
             chrome.unlink()
             self.assertEqual(monitor.downloads(), [])
 
@@ -138,7 +136,6 @@ class FolderMonitorTests(unittest.TestCase):
                     time.sleep(.02)
                 self.assertEqual(found, [str(final)])  # well before the 30 second settling
                 self.assertEqual(monitor.downloads(), [])
-                self.assertEqual(monitor.came_from(str(final)), str(partial))
             finally:
                 monitor.stop()
 

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- No notification while a download is in progress (“Waiting for a download to
+  finish”), so LibreWard does not feel like it watches what people do; the Live
+  protection page still shows it. The check still says “Checking…” for large files,
+  and the result (“No threats found” or a warning) comes as a notification.
+
 - Administrator policy: `/etc/libreward/policy.json`, owned by root, sets protection
   for new files, scheduled scans and database updates for all users and locks them
   in LibreWard (“Set by your administrator”); `"dangerous_files": "quarantine"`

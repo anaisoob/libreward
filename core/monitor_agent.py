@@ -43,10 +43,6 @@ BATCH_SIZE = 64
 MAX_THREATS = 100
 # A check that takes longer than this says "Checking…" while it runs.
 SLOW_CHECK = 2
-# A download that disappeared without being checked (cancelled) loses its
-# "Waiting" notification after this. Firefox moves a download to the folder chosen
-# in its dialog; the browser's download list then finds it well within this time.
-STALE_DOWNLOAD = 30
 MAX_LOG_BYTES = 1024 * 1024
 # Scheduled Quick scans: run when this long has passed since the last one started,
 # so a scan missed while the computer was off runs soon after the next login.
@@ -206,9 +202,6 @@ class MonitorAgent:
         self.scheduled_system_check = None
         self.schedule_not_before = time.monotonic() + SCHEDULE_DELAY
         self.undelivered = []
-        # Downloads announced in a notification, which later shows their result:
-        # partial file -> None while downloading, or when it disappeared.
-        self.announced = {}
         self.notification_lock = threading.Lock()
         previous = read_state()
         self.state = {key: previous[key] for key in
@@ -422,9 +415,10 @@ class MonitorAgent:
         else:
             self.update_state(status='watching',
                               message=f'Monitoring {len(self.settings[0])} folder(s), including subfolders.')
+        # Shown in the window only: a notification for every download in progress
+        # would make LibreWard feel like it watches what people do.
         downloads = monitor.downloads()
         self.update_state(downloading=['a download'] * min(len(downloads), 5))
-        self.announce(downloads)
         self.forget_removed_threats()
         if time.monotonic() < self.retry_at:
             return
@@ -444,38 +438,10 @@ class MonitorAgent:
         if len(present) != len(threats):
             self.update_state(threats=present)
 
-    def announce(self, downloads):
-        """downloads: partial files from FolderMonitor.downloads()."""
-        now = time.monotonic()
-        current = set(downloads)
-        for partial in downloads:
-            if partial not in self.announced and not threats_only(self.config):
-                self.send('LibreWard — download', 'Waiting for a download to finish. '
-                          'LibreWard checks it for viruses right after.', False, replace=f'download:{partial}')
-            self.announced[partial] = None
-        for partial, gone in list(self.announced.items()):
-            if partial not in current and gone is None:
-                self.announced[partial] = now
-            elif gone is not None and now - gone > STALE_DOWNLOAD:
-                del self.announced[partial]
-                self.close_notification(f'download:{partial}')
-
-    def close_vanished_downloads(self):
-        """Firefox renames its temporary partial file; that "Waiting" ends with the result."""
-        for partial, gone in list(self.announced.items()):
-            if gone is not None:
-                del self.announced[partial]
-                self.close_notification(f'download:{partial}')
-
     def scan(self, paths):
         _roots, patterns = self.settings
         self.scanning = paths
-        partial = self.monitor.came_from(paths[0]) if len(paths) == 1 and self.monitor is not None else None
-        if partial is not None and partial in self.announced:
-            del self.announced[partial]
-            key = f'download:{partial}'  # "Checking…" updates the download's "Waiting"
-        else:
-            key = f'check:{paths[0]}'
+        key = f'check:{paths[0]}'
         done = threading.Event()
 
         def slow():
@@ -556,9 +522,8 @@ class MonitorAgent:
         with self.notification_lock:
             done.set()
             # The result is a new notification: GNOME does not reliably show a banner
-            # for an update in place of a "Waiting" or "Checking…" it already showed.
+            # for an update in place of a "Checking…" it already showed.
             self.close_notification(key)
-            self.close_vanished_downloads()
             if dangerous or not threats_only(self.config):
                 self.send(title, message, warning)
         if result.get('infected') and not self.gui_running():

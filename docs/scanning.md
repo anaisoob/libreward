@@ -268,16 +268,16 @@ when both are off.
 
 ### Notifications and dangerous files
 
-A download shows **Waiting for a download to finish** when it starts, and
-**Checking … for viruses** in the same notification if the check takes more than two
-seconds (large files). When the check is done, that notification closes and the
-result comes as a new notification, which the desktop always shows as a banner.
-Other new files get the result only. **Notify me only
-when a dangerous file is found** keeps all but dangerous files quiet.
+A download in progress gets no notification, so LibreWard does not feel like it
+watches what you do; the Live protection page shows it. Once a file is checked, the
+result comes as a notification (“No threats found” and the file name, or a warning),
+which the desktop always shows as a banner. If the check takes more than two
+seconds (large files), **Checking … for viruses** appears first and closes when the
+result comes. **Notify me only when a dangerous file is found** keeps all but
+dangerous files quiet.
 
 Firefox starts downloading into its default folder while its save dialog is open and
-moves the file once a folder is chosen; the result is shown for the moved file. A
-download that is cancelled loses its notification after half a minute.
+moves the file once a folder is chosen; the result is shown for the moved file.
 
 When a file is dangerous, the notification shows a warning sign and says not to
 open the file. Like the others, it moves to the notification list after a few

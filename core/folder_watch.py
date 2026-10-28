@@ -24,10 +24,8 @@ class FolderMonitor:
         self.excludes = list(excludes)
         self.settle = settle
         self.pending = {}
-        # Unfinished browser downloads (partial file -> when it was last seen), and
-        # finished files with the partial file they came from.
+        # Unfinished browser downloads: partial file -> when it was last seen.
         self.downloading = {}
-        self.completed = {}
         # Why a file is checked, for the agent's log.
         self.reasons = {}
         self.snapshot = {}
@@ -53,7 +51,7 @@ class FolderMonitor:
                     if incomplete_download(event.src_path):
                         suffix = next(s for s in DOWNLOAD_SUFFIXES if event.src_path.lower().endswith(s))
                         final = event.src_path[:-len(suffix)]
-                        monitor.finished(event.src_path, final)
+                        monitor.finished(event.src_path)
                         monitor.changed(final, finished=True)
                     return
                 if event.event_type not in ('created', 'modified', 'moved'):
@@ -72,7 +70,7 @@ class FolderMonitor:
                     monitor.started(destination)
                 elif renamed_partial:
                     # The browser renamed its partial file: the download is complete.
-                    monitor.finished(event.src_path, destination)
+                    monitor.finished(event.src_path)
                     monitor.changed(destination, finished=True)
                 else:
                     monitor.changed(destination)
@@ -134,23 +132,14 @@ class FolderMonitor:
             with self.lock:
                 self.downloading[partial] = time.monotonic()
 
-    def finished(self, partial, final=None):
+    def finished(self, partial):
         partial = os.path.abspath(partial)
         with self.lock:
             self.downloading.pop(partial, None)
-            if final is not None:
-                self.completed[os.path.abspath(final)] = partial
-                while len(self.completed) > 256:
-                    self.completed.pop(next(iter(self.completed)))
 
     def reason(self, path):
         with self.lock:
             return self.reasons.pop(os.path.abspath(path), 'new or changed file')
-
-    def came_from(self, final):
-        """The partial file a finished download had, once; None for other files."""
-        with self.lock:
-            return self.completed.pop(os.path.abspath(final), None)
 
     def downloads(self):
         """Partial files of downloads in progress, oldest first.

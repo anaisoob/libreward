@@ -62,7 +62,6 @@ class MonitorAgentTests(unittest.TestCase):
         agent.settings = monitor_settings(agent.config)
         agent.status = self.ready
         agent.monitor = Mock()
-        agent.monitor.came_from.return_value = None  # not a browser download
 
         def run(service, *_args, **_kwargs):
             service.result = result
@@ -147,23 +146,19 @@ class MonitorAgentTests(unittest.TestCase):
         self.open_application.assert_not_called()
         self.notify.assert_called_once()
 
-    def test_one_notification_follows_a_download_from_waiting_to_result(self):
+    def test_downloads_get_no_waiting_notification_only_checking_and_the_result(self):
         path = str(self.watched / 'setup.zip')
         clean = {'infected': [], 'infected_found': False, 'errors': False, 'warnings': False,
                  'stopped': False, 'scanned': 1}
         agent, scan = self.scanning_agent(clean)
-        partial = path + '.part'
-        firefox_temporary = str(self.watched / 'Xq7Lp2.part')
-        agent.announce([partial, firefox_temporary])
-        agent.announce([partial, firefox_temporary])  # once per download
-        messages = [call.args[1] for call in self.notify.call_args_list]
-        self.assertEqual(len(messages), 2)
-        # Browsers use temporary, sometimes random names: none are shown while waiting.
-        self.assertTrue(all(message.startswith('Waiting for a download to finish.') for message in messages))
-        self.assertEqual(self.notify.call_args_list[0].kwargs['replace'], f'download:{partial}')
-        agent.announce([partial])  # Firefox renamed its temporary file
-        agent.monitor.came_from.return_value = partial
-        self.notify.reset_mock()
+        agent.monitor.downloads.return_value = [path + '.part']
+        agent.monitor.ready.return_value = []
+        agent.monitor.error = None
+        agent.monitor.thread.is_alive.return_value = True
+        with patch('core.monitor_agent.is_update_locked', return_value=False):
+            agent.scan_ready()
+        self.notify.assert_not_called()  # a download in progress is shown in the window only
+        self.assertEqual(read_state()['downloading'], ['a download'])
 
         def slow_run(service, *_args, **_kwargs):
             time.sleep(.3)
@@ -174,13 +169,10 @@ class MonitorAgentTests(unittest.TestCase):
             agent.scan([path])
         titles = [call.args[0] for call in self.notify.call_args_list]
         self.assertEqual(titles, ['LibreWard — checking', 'LibreWard — new files checked'])
-        # "Checking…" updates the "Waiting"; the result is a new notification that
-        # GNOME shows, and the download's notification and the vanished temporary one close.
-        self.assertEqual([call.kwargs['replace'] for call in self.notify.call_args_list],
-                         [f'download:{partial}', None])
-        self.assertEqual({call.args[0] for call in self.close_notification.call_args_list},
-                         {f'download:{partial}', f'download:{firefox_temporary}'})
-        agent.monitor.came_from.return_value = None
+        # The result is a new notification that GNOME shows; "Checking…" closes.
+        self.assertEqual([call.kwargs['replace'] for call in self.notify.call_args_list], [f'check:{path}', None])
+        self.close_notification.assert_called_with(f'check:{path}')
+        self.assertIn('No threats found', self.notify.call_args.args[1])
         with scan:  # quick checks say nothing until the result
             self.notify.reset_mock()
             agent.scan([str(self.watched / 'small.txt')])
@@ -191,15 +183,12 @@ class MonitorAgentTests(unittest.TestCase):
         agent, scan = self.scanning_agent({'infected': [], 'infected_found': False, 'errors': False,
                                            'warnings': False, 'stopped': False, 'scanned': 1})
         agent.config['notify_threats_only'] = True
-        agent.monitor.came_from.return_value = None
-        agent.announce([path + '.part'])
         with scan:
             agent.scan([path])
         self.notify.assert_not_called()
         agent, scan = self.scanning_agent({'infected': [(path, 'Eicar FOUND')], 'infected_found': True,
                                            'errors': False, 'warnings': False, 'stopped': False, 'scanned': 1})
         agent.config['notify_threats_only'] = True
-        agent.monitor.came_from.return_value = None
         with scan:
             agent.scan([path])
         self.assertEqual(self.notify.call_args.args[0], '⚠ LibreWard — dangerous file found')
@@ -264,20 +253,6 @@ class MonitorAgentTests(unittest.TestCase):
                                     {'path': str(self.watched / 'deleted.com'), 'threat': 'B FOUND', 'time': 2}])
         agent.forget_removed_threats()
         self.assertEqual([entry['path'] for entry in read_state()['threats']], [str(kept)])
-
-    def test_cancelled_download_loses_its_waiting_notification(self):
-        agent = self.agent()
-        agent.config = {}
-        with patch('core.monitor_agent.time.monotonic', return_value=100):
-            agent.announce(['/d/setup.zip.part'])
-            agent.announce([])  # gone: cancelled, or moved to a folder chosen in Firefox
-        with patch('core.monitor_agent.time.monotonic', return_value=110):
-            agent.announce([])
-        self.close_notification.assert_not_called()  # the download list may still find it
-        with patch('core.monitor_agent.time.monotonic', return_value=100 + monitor_agent.STALE_DOWNLOAD + 1):
-            agent.announce([])
-        self.close_notification.assert_called_once_with('download:/d/setup.zip.part')
-        self.assertEqual(agent.announced, {})
 
     def test_each_check_is_logged_with_its_reason(self):
         agent, scan = self.scanning_agent({'infected': [], 'errors': False, 'warnings': False,
