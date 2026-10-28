@@ -22,6 +22,7 @@ from core.db_manager import (
     run_freshclam_update,
 )
 from core.dependencies import missing_components, missing_message
+from core.policy import policy_signature
 from core.runtime import check_startup, is_update_locked
 from core.scan_service import ScanService, scan_outcome
 from excludes import get_active_exclude_patterns
@@ -179,7 +180,7 @@ class MonitorAgent:
         self.log = log or _log
         self.stopped = threading.Event()
         self.config = {}
-        self.config_mtime = None
+        self.config_signature = None
         self.config_checked = float('-inf')
         self.settings = None
         self.discovered = []
@@ -254,7 +255,7 @@ class MonitorAgent:
 
     def reload(self):
         """Read the settings again at the next check (SIGHUP)."""
-        self.config_mtime = None
+        self.config_signature = None
         self.config_checked = float('-inf')
 
     def _loop(self):
@@ -337,12 +338,14 @@ class MonitorAgent:
             mtime = CONFIG_FILE.stat().st_mtime_ns
         except OSError:
             mtime = None
-        if mtime is not None and mtime == self.config_mtime:
+        # An administrator's policy changes the settings too.
+        signature = (mtime, policy_signature())
+        if signature == self.config_signature:
             return
         config = load_config()
         if config is None and mtime is not None:
             return  # unreadable right now: keep the previous settings and try again
-        self.config_mtime = mtime
+        self.config_signature = signature
         self.config = config if isinstance(config, dict) else {}
 
     # ── watching ────────────────────────────────────────────────────

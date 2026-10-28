@@ -19,6 +19,7 @@ from config import load_config, save_config
 from core.authorization import AuthorizationError
 from core.constants import APP_NAME, APP_VERSION, CLAMAV_HOMEPAGE, CLAMAV_SOURCE
 from core.monitor_agent import monitoring_enabled, read_state
+from core.policy import load_policy
 from core.db_manager import (
     auto_update_due, database_summary, last_update_attempt, own_database_needs_refresh, run_freshclam_update,
 )
@@ -60,6 +61,8 @@ class QtMainWindow(QMainWindow):
         self.privileged_terminal_commands = ''
         config = load_config()
         self.config = config if isinstance(config, dict) else {}
+        # Settings an administrator set for all users; their controls are locked.
+        self.policy = load_policy()
         self.idle_buttons = []
         self.scan_actions = []
         self.last_result = None
@@ -182,7 +185,8 @@ class QtMainWindow(QMainWindow):
         self.threat_found = {path: found for path, _threat, found in threats}
         # Set for the question and the confirmation that may follow: status updates
         # meanwhile must not ask about the same files a second time.
-        self.threat_dialog = ThreatsFoundDialog(self, [(path, threat) for path, threat, _found in threats])
+        self.threat_dialog = ThreatsFoundDialog(self, [(path, threat) for path, threat, _found in threats],
+                                                keep=self.policy['dangerous_files'] != 'quarantine')
         answered = False
         try:
             self.switch_page('scan')
@@ -913,7 +917,10 @@ class QtMainWindow(QMainWindow):
         self.quarantine_table = self.table(["Original file", "Threat", "Quarantined at", "Size"])
         box.addWidget(self.quarantine_table, 1)
         row = QHBoxLayout()
-        row.addWidget(self.button("Restore selected", self.restore_selected, variant="primary"))
+        restore = self.button("Restore selected", self.restore_selected, variant="primary")
+        # An administrator can decide that dangerous files never come back.
+        restore.setVisible(self.policy['dangerous_files'] != 'quarantine')
+        row.addWidget(restore)
         row.addWidget(self.button("Delete selected", self.delete_quarantine_selected, variant="danger"))
         row.addStretch()
         row.addWidget(self.button("Refresh", self.refresh_state))
@@ -949,6 +956,9 @@ class QtMainWindow(QMainWindow):
         box.addLayout(row)
         self.auto_update_database = QCheckBox('Update the virus database automatically')
         self.auto_update_database.setChecked(self.config.get('auto_update_database', True))
+        if 'auto_update_database' in self.policy['settings']:
+            self.auto_update_database.setEnabled(False)
+            self.auto_update_database.setToolTip('Set by your administrator.')
         box.addWidget(self.auto_update_database)
         self.parallel_scan = QCheckBox("Parallel scanning (use clamd when available)")
         self.parallel_scan.setChecked(self.config.get("parallel_scanning", True))
@@ -1530,7 +1540,7 @@ class QtMainWindow(QMainWindow):
         return [self.quarantine_table.item(row, 0).data(Qt.ItemDataRole.UserRole) for row in self.selected_rows(self.quarantine_table)]
 
     def restore_selected(self):
-        if self.operation is not None:
+        if self.operation is not None or self.policy['dangerous_files'] == 'quarantine':
             return
         items = self.selected_quarantine_items()
         if not items or not self.confirm("Restore files", f"Restore {len(items)} selected file(s) to their original locations? Restore only files you trust. Existing files will not be overwritten."):

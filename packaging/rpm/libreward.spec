@@ -9,6 +9,7 @@ Source0:        %{url}/archive/v%{version}/%{name}-%{version}.tar.gz
 BuildArch:      noarch
 BuildRequires:  make
 BuildRequires:  python3
+BuildRequires:  systemd-rpm-macros
 Requires:       python3
 # Generated Python provides work on Fedora (python3-pyside6) and openSUSE (python3XX-pyside6).
 Requires:       python3dist(pyside6)
@@ -51,6 +52,7 @@ fi
 %{_metainfodir}/io.github.anaisoob.LibreWard.metainfo.xml
 %{_datadir}/icons/hicolor/scalable/apps/libreward.svg
 %{_datadir}/icons/hicolor/256x256/apps/libreward.png
+%{_userunitdir}/libreward-monitor.service
 
 %changelog
 * Tue Oct 13 2026 anaisoob <anaisoob@tutamail.com> - 0.3.0-1

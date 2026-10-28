@@ -15,13 +15,18 @@ CONFIG_FILE = backend.config_dir() / "config.json"
 
 
 def load_config() -> dict | None:
-    """Load config from disk. Returns dict or None if file missing/corrupt."""
+    """Load config from disk, with an administrator's policy applied.
+
+    Returns None if the file is corrupt, or missing while no policy applies.
+    """
+    from core.policy import apply_policy
     try:
         if not CONFIG_FILE.exists():
-            return None
-        return json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+            return apply_policy(None)
+        config = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
     except Exception:
         return None
+    return apply_policy(config) if isinstance(config, dict) else config
 
 
 def save_config(data: dict) -> None:

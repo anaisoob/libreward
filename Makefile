@@ -12,6 +12,7 @@ PYTHON ?= /usr/bin/python3
 BINDIR = $(PREFIX)/bin
 APPDIR = $(PREFIX)/share/libreward
 DATADIR = $(PREFIX)/share
+USERUNITDIR = $(PREFIX)/lib/systemd/user
 
 MODULES = main.py config.py scanner.py excludes.py
 PACKAGES = backends core ui
@@ -39,6 +40,10 @@ install:
 		$(DESTDIR)$(DATADIR)/metainfo/io.github.anaisoob.LibreWard.metainfo.xml
 	install -Dm 644 assets/icons/libreward.svg $(DESTDIR)$(DATADIR)/icons/hicolor/scalable/apps/libreward.svg
 	install -Dm 644 assets/icons/libreward-256.png $(DESTDIR)$(DATADIR)/icons/hicolor/256x256/apps/libreward.png
+	install -d $(DESTDIR)$(USERUNITDIR)
+	sed -e 's|@BINDIR@|$(BINDIR)|g' packaging/libreward-monitor.service.in \
+		> $(DESTDIR)$(USERUNITDIR)/libreward-monitor.service
+	chmod 644 $(DESTDIR)$(USERUNITDIR)/libreward-monitor.service
 	$(PYTHON) -m compileall -q -d $(APPDIR) $(DESTDIR)$(APPDIR)
 
 # Package scripts run system_cleanup.py on removal; `make uninstall` does the same
@@ -49,7 +54,8 @@ uninstall:
 	rm -f $(DESTDIR)$(BINDIR)/libreward $(DESTDIR)$(DATADIR)/applications/libreward.desktop \
 		$(DESTDIR)$(DATADIR)/metainfo/io.github.anaisoob.LibreWard.metainfo.xml \
 		$(DESTDIR)$(DATADIR)/icons/hicolor/scalable/apps/libreward.svg \
-		$(DESTDIR)$(DATADIR)/icons/hicolor/256x256/apps/libreward.png
+		$(DESTDIR)$(DATADIR)/icons/hicolor/256x256/apps/libreward.png \
+		$(DESTDIR)$(USERUNITDIR)/libreward-monitor.service
 
 test:
 	QT_QPA_PLATFORM=offscreen $(PYTHON) -m unittest discover -s tests

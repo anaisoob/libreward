@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Administrator policy: `/etc/libreward/policy.json`, owned by root, sets protection
+  for new files, scheduled scans and database updates for all users and locks them
+  in LibreWard (“Set by your administrator”); `"dangerous_files": "quarantine"`
+  removes Keep file and restoring from quarantine. The background service reads a
+  changed policy at once. Packages install the service for all users
+  (`/usr/lib/systemd/user`), enabled with `systemctl --global enable`. See
+  docs/administration.md.
+
 - Security status, the new first page (Linux): system updates, firewall, Internet
   protection, protection for new files, virus scanning, programs reachable from
   other computers, screen lock, disk encryption and administrator account, in plain

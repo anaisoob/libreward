@@ -1,0 +1,24 @@
+# LibreWard's background service for every user, installed but not enabled.
+# An administrator enables it for all users with:
+#   systemctl --global enable libreward-monitor.service
+# It exits at once for users who use neither protection for new files nor
+# scheduled scans. LibreWard writes the same unit to ~/.config/systemd/user
+# when a user turns protection on; that copy takes precedence for that user.
+[Unit]
+Description=LibreWard folder monitoring
+Documentation=https://github.com/anaisoob/libreward
+ConditionPathExists=@BINDIR@/libreward
+
+[Service]
+Type=exec
+ExecStart=@BINDIR@/libreward --monitor
+Restart=on-failure
+RestartSec=30
+RestartPreventExitStatus=78
+# Background scans give way to what the user is doing.
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+
+[Install]
+WantedBy=default.target

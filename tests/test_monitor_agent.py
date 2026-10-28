@@ -408,6 +408,18 @@ class MonitorAgentTests(unittest.TestCase):
             agent.check_status()
         self.assertIs(read_state()['notifications'], False)
 
+    def test_a_changed_policy_is_read_without_a_settings_change(self):
+        self.save(scheduled_scan='off')
+        agent = self.agent()
+        signature = [None]
+        with patch('core.monitor_agent.policy_signature', side_effect=lambda: signature[0]):
+            agent.reload_config()
+            self.assertEqual(agent.config['scheduled_scan'], 'off')
+            signature[0] = (1, 2)
+            with patch('core.monitor_agent.load_config', return_value={'scheduled_scan': 'weekly'}):
+                agent.reload_config()
+        self.assertEqual(agent.config['scheduled_scan'], 'weekly')
+
     def test_unreadable_settings_keep_the_previous_ones(self):
         self.save(watch_folders_enabled=True, watched_folders=[str(self.watched)])
         agent = self.agent()

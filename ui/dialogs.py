@@ -126,7 +126,8 @@ class ThreatsFoundDialog(QDialog):
     DELETE = 3
     KEEP = 4
 
-    def __init__(self, parent, threats):
+    def __init__(self, parent, threats, *, keep=True):
+        """keep=False: an administrator decided that dangerous files are never kept."""
         super().__init__(parent)
         self.threats = []
         self.setObjectName('dangerDialog')
@@ -163,13 +164,16 @@ class ThreatsFoundDialog(QDialog):
         self.files.setSpacing(8)
         body.addLayout(self.files)
         note = QLabel('Quarantine moves it to a safe place where it cannot do harm. '
-                      'If it was a mistake, you can restore it later from Quarantine.')
+                      + ('If it was a mistake, you can restore it later from Quarantine.' if keep else
+                         'Your administrator decided that dangerous files are not kept.'))
         note.setObjectName('muted')
         note.setWordWrap(True)
         body.addWidget(note)
         buttons = QDialogButtonBox()
-        keep = buttons.addButton('Keep file', QDialogButtonBox.ButtonRole.RejectRole)
-        keep.clicked.connect(lambda: self.done(self.KEEP))
+        self.keep_button = None
+        if keep:
+            self.keep_button = buttons.addButton('Keep file', QDialogButtonBox.ButtonRole.RejectRole)
+            self.keep_button.clicked.connect(lambda: self.done(self.KEEP))
         delete = buttons.addButton('Delete', QDialogButtonBox.ButtonRole.DestructiveRole)
         delete.setObjectName('dangerButton')
         delete.clicked.connect(lambda: self.done(self.DELETE))

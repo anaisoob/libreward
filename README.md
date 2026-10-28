@@ -19,6 +19,9 @@ ClamAV, Linux firewall management and Linux domain blocking.
 - Security status (Linux): the first page shows in plain words whether updates,
   firewall, website and download protection, virus scanning and the screen lock are
   in order, with a button to fix each part.
+- Administrator policy (Linux): `/etc/libreward/policy.json` sets protection for all
+  users of a children's or an organisation's computer, and LibreWard shows those
+  settings as set by the administrator.
 - Folder scans and Quick system scans with configurable exclusions.
 - Live protection: one switch checks new downloads (system and browser Downloads
   folders) for viruses in the background, also when the window is closed, with

@@ -189,6 +189,10 @@ class PlatformBackend(ABC):
         """(findings, names of the checks that ran) for signs of a hidden intruder; None when unsupported."""
         return None
 
+    def policy_file(self):
+        """The administrator's settings for all users (core/policy.py); None when unsupported."""
+        return None
+
     def security_facts(self):
         """Facts for the Security status page (see core/security_status.py); None when unsupported."""
         return None

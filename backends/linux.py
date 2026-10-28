@@ -604,6 +604,9 @@ class LinuxBackend(PlatformBackend):
 
     PACKAGE_DATABASES = {'dnf': 'rpm', 'yum': 'rpm', 'zypper': 'rpm', 'apt': 'dpkg', 'pacman': 'pacman'}
 
+    def policy_file(self):
+        return Path('/etc/libreward/policy.json')
+
     def security_facts(self):
         from . import linux_security
         manager = self.distro_info().get('pkg_manager')
@@ -1423,8 +1426,11 @@ class LinuxBackend(PlatformBackend):
             raise OSError((result.stderr or result.stdout).strip()
                           or f'systemctl --user {arguments[0]} failed.')
 
+    GLOBAL_MONITOR_LINK = Path('/etc/systemd/user/default.target.wants') / MONITOR_UNIT
+
     def monitor_service_installed(self):
-        return self.monitor_unit_path().exists()
+        # Also when an administrator enabled the packaged unit for all users.
+        return self.monitor_unit_path().exists() or self.GLOBAL_MONITOR_LINK.exists()
 
     def set_monitor_service(self, enabled):
         path = self.monitor_unit_path()

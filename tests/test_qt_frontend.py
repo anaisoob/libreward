@@ -171,6 +171,51 @@ class QtFrontendTests(unittest.TestCase):
         self.assertEqual(page.items, [])
         self.assertIn('available on Linux', page.summary.text())
 
+    def managed_window(self, managed):
+        """A window started under an administrator's policy."""
+        from ui.main_window import QtMainWindow
+        self.patch('ui.main_window.load_policy', return_value=managed)
+        self.window.close()
+        self.window.deleteLater()
+        self.window = QtMainWindow()
+        self.wait_idle()
+        return self.window
+
+    def test_settings_set_by_an_administrator_cannot_be_changed(self):
+        window = self.managed_window({'settings': {'watch_folders_enabled': True, 'scheduled_scan': 'weekly',
+                                                   'auto_update_database': True}, 'dangerous_files': 'ask'})
+        window.file_protection.refresh()
+        self.assertFalse(window.file_protection.toggle_button.isEnabled())
+        self.assertTrue(window.file_protection.folders_button.isEnabled())
+        self.assertIn('Set by your administrator.', window.file_protection.info.text())
+        self.assertFalse(window.scheduled_scan.choice.isEnabled())
+        self.assertIn('Set by your administrator.', window.scheduled_scan.info.text())
+        self.assertFalse(window.auto_update_database.isEnabled())
+
+    def test_policy_keeps_protection_on_when_the_service_is_missing(self):
+        self.patch('ui.main_window.load_config', return_value={'watch_folders_enabled': True,
+                                                               'watched_folders': ['/home/user/Downloads']})
+        self.service_installed.return_value = False
+        self.monitor_service.reset_mock()
+        window = self.managed_window({'settings': {'watch_folders_enabled': True}, 'dangerous_files': 'ask'})
+        self.wait_for(lambda: self.monitor_service.called)
+        self.monitor_service.assert_called_with(True)  # started, not turned off
+        self.assertTrue(window.config['watch_folders_enabled'])
+
+    def test_dangerous_files_are_never_kept_or_restored_when_an_administrator_says_so(self):
+        from PySide6.QtWidgets import QPushButton
+        from ui.dialogs import ThreatsFoundDialog
+        window = self.managed_window({'settings': {}, 'dangerous_files': 'quarantine'})
+        dialog = ThreatsFoundDialog(window, [('/tmp/x.exe', 'Eicar FOUND')], keep=False)
+        texts = [button.text() for button in dialog.findChildren(QPushButton)]
+        self.assertNotIn('Keep file', texts)
+        self.assertIn('Move to quarantine', texts)
+        restore = [button for button in window.findChildren(QPushButton) if button.text() == 'Restore selected']
+        self.assertTrue(restore and restore[0].isHidden())
+        with patch.object(window, 'quarantine_action') as action:
+            window.restore_selected()
+        action.assert_not_called()
+
     def test_protection_badge_counts_parts_that_are_on(self):
         button = self.window.nav_buttons['internet']
         page = self.window.internet_page

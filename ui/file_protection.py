@@ -88,9 +88,10 @@ class FileProtectionSection:
         self.timer.timeout.connect(self.refresh)
         self.timer.start(30000)
         if (agent_needed(window.config) and not backend.monitor_service_installed()
-                and not backend.monitor_agent_running()):
+                and not backend.monitor_agent_running() and not window.policy['settings']):
             # Removed outside LibreWard, for example by uninstalling: never turn it
-            # back on by itself. The folders are kept for the next Turn on.
+            # back on by itself. The folders are kept for the next Turn on. An
+            # administrator's policy keeps it on instead.
             self.save(watch_folders_enabled=False, scheduled_scan='off')
         self.apply_service()
 
@@ -265,12 +266,18 @@ class FileProtectionSection:
         self.status.setProperty('severity', severity)
         self.status.style().unpolish(self.status)
         self.status.style().polish(self.status)
+        locked = self.window.policy['settings']
+        if locked.keys() & {'watch_folders_enabled', 'watched_folders', 'follow_download_folders',
+                            'notify_threats_only'}:
+            info += '\nSet by your administrator.'
         self.info.setText(info)
         self.toggle_button.setText('Turn off' if enabled else 'Turn on')
         self.toggle_button.setObjectName('secondaryButton' if enabled else 'primaryButton')
         self.toggle_button.style().unpolish(self.toggle_button)
         self.toggle_button.style().polish(self.toggle_button)
-        self.toggle_button.setEnabled(not self.busy)
+        self.toggle_button.setEnabled(not self.busy and 'watch_folders_enabled' not in locked)
+        self.folders_button.setEnabled(not locked.keys() & {'watched_folders', 'follow_download_folders'})
+        self.threats_only.setEnabled('notify_threats_only' not in locked)
         if enabled and follows_browsers(self.window.config):
             # Download folders the agent found in browser settings, also ones chosen later.
             folders = list(dict.fromkeys(folders + [path for path in state.get('discovered_folders') or []

@@ -17,6 +17,7 @@ Flatpak sandbox blocks exactly these operations, and working around it with
 | `/usr/share/applications/libreward.desktop` | Menu entry |
 | `/usr/share/metainfo/io.github.anaisoob.LibreWard.metainfo.xml` | AppStream metadata for GNOME Software and KDE Discover (`packaging/`) |
 | `/usr/share/icons/hicolor/{scalable,256x256}/apps/libreward.*` | Icon |
+| `/usr/lib/systemd/user/libreward-monitor.service` | Background service for all users, not enabled; see [Administration](administration.md) |
 
 The modules live in a private directory instead of site-packages because their
 names (`core`, `ui`, `config`, …) would clash with other packages. LibreWard

@@ -58,6 +58,8 @@ class ScheduledScanSection:
         self.choice.blockSignals(True)
         self.choice.setCurrentIndex(self.choice.findData(self.schedule))
         self.choice.blockSignals(False)
+        managed = 'scheduled_scan' in self.window.policy['settings']
+        self.choice.setEnabled(not managed)
         interval = scheduled_interval(self.window.config)
         error = self.window.file_protection.service_error
         last = last_scheduled_scan(state)
@@ -100,6 +102,8 @@ class ScheduledScanSection:
                 info += f'\nNext scan: {day_and_time(started + interval)}.'
             else:
                 info += '\nThe first scan starts in a few minutes.' if not last else '\nThe next scan starts soon.'
+        if managed:
+            info += '\nSet by your administrator.'
         self.status.setText(status)
         self.status.setProperty('severity', severity)
         self.status.style().unpolish(self.status)
