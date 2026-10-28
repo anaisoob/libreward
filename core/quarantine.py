@@ -1,8 +1,11 @@
 """Quarantine, delete, and restore operations for infected files.
 
-Quarantine moves a detected file into an isolated directory, strips its
-permissions, and records metadata so the file can be restored later
-(e.g. in case of false positive).
+Quarantine moves a detected file into an isolated directory in an encoded,
+unusable form (a header and XOR with a fixed key), strips its permissions,
+and records metadata so the file can be restored later (e.g. in case of a
+false positive). A copy taken out of quarantine by hand cannot be run or
+opened, and other scanners and file indexers do not see the harmful content.
+The encoding neutralises the file; it is not secret, LibreWard is open source.
 
 Deletion is permanent and requires explicit confirmation in the UI layer.
 """
@@ -20,6 +23,12 @@ from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
 
 from backends import backend
+
+# Encoded quarantine files start with this header; files from older versions
+# without it are stored as they were and restored as they are.
+HEADER = b"LibreWard quarantine 1\n"
+KEY = b"LibreWard keeps this file from running or opening."
+CHUNK = 1024 * 1024
 
 
 def list_quarantined_files() -> list[dict]:
@@ -101,9 +110,15 @@ def quarantine_file(original_path: str, threat_name: str) -> str:
         meta_path.unlink(missing_ok=True)
         return f"Cannot quarantine: cannot save restore metadata: {exc}"
 
+    # The encoded copy is complete before the original goes away; any failure
+    # leaves the original where it was and nothing in quarantine.
     try:
-        shutil.move(str(src), str(dest))
+        meta["sha256"] = _encode_into(src, dest)
+        meta["encoded"] = True
+        meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+        src.unlink()
     except OSError as exc:
+        dest.unlink(missing_ok=True)
         meta_path.unlink(missing_ok=True)
         return f"Cannot quarantine: {exc}"
 
@@ -174,6 +189,8 @@ def restore_file(quarantine_name: str, *, overwrite: bool = False) -> str:
     if original.exists() and overwrite and not original.is_file():
         return f"Cannot overwrite non-file path: {original}"
 
+    if _is_encoded(qpath):
+        return _restore_encoded(qpath, meta_path, meta, original, mode)
     try:
         if original.exists() and overwrite:
             original.unlink()
@@ -182,6 +199,27 @@ def restore_file(quarantine_name: str, *, overwrite: bool = False) -> str:
         meta_path.unlink(missing_ok=True)
         return f"Restored: {original}"
     except (OSError, PermissionError) as exc:
+        return f"Cannot restore: {exc}"
+
+
+def _restore_encoded(qpath, meta_path, meta, original, mode):
+    """Decode next to the original location, check it, then put it in place."""
+    temporary = original.with_name(f".{original.name}.libreward-restore")
+    try:
+        temporary.unlink(missing_ok=True)  # left by an interrupted earlier attempt
+        digest = _decode_into(qpath, temporary)
+        expected = meta.get("sha256")
+        if isinstance(expected, str) and digest != expected:
+            temporary.unlink(missing_ok=True)
+            return f"Cannot restore: the quarantined copy of {original.name} is damaged"
+        os.chmod(temporary, mode & 0o777)  # do not restore special privilege bits
+        os.replace(temporary, original)
+        os.chmod(qpath, stat.S_IRUSR | stat.S_IWUSR)
+        qpath.unlink()
+        meta_path.unlink(missing_ok=True)
+        return f"Restored: {original}"
+    except (OSError, PermissionError) as exc:
+        temporary.unlink(missing_ok=True)
         return f"Cannot restore: {exc}"
 
 
@@ -245,6 +283,58 @@ def open_file_location(file_path: str) -> str:
 def _safe_name(filename: str) -> str:
     """Replace path-separator-like characters in a filename."""
     return filename.replace("/", "_").replace("\\", "_")
+
+
+def _xor(data: bytes, offset: int) -> bytes:
+    """XOR with KEY, continuing at `offset` bytes into the payload."""
+    key = KEY[offset % len(KEY):] + KEY[:offset % len(KEY)]
+    repeated = (key * (len(data) // len(key) + 1))[:len(data)]
+    return (int.from_bytes(data, "big") ^ int.from_bytes(repeated, "big")).to_bytes(len(data), "big")
+
+
+def _open_regular(path: Path):
+    """Open for reading without following a symlink swapped in after the checks."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    return os.fdopen(os.open(path, flags), "rb")
+
+
+def _encode_into(src: Path, dest: Path) -> str:
+    """Write the encoded copy of `src` to `dest`; returns the SHA256 of the original."""
+    digest = hashlib.sha256()
+    offset = 0
+    with _open_regular(src) as source, open(dest, "xb") as target:
+        target.write(HEADER)
+        while chunk := source.read(CHUNK):
+            digest.update(chunk)
+            target.write(_xor(chunk, offset))
+            offset += len(chunk)
+        target.flush()
+        os.fsync(target.fileno())
+    return digest.hexdigest()
+
+
+def _is_encoded(path: Path) -> bool:
+    try:
+        with open(path, "rb") as stream:
+            return stream.read(len(HEADER)) == HEADER
+    except OSError:
+        return False
+
+
+def _decode_into(qpath: Path, target_path: Path) -> str:
+    """Write the original contents to `target_path`; returns their SHA256."""
+    digest = hashlib.sha256()
+    offset = 0
+    with open(qpath, "rb") as source, open(target_path, "xb") as target:
+        source.read(len(HEADER))
+        while chunk := source.read(CHUNK):
+            data = _xor(chunk, offset)
+            digest.update(data)
+            target.write(data)
+            offset += len(chunk)
+        target.flush()
+        os.fsync(target.fileno())
+    return digest.hexdigest()
 
 
 def _strip_permissions(path: Path) -> None:

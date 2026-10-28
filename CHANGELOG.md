@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Quarantined files are stored encoded: a copy taken out of the quarantine folder by
+  hand cannot be run or opened, and other scanners and indexers do not see the
+  harmful contents. Restoring checks the SHA256 recorded at quarantine time and never
+  restores a damaged copy; the original is removed only after the encoded copy is
+  complete. Files quarantined by earlier versions are restored as before.
+
 - Clearer Firewall page: the state and its buttons in one row, the rules list large
   enough to show up to eight rules, plain column names with explanations, no column
   that repeated the same text for every UFW rule, rules without a source or for one

@@ -75,6 +75,9 @@ reads a changed policy within seconds.
 
 ## Limits
 
+Quarantined files are stored encoded in each user's quarantine, so a file copied
+out of it by hand cannot be run or opened, even though the user owns it.
+
 A user can still stop programs that run under their own account, for example
 `systemctl --user stop libreward-monitor.service` in a terminal. The policy keeps
 LibreWard's own settings on and starts the service again at the next login, which

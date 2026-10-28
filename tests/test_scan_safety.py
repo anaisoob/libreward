@@ -199,13 +199,50 @@ class QuarantineSafetyTests(unittest.TestCase):
         self.assertTrue(quarantine.quarantine_file(str(original), 'Test').startswith('Quarantined:'))
         self.assertEqual(len(quarantine.list_quarantined_files()), 1)
 
-    def test_move_failure_cleans_metadata(self):
+    def test_failure_while_writing_or_removing_keeps_the_original(self):
         original = self.root / 'sample'
         original.write_text('dummy')
-        with patch.object(quarantine.shutil, 'move', side_effect=OSError('locked')):
+        with patch.object(quarantine, '_encode_into', side_effect=OSError('disk full')):
             self.assertTrue(quarantine.quarantine_file(str(original), 'Test').startswith('Cannot quarantine:'))
-        self.assertTrue(original.exists())
+        self.assertEqual(original.read_text(), 'dummy')
         self.assertEqual(list(self.qdir.iterdir()), [])
+        with patch.object(Path, 'unlink', side_effect=[OSError('read-only folder'), None, None]):
+            self.assertTrue(quarantine.quarantine_file(str(original), 'Test').startswith('Cannot quarantine:'))
+        self.assertEqual(original.read_text(), 'dummy')
+
+    def test_quarantined_copy_cannot_be_used_and_restores_exactly(self):
+        original = self.root / 'tool.sh'
+        payload = b'#!/bin/sh\necho X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR\n' + bytes(range(256)) * 9000
+        original.write_bytes(payload)
+        self.assertTrue(quarantine.quarantine_file(str(original), 'Test').startswith('Quarantined:'))
+        item = quarantine.list_quarantined_files()[0]
+        stored = Path(item['quarantine_path']).read_bytes()
+        self.assertTrue(stored.startswith(quarantine.HEADER))
+        self.assertNotIn(b'#!/bin/sh', stored)
+        self.assertNotIn(b'EICAR', stored)  # no scanner or indexer sees the harmful content
+        self.assertEqual(len(stored), len(quarantine.HEADER) + len(payload))
+        self.assertTrue(item['encoded'])
+        # An attempt interrupted earlier left its temporary file behind.
+        (self.root / '.tool.sh.libreward-restore').write_bytes(b'partial')
+        self.assertTrue(quarantine.restore_file(item['quarantine_name']).startswith('Restored:'))
+        self.assertEqual(original.read_bytes(), payload)
+        self.assertFalse((self.root / '.tool.sh.libreward-restore').exists())
+
+    def test_a_damaged_quarantined_copy_is_not_restored(self):
+        original = self.root / 'report.pdf'
+        original.write_bytes(b'%PDF-1.7 harmful')
+        quarantine.quarantine_file(str(original), 'Test')
+        item = quarantine.list_quarantined_files()[0]
+        path = Path(item['quarantine_path'])
+        path.chmod(0o600)
+        damaged = bytearray(path.read_bytes())
+        damaged[-1] ^= 1
+        path.write_bytes(bytes(damaged))
+        message = quarantine.restore_file(item['quarantine_name'])
+        self.assertIn('damaged', message)
+        self.assertFalse(original.exists())
+        self.assertTrue(path.exists())  # still in quarantine
+        self.assertEqual([entry.name for entry in self.root.iterdir() if entry.name.startswith('.')], [])
 
     def test_round_trip_preserves_payload_and_permissions(self):
         original = self.root / 'sample'

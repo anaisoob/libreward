@@ -123,6 +123,17 @@ restoration and permanent deletion, retains restore metadata and does not
 overwrite an existing file at the original location. Failed actions remain
 available for retry.
 
+Quarantined files are stored encoded in the user's quarantine folder
+(`~/.local/share/libreward/quarantine`, `%APPDATA%\LibreWard\quarantine`): a
+header and the contents XOR-ed with a fixed key, read-only. A copy taken out by
+hand cannot be run or opened, and other virus scanners, file indexers and thumbnail
+previews do not see the harmful contents. The encoding neutralises the file but is
+not secret: LibreWard is open source. The original is removed only after the
+encoded copy is complete, and restoring decodes next to the original location,
+compares the SHA256 recorded at quarantine time, and only then puts the file in
+place, so a damaged copy is never restored. Files quarantined by earlier versions
+are restored as they are.
+
 ## System check (Linux)
 
 Virus signatures find known malicious files. **System check** on the Virus scan page
