@@ -32,6 +32,14 @@ def auto_update_due(now, last_attempt, last_succeeded=True):
     return now - last_attempt >= (AUTO_UPDATE_INTERVAL if last_succeeded else AUTO_UPDATE_RETRY)
 
 
+def last_update_attempt(config, state):
+    """(time, succeeded) of the newest automatic update by the window or the background service."""
+    attempts = [(config.get('database_auto_update_at'), config.get('database_auto_update_ok', True)),
+                (state.get('database_update_at'), state.get('database_update_ok', True))]
+    attempts = [entry for entry in attempts if isinstance(entry[0], (int, float))]
+    return max(attempts, key=lambda entry: entry[0]) if attempts else (None, True)
+
+
 def own_database_needs_refresh():
     """Automatic updates refresh only LibreWard's own existing database.
 

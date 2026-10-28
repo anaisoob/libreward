@@ -512,6 +512,19 @@ class MonitorAgentTests(unittest.TestCase):
         self.assertIsNone(agent.scheduled_thread)
         self.assertEqual(calls, [])
         self.assertIn('antivirus engine', read_state()['scheduled_scan_waiting'])
+        # A virus database refresh that is running finishes first.
+        agent.status = self.ready
+        refresh = threading.Event()
+        agent.database_thread = threading.Thread(target=refresh.wait, args=(3,))
+        agent.database_thread.start()
+        with scan:
+            agent.run_schedule()
+            self.assertIsNone(agent.scheduled_thread)
+            refresh.set()
+            agent.database_thread.join(3)
+            agent.run_schedule()
+            self.finish(agent)
+        self.assertEqual(len(calls), 1)
 
     def test_scheduled_scan_threat_is_asked_about_like_a_new_file(self):
         path = str(self.watched / 'old.exe')

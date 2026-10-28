@@ -67,8 +67,18 @@ For the virus database LibreWard combines two sources:
 
 While LibreWard is open, it refreshes its own database in the
 background every 12 hours, or 2 hours after an unsuccessful attempt, without a
-window or password and without blocking scans. The time of the last attempt is
-saved, so restarting the app does not contact the ClamAV mirrors more often.
+window or password. The background service (protection for new files or scheduled
+scans) does the same while it runs, and the window then leaves it to the service.
+The time of the last attempt, of the window or the service, is saved, so restarting
+does not contact the ClamAV mirrors more often.
+
+The database only matters when something scans, so nothing refreshes it while
+LibreWard is closed and the background service is off. Instead, a scan started in
+the window with a database that is due for its refresh first shows **Updating the
+virus database before scanning…** and then scans with the new one; this covers a
+scan started right after opening LibreWard. Without a connection the scan runs with
+the current database, and the log says so. A scheduled scan likewise waits for a
+refresh that is running.
 Only an existing own database is refreshed: the first download stays a choice
 in setup, and a current system database is left to the distribution. Manual and
 automatic updates never run at the same time. Turn this off in Settings with

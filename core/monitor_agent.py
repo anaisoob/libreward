@@ -17,6 +17,7 @@ from backends import backend
 from config import CONFIG_FILE, load_config
 from core.db_manager import (
     auto_update_due,
+    last_update_attempt,
     own_database_needs_refresh,
     run_freshclam_update,
 )
@@ -591,6 +592,8 @@ class MonitorAgent:
             self.update_state(scheduled_scan_waiting='Waiting for the antivirus engine and virus database.')
         elif is_update_locked():
             self.update_state(scheduled_scan_waiting='Waiting until ClamAV has been updated.')
+        elif self.database_thread is not None and self.database_thread.is_alive():
+            pass  # scan with the refreshed virus database
         else:
             self.start_scheduled_scan()
 
@@ -684,10 +687,7 @@ class MonitorAgent:
                 or not self.config.get('auto_update_database', True)):
             return
         self.database_checked = time.monotonic()
-        attempts = [(self.config.get('database_auto_update_at'), self.config.get('database_auto_update_ok', True)),
-                    (self.state.get('database_update_at'), self.state.get('database_update_ok', True))]
-        attempts = [entry for entry in attempts if isinstance(entry[0], (int, float))]
-        last, succeeded = max(attempts, key=lambda entry: entry[0]) if attempts else (None, True)
+        last, succeeded = last_update_attempt(self.config, self.state)
         if not auto_update_due(time.time(), last, succeeded) or not own_database_needs_refresh():
             return
         freshclam = status.runtime.freshclam

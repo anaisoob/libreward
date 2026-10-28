@@ -19,7 +19,9 @@ from config import load_config, save_config
 from core.authorization import AuthorizationError
 from core.constants import APP_NAME, APP_VERSION, CLAMAV_HOMEPAGE, CLAMAV_SOURCE
 from core.monitor_agent import monitoring_enabled, read_state
-from core.db_manager import auto_update_due, database_summary, own_database_needs_refresh, run_freshclam_update
+from core.db_manager import (
+    auto_update_due, database_summary, last_update_attempt, own_database_needs_refresh, run_freshclam_update,
+)
 from core.quarantine import (
     delete_file, delete_quarantined_file, list_quarantined_files,
     open_file_location, quarantine_file, restore_file,
@@ -1216,6 +1218,7 @@ class QtMainWindow(QMainWindow):
             if not status.can_scan:
                 self.events.put(("__NEEDS_SETUP__",))
                 return
+            self.refresh_before_scan(status)  # Stop meanwhile ends the scan right at its start
             self.service.run(roots, patterns, status.runtime.clamscan,
                              parallel=self.config.get("parallel_scanning", True))
 
@@ -1255,33 +1258,59 @@ class QtMainWindow(QMainWindow):
 
         self.start_task("database", run_update, title="Update virus database", on_done=self.database_update_finished)
 
+    def database_refresh_due(self, status):
+        """Whether LibreWard's own database is due for its automatic refresh."""
+        return (self.config.get('auto_update_database', True)
+                and status is not None and status.can_update_db
+                and auto_update_due(time.time(), *last_update_attempt(self.config, read_state()))
+                and own_database_needs_refresh()
+                # The background service keeps the database current itself.
+                and not backend.monitor_agent_running())
+
+    def refresh_database(self, freshclam, *, wait):
+        """Run the automatic refresh in this worker thread and report it."""
+        try:
+            result = run_freshclam_update(freshclam, wait=wait)
+            success, pending = bool(result[0]), getattr(result, 'pending', False)
+        except Exception:
+            success, pending = False, False
+        self.events.put(('__DATABASE_AUTO__', success, pending))
+        return success
+
     def maybe_auto_update_database(self):
         """Quietly refresh LibreWard's own database; never asks and never blocks the UI."""
         status = self.startup_status
-        if (not self.config.get('auto_update_database', True) or self.operation == 'database'
+        if (self.operation in ('database', 'scan')  # a scan refreshes first by itself
                 or (self.auto_database_thread and self.auto_database_thread.is_alive())
-                or status is None or not status.can_update_db
-                or not auto_update_due(time.time(), self.config.get('database_auto_update_at'),
-                                       self.config.get('database_auto_update_ok', True))
-                or not own_database_needs_refresh()
-                # The background monitoring agent keeps the database current itself.
-                or backend.monitor_agent_running()):
+                or not self.database_refresh_due(status)):
             return False
         freshclam = status.runtime.freshclam
 
         def work():
-            try:
-                result = run_freshclam_update(freshclam, wait=False)
-                success, pending = bool(result[0]), getattr(result, 'pending', False)
-            except Exception:
-                success, pending = False, False
-            self.events.put(('__DATABASE_AUTO__', success, pending))
-            if success:
+            if self.refresh_database(freshclam, wait=False):
                 self.check_runtime(quiet=True)
 
         self.auto_database_thread = threading.Thread(target=work, daemon=True)
         self.auto_database_thread.start()
         return True
+
+    def refresh_before_scan(self, status):
+        """Runs in the scan worker: a scan right after opening LibreWard must not use an old database.
+
+        The window refreshes a minute after it opens, and nothing refreshes while it
+        is closed without the background service; the database only matters when
+        something scans.
+        """
+        thread = self.auto_database_thread
+        refreshing = thread is not None and thread.is_alive()
+        if not refreshing and not self.database_refresh_due(status):
+            return
+        self.events.put(('__STATUS__', 'updating the virus database before scanning…'))
+        if refreshing:
+            thread.join()
+        elif not self.refresh_database(status.runtime.freshclam, wait=True):
+            # Offline, for example: the scan still runs, with the database it has.
+            self.events.put('The virus database could not be updated; scanning with the current one.')
 
     def auto_database_update_finished(self, success, pending):
         if pending:

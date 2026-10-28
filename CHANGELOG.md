@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- A scan started in the window first refreshes LibreWard's own virus database when
+  it is due (“Updating the virus database before scanning…”), so a scan right after
+  opening LibreWard never uses an old database; offline, it scans with the current
+  one. A scheduled scan waits for a refresh that is running. Refresh attempts of the
+  window and the background service count together.
+
 - Quick scan checks what matters and finishes in minutes: temporary folders,
   Downloads and Desktop (also translated folder names), the trash, the folders
   browsers download to, login startup locations, and the programs started at login

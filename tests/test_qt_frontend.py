@@ -1619,6 +1619,59 @@ class QtFrontendTests(unittest.TestCase):
         self.assertNotIn('database_auto_update_at', self.window.config)
         self.assertTrue(self.window.auto_update_database.isChecked())
 
+    def scan_with_database(self, refresh_result=(True, 'updated'), wait=True):
+        """Start a folder scan; returns the order of database refresh and scan."""
+        order = []
+        self.patch('ui.main_window.own_database_needs_refresh', return_value=True)
+        run = self.patch('ui.main_window.run_freshclam_update',
+                         side_effect=lambda *_args, **kwargs: order.append(('refresh', kwargs)) or refresh_result)
+        self.patch('ui.main_window.ScanService.run', autospec=True,
+                   side_effect=lambda *_args, **_kwargs: order.append(('scan', None)))
+        self.window.start_scan([tempfile.gettempdir()])
+        if wait:
+            self.wait_idle()
+        return order, run
+
+    def test_an_outdated_database_is_refreshed_before_a_scan(self):
+        order, _run = self.scan_with_database()
+        self.assertEqual(order, [('refresh', {'wait': True}), ('scan', None)])
+        self.assertTrue(self.window.config['database_auto_update_ok'])
+        # Refreshed just now: the next scan starts at once.
+        order.clear()
+        self.window.start_scan([tempfile.gettempdir()])
+        self.wait_idle()
+        self.assertEqual(order, [('scan', None)])
+
+    def test_scan_runs_with_the_current_database_when_the_refresh_fails(self):
+        order, _run = self.scan_with_database(refresh_result=(False, 'offline'))
+        self.assertEqual([step for step, _kwargs in order], ['refresh', 'scan'])
+        self.assertIn('scanning with the current one', self.window.log.toPlainText())
+
+    def test_scan_leaves_the_refresh_to_the_background_service_or_a_recent_update(self):
+        self.agent_running.return_value = True
+        order, run = self.scan_with_database()
+        self.assertEqual(order, [('scan', None)])
+        self.agent_running.return_value = False
+        # The background service updated it an hour ago, before it was stopped.
+        self.monitor_state.return_value = {'database_update_at': time.time() - 3600, 'database_update_ok': True}
+        self.window.start_scan([tempfile.gettempdir()])
+        self.wait_idle()
+        run.assert_not_called()
+
+    def test_scan_waits_for_a_refresh_that_is_already_running(self):
+        release = threading.Event()
+        self.addCleanup(release.set)
+        self.window.auto_database_thread = threading.Thread(target=lambda: release.wait(3))
+        self.window.auto_database_thread.start()
+        order, run = self.scan_with_database(wait=False)
+        self.wait_for(lambda: 'Updating the virus database' in self.window.summary.text())
+        self.assertEqual(order, [])  # still waiting for the refresh
+        self.assertIn('Updating the virus database before scanning', self.window.summary.text())
+        release.set()
+        self.wait_idle()
+        self.assertEqual(order, [('scan', None)])
+        run.assert_not_called()
+
     def test_scan_report_opens_for_a_result_with_warnings(self):
         from ui.dialogs import ScanReportDialog
         # As produced by ScanService: flags plus separate counts (Fedora quick scan).
