@@ -189,6 +189,18 @@ class PlatformBackend(ABC):
         """(findings, names of the checks that ran) for signs of a hidden intruder; None when unsupported."""
         return None
 
+    def security_facts(self):
+        """Facts for the Security status page (see core/security_status.py); None when unsupported."""
+        return None
+
+    def turn_on_screen_lock(self, desktop):
+        raise OSError('The screen lock cannot be changed on this platform.')
+
+    def open_software_updates(self, command):
+        import subprocess
+        subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+
     def deep_system_check_available(self):
         return False
 

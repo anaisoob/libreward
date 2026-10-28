@@ -151,6 +151,11 @@ def navigation_icon(name, color):
             painter.drawLine(8, 10, 16, 10)
             painter.drawLine(8, 14, 16, 14)
             painter.drawLine(12, 10, 12, 14)
+    elif name == 'security':
+        for y in (6, 12, 18):
+            painter.drawLine(3, y, 5, y + 2)
+            painter.drawLine(5, y + 2, 8, y - 2)
+            painter.drawLine(11, y, 21, y)
     elif name == 'quarantine':
         painter.drawRoundedRect(4, 7, 16, 14, 2, 2)
         painter.drawRoundedRect(3, 3, 18, 4, 1, 1)

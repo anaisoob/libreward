@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Security status, the new first page (Linux): system updates, firewall, Internet
+  protection, protection for new files, virus scanning, programs reachable from
+  other computers, screen lock, disk encryption and administrator account, in plain
+  words with a button to fix each part (open software updates or the right page, or
+  turn on the screen lock). Read as the user, without a password.
+- Fix a delayed status refresh of protection for new files running after the window
+  was closed.
+
 - A .deb with its own PySide6 and watchdog for Ubuntu 22.04 and 24.04, Linux Mint 21
   and 22, and Debian 12 (`make bundled-deb`): the wheels pinned in `uv.lock`,
   hash-checked, reduced to the Qt parts LibreWard uses (about 28 MB).

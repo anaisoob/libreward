@@ -604,6 +604,18 @@ class LinuxBackend(PlatformBackend):
 
     PACKAGE_DATABASES = {'dnf': 'rpm', 'yum': 'rpm', 'zypper': 'rpm', 'apt': 'dpkg', 'pacman': 'pacman'}
 
+    def security_facts(self):
+        from . import linux_security
+        manager = self.distro_info().get('pkg_manager')
+        facts = linux_security.facts(self.PACKAGE_DATABASES.get(manager))
+        facts.update(pkg_manager=manager, port_names=linux_security.PORT_NAMES,
+                     desktop_ports=sorted(linux_security.DESKTOP_PORTS))
+        return facts
+
+    def turn_on_screen_lock(self, desktop):
+        from .linux_security import turn_on_screen_lock
+        turn_on_screen_lock(desktop)
+
     def deep_system_check_available(self):
         return bool(self._trusted_firewall_executable('pkexec') and self._trusted_firewall_executable('python3'))
 

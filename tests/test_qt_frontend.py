@@ -59,6 +59,11 @@ class QtFrontendTests(unittest.TestCase):
         self.addCleanup(self.monitor_directory.cleanup)
         self.patch('ui.file_protection.monitor_dir', return_value=Path(self.monitor_directory.name))
         self.patch('ui.internet_page.backend.internet_protection_state_directory', return_value=None)
+        # Never read the developer's real system settings.
+        self.security_facts = {'automatic_updates': True, 'firewall': True, 'listening_ports': [],
+                               'screen_lock': True, 'desktop': 'gnome', 'disk_encrypted': True,
+                               'administrator': False, 'update_program': ['gnome-software', '--mode=updates']}
+        self.patch('ui.security_page.backend.security_facts', side_effect=lambda: dict(self.security_facts))
         self.window = QtMainWindow()
         self.wait_idle()
 
@@ -117,12 +122,54 @@ class QtFrontendTests(unittest.TestCase):
         self.assertFalse(hasattr(self.window, 'watch_enabled'))  # no longer hidden in Settings
 
     def test_navigation_order_and_quarantine_only_when_needed(self):
-        order = [self.window.nav_buttons[key] for key in ('scan', 'internet', 'quarantine', 'firewall', 'settings')]
+        order = [self.window.nav_buttons[key] for key in ('security', 'scan', 'internet', 'quarantine', 'firewall',
+                                                          'settings')]
         positions = [button.mapTo(self.window, button.rect().topLeft()).y() for button in order]
         self.assertEqual(positions, sorted(positions))
         self.assertTrue(self.window.nav_buttons['quarantine'].isHidden())
         self.window.show_quarantine([])
         self.assertTrue(self.window.nav_buttons['quarantine'].isHidden())
+
+    def security_rows(self):
+        page = self.window.security_page
+        self.wait_for(lambda: not page.checking)
+        return page
+
+    def test_security_status_is_the_first_page_and_fixes_each_part(self):
+        self.assertEqual(self.window.pages.currentIndex(), self.window.page_indices['security'])
+        self.patch('ui.security_page.backend.internet_protection_available', return_value=False)
+        self.security_facts.update(firewall=False, screen_lock=False, automatic_updates=False,
+                                   last_update=time.time() - 40 * 86400)
+        page = self.window.security_page
+        page.refresh()
+        self.security_rows()
+        warnings = [entry['key'] for entry in page.items if entry['severity'] == 'warning']
+        self.assertEqual(warnings, ['updates', 'firewall', 'files', 'screen-lock'])
+        self.assertIn('4 things need your attention', page.summary.text())
+        from PySide6.QtWidgets import QPushButton
+        buttons = {button.text() for button in page.page.findChildren(QPushButton)}
+        self.assertTrue({'Open software updates', 'Open Firewall', 'Turn on', 'Check again'} <= buttons)
+        page.act('firewall')
+        self.assertEqual(self.window.pages.currentIndex(), self.window.page_indices['firewall'])
+        with patch('ui.security_page.backend.open_software_updates') as open_updates:
+            page.act('updates')
+        open_updates.assert_called_once_with(['gnome-software', '--mode=updates'])
+        with patch('ui.security_page.backend.turn_on_screen_lock',
+                   side_effect=lambda _desktop: self.security_facts.update(screen_lock=True)) as lock:
+            page.act('screen-lock')
+            self.wait_for(lambda: lock.called and not page.checking and
+                          not any(entry['key'] == 'screen-lock' and entry['severity'] == 'warning'
+                                  for entry in page.items))
+        lock.assert_called_once_with('gnome')
+
+    def test_security_status_without_support_says_so(self):
+        self.security_facts = None
+        self.patch('ui.security_page.backend.security_facts', return_value=None)
+        page = self.window.security_page
+        page.refresh()
+        self.security_rows()
+        self.assertEqual(page.items, [])
+        self.assertIn('available on Linux', page.summary.text())
 
     def test_protection_badge_counts_parts_that_are_on(self):
         button = self.window.nav_buttons['internet']
@@ -657,7 +704,7 @@ class QtFrontendTests(unittest.TestCase):
         dialog.deleteLater()
 
     def test_startup_populates_sidebar_pages_and_readiness(self):
-        self.assertEqual(self.window.pages.count(), 6)
+        self.assertEqual(self.window.pages.count(), 7)
         self.assertTrue(self.window.scan_button.isEnabled())
         self.assertTrue(self.window.database_button.isEnabled())
         self.assertIn('Database ready', self.window.runtime_info.toPlainText())

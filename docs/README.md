@@ -5,6 +5,7 @@ commands to run the app.
 
 | Guide | Contents |
 | --- | --- |
+| [Security status](security-status.md) | The overview page: updates, firewall, protection, screen lock and more |
 | [Setup](setup.md) | Component checks, installation, updates and data locations |
 | [Firewall](firewall.md) | Linux detection, activation and connection rules |
 | [Internet protection](internet-protection.md) | Linux domain blocking, lists, exceptions and pause |

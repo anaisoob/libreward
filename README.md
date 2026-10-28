@@ -16,6 +16,9 @@ ClamAV, Linux firewall management and Linux domain blocking.
   **Advanced** uses LibreWard's own block lists (dangerous websites, tracking, ads,
   adult websites, social media) and lets you allow or block websites yourself.
   Website lookups are encrypted (DNS-over-TLS).
+- Security status (Linux): the first page shows in plain words whether updates,
+  firewall, website and download protection, virus scanning and the screen lock are
+  in order, with a button to fix each part.
 - Folder scans and Quick system scans with configurable exclusions.
 - Live protection: one switch checks new downloads (system and browser Downloads
   folders) for viruses in the background, also when the window is closed, with

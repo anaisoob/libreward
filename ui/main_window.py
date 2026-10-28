@@ -297,6 +297,7 @@ class QtMainWindow(QMainWindow):
         self.nav_buttons = {}
         self.page_indices = {}
         definitions = [
+            ("security", "Security status", self.build_security_page),
             ("scan", "Virus scan", self.build_scan_page),
             ("internet", "Live protection", self.build_internet_page),
             ("quarantine", "Quarantine", self.build_quarantine_page),
@@ -326,7 +327,7 @@ class QtMainWindow(QMainWindow):
         self.setCentralWidget(shell)
         # Shown once something is in quarantine.
         self.nav_buttons["quarantine"].hide()
-        self.switch_page("scan")
+        self.switch_page("security")
         self.update_exclude_summary()
         self.update_protection_badge()
 
@@ -347,6 +348,8 @@ class QtMainWindow(QMainWindow):
         if key != "quarantine" and not self.quarantine_items and "quarantine" in self.nav_buttons:
             self.nav_buttons["quarantine"].hide()
         self.update_scan_indicator()
+        if key == 'security':
+            self.security_page.refresh()
         if key == 'internet':
             self.internet_page.request_refresh()
         if key == 'firewall' and self.firewall_snapshot is None:
@@ -495,6 +498,11 @@ class QtMainWindow(QMainWindow):
         box.addWidget(self.firewall_rules, 1)
         layout.addWidget(rules, 1)
         return page
+
+    def build_security_page(self):
+        from .security_page import SecurityStatusPage
+        self.security_page = SecurityStatusPage(self)
+        return self.security_page.page
 
     def build_internet_page(self):
         """Live protection: new files, scheduled scans, then websites; all keep working when closed."""
@@ -1607,6 +1615,8 @@ class QtMainWindow(QMainWindow):
                 self.sidebar_status.style().unpolish(self.sidebar_status)
                 self.sidebar_status.style().polish(self.sidebar_status)
                 self.set_status("Ready" if self.startup_status.can_scan else "ClamAV runtime or database needs setup")
+                if self.pages.currentIndex() == self.page_indices['security']:
+                    self.security_page.refresh()  # the antivirus part is known now
             elif kind == "__QUARANTINE__":
                 self.show_quarantine(values[0])
             elif kind == "__NEEDS_SETUP__":

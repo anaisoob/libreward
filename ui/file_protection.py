@@ -199,7 +199,7 @@ class FileProtectionSection:
         if self.enabled and not error:
             self.started_at = time.monotonic()
             # Shows a failed start once "Turning on…" is over.
-            QTimer.singleShot(16000, self.refresh)
+            QTimer.singleShot(16000, self.status, self.refresh)  # cancelled with the window
         if error:
             self.window.log.appendPlainText(f'Live protection: {error}')
         self.refresh()

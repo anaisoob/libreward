@@ -151,8 +151,9 @@ class SystemCheckTests(unittest.TestCase):
     def test_only_local_folders_are_searched_for_special_rights(self):
         data = self.root / 'data with space'
         data.mkdir()
+        escaped = str(data).replace(' ', '\\040')  # /proc/self/mounts writes a space as \040
         mounts = self.write(self.root / 'mounts', '\n'.join([
-            f'/dev/sda1 {self.root} ext4 rw 0 0', f'/dev/sda2 {str(data).replace(" ", "\\040")} btrfs rw 0 0',
+            f'/dev/sda1 {self.root} ext4 rw 0 0', f'/dev/sda2 {escaped} btrfs rw 0 0',
             'proc /proc proc rw 0 0', 'server:/x /mnt/nfs nfs4 rw 0 0', f'/dev/sda1 {self.root / "mounts"} ext4 rw 0 0',
             '/dev/loop0 /snap/core/1 squashfs ro 0 0']))
         self.assertEqual(check.local_mounts(mounts), [str(self.root), str(data)])
