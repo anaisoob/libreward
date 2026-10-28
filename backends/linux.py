@@ -576,9 +576,8 @@ class LinuxBackend(PlatformBackend):
         # Private temporary folders of system services: readable only by root.
         return ['^/(var/)?tmp/systemd-private-[^/]+']
 
-    def autostart_programs(self) -> list[str]:
-        """Programs of this user's autostart entries and systemd user services."""
-        import shlex
+    def autostart_commands(self):
+        """(entry file, command) of this user's autostart entries and systemd user services."""
         config = Path(os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.config')
         commands = []
         for folder, pattern, key in ((config / 'autostart', '*.desktop', 'Exec='),
@@ -592,7 +591,21 @@ class LinuxBackend(PlatformBackend):
                     lines = entry.read_text(encoding='utf-8', errors='replace').splitlines()
                 except OSError:
                     continue
-                commands += [line.strip()[len(key):] for line in lines if line.strip().startswith(key)]
+                commands += [(str(entry), line.strip()[len(key):]) for line in lines if line.strip().startswith(key)]
+        return commands
+
+    def system_check_available(self):
+        return True
+
+    def system_check(self):
+        from .linux_system_check import run_checks
+        config = Path(os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.config')
+        return run_checks(home=Path.home(), config=config, startup_commands=self.autostart_commands())
+
+    def autostart_programs(self) -> list[str]:
+        """Programs of this user's autostart entries and systemd user services."""
+        import shlex
+        commands = [command for _entry, command in self.autostart_commands()]
         files = []
         for command in commands:
             try:

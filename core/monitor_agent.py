@@ -202,6 +202,7 @@ class MonitorAgent:
         self.scheduled_thread = None
         self.scheduled_service = None
         self.scheduled_started = None
+        self.scheduled_system_check = None
         self.schedule_not_before = time.monotonic() + SCHEDULE_DELAY
         self.undelivered = []
         # Downloads announced in a notification, which later shows their result:
@@ -211,7 +212,7 @@ class MonitorAgent:
         previous = read_state()
         self.state = {key: previous[key] for key in
                       ('threats', 'last_scan', 'pending', 'database_update_at', 'database_update_ok',
-                       'scheduled_scan', 'scheduled_scan_error')
+                       'scheduled_scan', 'scheduled_scan_error', 'system_check')
                       if key in previous}
 
     # ── lifecycle ───────────────────────────────────────────────────
@@ -615,8 +616,17 @@ class MonitorAgent:
                 service.run(roots, patterns, clamscan, parallel=parallel)
             except Exception as exc:  # noqa: BLE001 - reported as a scan that did not finish
                 self.log(f'Scheduled scan failed: {exc}')
+                return
+            if not service.stop_requested:
+                # Signs of hidden programs, which virus signatures do not find.
+                from core.system_check import run_system_check
+                try:
+                    self.scheduled_system_check = run_system_check()
+                except Exception as exc:  # noqa: BLE001 - the virus scan result still counts
+                    self.log(f'System check failed: {exc}')
 
         self.scheduled_service = service
+        self.scheduled_system_check = None
         self.scheduled_started = time.time()
         self.update_state(scheduled_scan_running=self.scheduled_started, scheduled_scan_waiting=None)
         self.log(f'Scheduled Quick scan of {len(roots)} folder(s) and file(s) started.')
@@ -648,6 +658,19 @@ class MonitorAgent:
         elif not threats_only(self.config):
             self.send('LibreWard — scheduled scan', f"{outcome}\nChecked: {result.get('scanned', 0)} file(s).",
                       bool(result.get('warnings')))
+        self.report_system_check(self.scheduled_system_check)
+
+    def report_system_check(self, check):
+        if check is None:
+            return
+        from core.system_check import notification
+        findings = check['findings']
+        self.update_state(system_check={'time': check['time'], 'titles': [entry['title'] for entry in findings]})
+        self.log(f'System check: {len(findings)} suspicious finding(s).')
+        for entry in findings:
+            self.log(f"Suspicious: {entry['title']}: {entry['detail']}")
+        if findings:
+            self.send(*notification(check), True)
 
     def stop_scheduled_scan(self):
         if self.scheduled_service is not None:

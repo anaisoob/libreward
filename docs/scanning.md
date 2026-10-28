@@ -123,6 +123,32 @@ restoration and permanent deletion, retains restore metadata and does not
 overwrite an existing file at the original location. Failed actions remain
 available for retry.
 
+## System check (Linux)
+
+Virus signatures find known malicious files. **System check** on the Virus scan page
+looks instead for signs that something is hiding on the computer, as rootkits and
+backdoors do. It runs as your user, needs no password and takes about a second:
+
+| Check | What is suspicious |
+|---|---|
+| Extra libraries forced into every program | `/etc/ld.so.preload` lists a library (normal systems do not use this file) |
+| Extra libraries set in startup files | `LD_PRELOAD` in shell startup files, `~/.config/environment.d`, systemd user services, `/etc/environment` or `/etc/profile.d` |
+| Programs running from temporary folders or only from memory | a process of your user runs from `/tmp`, `/var/tmp` or `/dev/shm` (AppImages excepted), or from memory without a file (`memfd`, container runtimes excepted) |
+| Hidden programs | a process exists but is left out of the `/proc` listing; threads are told apart by their thread group |
+| Hidden kernel modules | a module is loaded (`/sys/module/*/initstate`) but missing from `/proc/modules` |
+| Programs that start by themselves | autostart entries, systemd user services, your crontab and `/etc/crontab`, `/etc/cron.d` that download and run a script (`curl … \| sh`), decode and run commands (`base64 -d \| sh`), or run a program from a temporary folder |
+
+Findings are shown in plain words as things to look at, not as threats: some
+programs do these things on purpose, and LibreWard never changes or deletes
+anything here. Programs that kept running after a package update (`(deleted)`
+executables in system folders) are not reported. A scheduled scan runs the system
+check afterwards; findings come as a warning notification and are listed in the
+service log, and the Scheduled scan card shows the latest result.
+
+The check cannot prove that a computer is clean: a rootkit in the kernel can hide
+from any check that runs on the same system, and processes of other users and
+system files are not checked without administrator rights.
+
 ## Live protection for new files
 
 Open **Live protection** and select **Turn on** under **New files and downloads**.

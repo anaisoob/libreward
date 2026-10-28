@@ -527,3 +527,48 @@ class ScanReportDialog(QDialog):
         self.details.setVisible(not self.details.isVisible())
         self.details_button.setText('Hide details' if self.details.isVisible() else 'Show details')
         self.adjustSize()
+
+
+class SystemCheckDialog(QDialog):
+    """Findings of the system check in plain words; suspicious, so nothing to quarantine."""
+
+    def __init__(self, parent, result):
+        from html import escape
+        from core.system_check import NOTE, summary
+        super().__init__(parent)
+        self.setWindowTitle('System check')
+        self.setMinimumWidth(560)
+        title_text, severity = summary(result)
+        layout = QVBoxLayout(self)
+        title = QLabel(title_text)
+        title.setObjectName('statusValue')
+        title.setProperty('severity', severity)
+        title.setStyleSheet('font-size: 24px;')
+        layout.addWidget(title)
+        if result['findings']:
+            intro = QLabel('These are signs that a program may be hiding on this computer. They are not proof: '
+                           'some programs do these things on purpose. If you do not recognise one, ask someone '
+                           'you trust to check the computer. LibreWard does not change anything.')
+        else:
+            intro = QLabel('No signs of hidden programs were found.')
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+        self.finding_labels = []
+        for entry in result['findings']:
+            label = QLabel(f"<b>{escape(entry['title'])}</b><br>{escape(entry['detail'])}")
+            label.setTextFormat(Qt.TextFormat.RichText)
+            label.setWordWrap(True)
+            label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            layout.addWidget(label)
+            self.finding_labels.append(label)
+        checked = QLabel('Checked: ' + '; '.join(result['checks']) + '.')
+        checked.setObjectName('muted')
+        checked.setWordWrap(True)
+        layout.addWidget(checked)
+        note = QLabel(NOTE)
+        note.setObjectName('muted')
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)

@@ -220,6 +220,10 @@ class QtFrontendTests(unittest.TestCase):
         self.assertEqual(section.status.text(), 'Every week')
         self.assertIn('also when LibreWard is closed', section.info.text())
         self.assertIn('No threats found (1200 files checked)', section.info.text())
+        self.monitor_state.return_value = dict(self.monitor_state.return_value,
+                                               system_check={'time': started, 'titles': ['A running program is hidden']})
+        self.window.file_protection.refresh()
+        self.assertIn('System check: 1 thing to look at', section.info.text())
         self.assertIn('Next scan: ' + time.strftime('%A %d %B', time.localtime(started + 7 * 86400)),
                       section.info.text())
         self.monitor_state.return_value = {'scheduled_scan_running': time.time()}
@@ -1318,6 +1322,29 @@ class QtFrontendTests(unittest.TestCase):
             self.wait_idle()
         self.assertEqual(scanned[0][0], ['/tmp', program.name])  # a single file is a valid target
         self.assertIn('^/tmp/private', scanned[0][1])
+
+    def test_system_check_shows_findings_without_changing_anything(self):
+        from ui.dialogs import SystemCheckDialog
+        result = {'time': 1, 'checks': ['Hidden programs'], 'findings': [
+            {'check': 'temporary-process', 'title': 'A program is running from a temporary folder',
+             'detail': 'kworker (process 103) runs /dev/shm/.x/kworker.', 'where': '/dev/shm/.x/kworker'}]}
+        shown = []
+        self.patch('ui.main_window.SystemCheckDialog.exec', new=lambda dialog: shown.append(dialog) or 0)
+        with patch('ui.main_window.run_system_check', return_value=result):
+            self.window.system_check_button.click()
+            self.wait_idle()
+        self.assertIsInstance(shown[0], SystemCheckDialog)
+        texts = [label.text() for label in shown[0].finding_labels]
+        self.assertIn('/dev/shm/.x/kworker', texts[0])
+        self.assertIn('found 1 thing to look at', self.window.status.text())
+        self.assertIn('System check: A program is running from a temporary folder', self.window.log.toPlainText())
+
+    def test_system_check_without_findings_says_so_plainly(self):
+        from ui.dialogs import SystemCheckDialog
+        dialog = SystemCheckDialog(self.window, {'time': 1, 'findings': [], 'checks': ['Hidden programs']})
+        texts = [label.text() for label in dialog.findChildren(QLabel)]
+        self.assertIn('Nothing suspicious found', texts)
+        self.assertTrue(any('cannot prove' in text for text in texts))
 
     def test_concurrent_operation_cannot_start(self):
         release = threading.Event()

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- System check on Linux (Virus scan page, and after each scheduled scan): looks for
+  signs of hidden programs that virus signatures do not find, such as rootkits and
+  backdoors: `/etc/ld.so.preload`, `LD_PRELOAD` in startup files, programs running
+  from temporary folders or only from memory, processes and kernel modules hidden
+  from their lists, and startup entries or cron jobs that download and run scripts.
+  It runs as the user, takes about a second, and shows findings in plain words
+  without changing anything.
+
 - A scan started in the window first refreshes LibreWard's own virus database when
   it is due (“Updating the virus database before scanning…”), so a scan right after
   opening LibreWard never uses an old database; offline, it scans with the current

@@ -182,6 +182,13 @@ class PlatformBackend(ABC):
         """Existing program files this user's login startup entries run."""
         return []
 
+    def system_check_available(self):
+        return False
+
+    def system_check(self):
+        """(findings, names of the checks that ran) for signs of a hidden intruder; None when unsupported."""
+        return None
+
     @staticmethod
     def command_files(arguments):
         """Absolute paths of existing files in a split command line.

@@ -89,6 +89,12 @@ class ScheduledScanSection:
             if last.get('outcome'):
                 info += (f"\nLast scan on {day_and_time(last.get('time', 0))}: {last['outcome']} "
                          f"({last.get('files', 0)} files checked).")
+            check = state.get('system_check')
+            if isinstance(check, dict) and isinstance(check.get('titles'), list):
+                found = len(check['titles'])
+                info += ('\nSystem check: nothing suspicious found.' if not found else
+                         f'\nSystem check: {found} thing{"s" if found > 1 else ""} to look at. '
+                         'Choose System check on the Virus scan page.')
             started = last.get('started')
             if isinstance(started, (int, float)) and 0 <= time.time() - started < interval:
                 info += f'\nNext scan: {day_and_time(started + interval)}.'

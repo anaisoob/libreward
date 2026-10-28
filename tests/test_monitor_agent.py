@@ -458,6 +458,10 @@ class MonitorAgentTests(unittest.TestCase):
         agent.status = self.ready
         agent.schedule_not_before = 0
         calls = []
+        self.system_check = {'time': 1, 'findings': [], 'checks': ['Hidden programs']}
+        checker = patch('core.system_check.run_system_check', side_effect=lambda: self.system_check)
+        checker.start()
+        self.addCleanup(checker.stop)
 
         def run(service, roots, *_args, **kwargs):
             calls.append((roots, kwargs))
@@ -539,6 +543,22 @@ class MonitorAgentTests(unittest.TestCase):
         self.assertIn('dangerous file found', title)
         self.assertIn('old.exe', message)
         self.open_application.assert_called_once_with('--threats')
+
+    def test_system_check_runs_after_a_scheduled_scan_and_warns_about_findings(self):
+        agent, _calls, scan = self.scheduled_agent({'infected': [], 'errors': False, 'warnings': False,
+                                                    'stopped': False, 'scanned': 5})
+        agent.config['notify_threats_only'] = True  # suspicious findings are still reported
+        self.system_check = {'time': 1, 'checks': ['Hidden programs'], 'findings': [
+            {'check': 'hidden-process', 'title': 'A running program is hidden', 'detail': 'Process 50', 'where': ''}]}
+        with scan, patch('core.quick_scan.quick_scan_targets', return_value=[str(self.watched)]):
+            agent.run_schedule()
+            self.finish(agent)
+        self.assertEqual(read_state()['system_check'], {'time': 1, 'titles': ['A running program is hidden']})
+        title, message = self.notify.call_args.args
+        self.assertIn('something suspicious', title)
+        self.assertIn('A running program is hidden', message)
+        self.assertTrue(self.notify.call_args.kwargs['warning'])
+        self.assertTrue(any('Suspicious: A running program is hidden' in line for line in self.logged))
 
     def test_unfinished_scheduled_scan_is_tried_again_in_an_hour(self):
         agent, calls, scan = self.scheduled_agent({'errors': True, 'stopped': False})

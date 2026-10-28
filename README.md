@@ -21,6 +21,10 @@ ClamAV, Linux firewall management and Linux domain blocking.
   folders) for viruses in the background, also when the window is closed, with
   desktop notifications (GNOME, KDE and others; no tray icon needed). A dangerous
   file opens LibreWard and asks whether to quarantine or delete it.
+- System check on Linux: looks for signs of hidden programs such as rootkits
+  (forced libraries, programs running from temporary folders or only from memory,
+  hidden processes and kernel modules, startup entries that download and run
+  scripts), in plain words and without changing anything.
 - Scheduled scans: a Quick scan every day or every week in the background, also
   when LibreWard is closed; a scan missed while the computer was off runs after login.
 - Parallel scanning with `clamd` and standard scanning with `clamscan`.

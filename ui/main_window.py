@@ -28,9 +28,14 @@ from core.quarantine import (
 )
 from core.runtime import check_startup, setup_components
 from core.scan_service import ScanService, scan_outcome
+from core.system_check import available as system_check_available, run_system_check
+from core.system_check import summary as system_check_summary
 from core.updater import check_for_updates, perform_update
 from excludes import get_active_exclude_patterns, get_common_excludes
-from .dialogs import ClamAVConsentDialog, UpdateProgressDialog, ScanReportDialog, AntivirusSetupDialog, AuthorizationHelpDialog, ThreatsFoundDialog
+from .dialogs import (
+    AntivirusSetupDialog, AuthorizationHelpDialog, ClamAVConsentDialog, ScanReportDialog, SystemCheckDialog,
+    ThreatsFoundDialog, UpdateProgressDialog,
+)
 from .firewall_dialog import FirewallRuleDialog
 from .theme import app_icon, palette, stylesheet, navigation_icon
 from .widgets import ElidedPathLabel, BusyNavigationButton, ProtectionNavigationButton
@@ -761,6 +766,10 @@ class QtMainWindow(QMainWindow):
         self.stop_button.clicked.connect(self.stop_scan)
         actions.addWidget(self.scan_button)
         actions.addWidget(self.quick_button)
+        self.system_check_button = self.button("System check", self.start_system_check)
+        self.system_check_button.setToolTip("Look for signs of hidden programs, such as rootkits")
+        self.system_check_button.setVisible(system_check_available())
+        actions.addWidget(self.system_check_button)
         actions.addWidget(self.stop_button)
         actions.addStretch()
         actions.addWidget(self.button("Clear log", self.log_clear))
@@ -865,6 +874,21 @@ class QtMainWindow(QMainWindow):
         if report.exec() == ScanReportDialog.QUARANTINE_ALL:
             self.results.selectAll()
             self.handle_findings('quarantine')
+
+    def start_system_check(self):
+        if self.start_task('system-check', run_system_check, on_done=self.system_check_finished):
+            self.set_status('Looking for signs of hidden programs…')
+
+    def system_check_finished(self, result):
+        if result is None:
+            return
+        title, severity = system_check_summary(result)
+        self.set_status(title, 'warning' if severity == 'warning' else 'normal')
+        for entry in result['findings']:
+            self.log.appendPlainText(f"System check: {entry['title']}: {entry['detail']}")
+        dialog = SystemCheckDialog(self, result)
+        dialog.exec()
+        dialog.deleteLater()
 
     def build_quarantine_page(self):
         page, layout = self.page("Quarantine", "Review isolated files and restore trusted items to their original locations.")
