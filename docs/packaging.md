@@ -55,11 +55,29 @@ Firewall rules belong to UFW or firewalld and are kept.
 | openSUSE Tumbleweed, Leap 16 | OBS, RPM | `python3XX-pyside6` (via `python3dist(pyside6)`) |
 | Debian 13 (trixie) and newer | OBS, deb (`packaging/debian/`) | `python3-pyside6.*` 6.8 |
 | Ubuntu 25.10 and newer | OBS, deb | `python3-pyside6.*` |
-| **Ubuntu 24.04 LTS, Linux Mint 22** | **not yet** | **not packaged** |
+| Ubuntu 22.04 and 24.04 LTS, Linux Mint 21 and 22, Debian 12 | deb with its own PySide6 (`packaging/bundled/`) | not packaged; included |
 
-Ubuntu 24.04 and Mint 22 have no PySide6 packages. Supporting them needs a deb
-that bundles the PySide6 wheel (architecture-specific, roughly 200 MB), or a
-backport in a PPA.
+### Package with its own PySide6
+
+Ubuntu 24.04, Mint 22 and Debian 12 have no PySide6 packages. `make bundled-deb`
+(or `python3 packaging/bundled/build-deb.py --arch amd64|arm64`) builds
+`dist/libreward_<version>_<arch>.deb` that includes PySide6 and watchdog:
+
+- The wheels are the ones pinned in `uv.lock`, downloaded from their recorded URLs
+  and checked against their SHA256 hashes. PySide6 wheels are `abi3`, so they work
+  with the system's Python 3.10 or newer; x86_64 needs glibc 2.34 (Ubuntu 22.04,
+  Debian 12), arm64 glibc 2.39 (Ubuntu 24.04).
+- They are unpacked into `/usr/share/libreward/vendor`, which `main.py` adds to the
+  module path after the application folder. Root helpers never import it.
+- Only QtCore, QtGui, QtWidgets and QtNetwork are kept; Qt Quick, QML, Designer and
+  the developer tools are removed, then every library or plugin that needs a removed
+  part (checked with `ldd`). The build fails if the X11, Wayland or offscreen
+  platform plugins, SVG icons or the four modules are gone. The package is about
+  28 MB (120 MB installed).
+- `Depends` lists the system libraries Qt needs (X11/xcb, Wayland, EGL, fontconfig,
+  D-Bus), and `prerm` is the same as in the Debian package.
+
+The build needs Python 3.11+, `make` and `dpkg-deb`, and no root, debhelper or pip.
 
 ## Release
 

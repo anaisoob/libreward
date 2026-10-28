@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """Launch the LibreWard Qt desktop application."""
 import argparse
+import os
 import sys
+
+# The package for systems without PySide6 carries it here (packaging/bundled).
+VENDOR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vendor")
+if os.path.isdir(VENDOR):
+    sys.path.insert(1, VENDOR)
 
 
 def main():

@@ -16,7 +16,7 @@ DATADIR = $(PREFIX)/share
 MODULES = main.py config.py scanner.py excludes.py
 PACKAGES = backends core ui
 
-.PHONY: all install uninstall test
+.PHONY: all install uninstall test bundled-deb
 
 all:
 
@@ -53,3 +53,7 @@ uninstall:
 
 test:
 	QT_QPA_PLATFORM=offscreen $(PYTHON) -m unittest discover -s tests
+
+# A .deb with its own PySide6 for Ubuntu 22.04/24.04, Mint 21/22 and Debian 12.
+bundled-deb:
+	$(PYTHON) packaging/bundled/build-deb.py --arch $(or $(ARCH),amd64)

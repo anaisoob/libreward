@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- A .deb with its own PySide6 and watchdog for Ubuntu 22.04 and 24.04, Linux Mint 21
+  and 22, and Debian 12 (`make bundled-deb`): the wheels pinned in `uv.lock`,
+  hash-checked, reduced to the Qt parts LibreWard uses (about 28 MB).
+
 - System check: **Check deeper…** runs it with administrator rights (polkit, a few
   minutes): system programs and libraries compared with their packages (`rpm -Va`,
   `dpkg --verify`, `pacman -Qkk`), SUID/SGID programs and system services that belong

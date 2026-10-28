@@ -83,6 +83,26 @@ class InstallLayoutTests(unittest.TestCase):
         self.assertIn('pre_remove() {\n  /usr/bin/' + command + 'true', arch)
         self.assertNotIn('post_upgrade', arch)
 
+    def test_bundled_deb_uses_the_pinned_wheels_of_each_architecture(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('build_deb', ROOT / 'packaging/bundled/build-deb.py')
+        build = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(build)
+        for machine in build.MACHINES.values():
+            wheels = build.pinned_wheels(machine)
+            self.assertEqual(len(wheels), len(build.WHEELS))
+            for name, url, digest in wheels:
+                self.assertTrue(name.endswith(f'{machine}.whl') and 'manylinux' in name, name)
+                self.assertTrue(url.startswith('https://') and len(digest) == 64)
+        control = build.control(build.package_version(), 'amd64', 1000)
+        self.assertIn('libxcb-cursor0', control)
+        self.assertIn('python3 (>= 3.10)', control)
+        self.assertNotIn('python3-pyside6', control)
+
+    def test_launcher_finds_bundled_modules_after_the_application(self):
+        main = (ROOT / 'main.py').read_text()
+        self.assertIn('sys.path.insert(1, VENDOR)', main)  # 0 is the application folder
+
     def test_package_versions_match(self):
         import re
         versions = {

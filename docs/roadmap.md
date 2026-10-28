@@ -33,11 +33,20 @@ Planned work that has been discussed but is not implemented yet.
 
 - An openSUSE Build Service project building Fedora, openSUSE, Debian and Ubuntu
   packages with update repositories.
-- A Debian package with its own PySide6 for Ubuntu 24.04 LTS and Linux Mint 22,
-  which have no PySide6 packages.
 - A download page with one package per system that also adds the update
   repository, so updates arrive with normal system updates.
 - A Windows installer that includes the ClamAV runtime.
+
+## Windows
+
+Windows has Microsoft Defender, which checks files before they open and detects
+more than ClamAV. LibreWard does not compete with it there:
+
+- Test and fix the basics on a real Windows: ClamAV runtime setup, database
+  updates, folder and Quick scans. The background service, notifications and the
+  threat question were developed on GNOME and are only covered by tests on Windows.
+- Then focus on **Internet protection** for Windows (blocking dangerous websites,
+  trackers and ads), which Defender does not offer in this form.
 
 ## Interface
 
