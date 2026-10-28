@@ -15,6 +15,13 @@ Planned work that has been discussed but is not implemented yet.
 
 ## Protection
 
+- **System service and system quarantine for administrator-managed computers.**
+  Today each user's quarantine is `~/.local/share/libreward/quarantine`: files are
+  renamed and made read-only and not executable, but they belong to the user, who
+  can still copy one out by hand even when the policy hides Restore. A root service
+  that checks files and moves threats to a quarantine only root can read (for
+  example `/var/lib/libreward/quarantine`) would make the policy complete, and is
+  the same service that on-access blocking below needs.
 
 - **Block opening a file until it is checked (on-access scanning).** ClamAV's
   `clamonacc` uses the kernel's fanotify interface to hold `open()` on a file until
