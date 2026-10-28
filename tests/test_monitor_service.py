@@ -93,7 +93,7 @@ class RemovalTests(unittest.TestCase):
             (units / 'default.target.wants' / MONITOR_UNIT).symlink_to(unit)
             other = units / 'other.service'
             other.write_text('[Unit]\n')
-            with patch('pwd.getpwnam', return_value=Mock(pw_dir=home)), \
+            with patch('pwd.getpwnam', return_value=Mock(pw_dir=home, pw_uid=os.getuid())), \
                     patch('backends.linux.shutil.which', return_value='/usr/bin/systemctl'), \
                     patch('backends.linux.subprocess.run') as run:
                 self.assertIn('Removed', remove_user_monitor_service('anaisoob'))
@@ -104,10 +104,24 @@ class RemovalTests(unittest.TestCase):
             self.assertEqual(commands[0], ['/usr/bin/systemctl', '--user', '--machine=anaisoob@.host',
                                            'disable', '--now', MONITOR_UNIT])
             self.assertEqual(commands[1][-1], 'daemon-reload')
-            with patch('pwd.getpwnam', return_value=Mock(pw_dir=home)):
+            with patch('pwd.getpwnam', return_value=Mock(pw_dir=home, pw_uid=os.getuid())):
                 self.assertIsNone(remove_user_monitor_service('anaisoob'))  # nothing left
         with patch('pwd.getpwnam', side_effect=KeyError('nobody')):
             self.assertIsNone(remove_user_monitor_service('missing'))
+
+    def test_uninstall_never_deletes_through_a_link_in_the_users_home(self):
+        from backends.linux import remove_user_monitor_service
+        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as elsewhere:
+            target = Path(elsewhere) / MONITOR_UNIT  # for example a file in /etc
+            target.write_text('[Unit]\n')
+            (Path(home) / '.config/systemd').mkdir(parents=True)
+            (Path(home) / '.config/systemd/user').symlink_to(elsewhere)
+            with patch('pwd.getpwnam', return_value=Mock(pw_dir=home, pw_uid=os.getuid())), \
+                    patch('backends.linux.subprocess.run') as run:
+                message = remove_user_monitor_service('anaisoob')
+            self.assertIn('Did not remove', message)
+            self.assertTrue(target.exists())
+            run.assert_not_called()
 
     def test_cleanup_script_finds_the_user_behind_sudo_or_pkexec(self):
         import importlib.util

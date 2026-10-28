@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Security fixes:
+  - Windows: the ClamAV update manifest could name any download address and any
+    program to run as a check (also outside the runtime folder). Downloads now come
+    only from official ClamAV releases over HTTPS, the folder inside the ZIP must be
+    a plain name, and the runtime is checked with fixed commands.
+  - Linux: another user of the computer could start a fake ClamAV daemon on
+    `/tmp/clamd.socket` or `127.0.0.1:3310`; LibreWard sent it the contents of files
+    and trusted its “clean” answer. Only daemons of root or a system account are
+    used now.
+  - Linux: the socket through which a second start reaches the open window was in
+    `/tmp` under a predictable name; another user could take it and keep LibreWard
+    from opening, also to ask about a dangerous file. It is now in the user's
+    private runtime folder (`$XDG_RUNTIME_DIR`) or LibreWard's data folder.
+  - Package removal, as root, no longer deletes the user's background service file
+    when a folder on the way is a link or not the user's own.
+
 - Quarantined files are stored encoded: a copy taken out of the quarantine folder by
   hand cannot be run or opened, and other scanners and indexers do not see the
   harmful contents. Restoring checks the SHA256 recorded at quarantine time and never

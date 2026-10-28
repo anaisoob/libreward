@@ -106,7 +106,12 @@ You can suppress the prompt and reopen setup from Settings later.
 
 Managed installation downloads the complete official portable ZIP, verifies
 SHA256, validates extraction paths and runtime executables, and installs with
-rollback. Engine installation is confirmed before download. After installation,
+rollback. The update manifest can only point to official ClamAV releases
+(`https://github.com/Cisco-Talos/clamav/releases/download/…`), must name a
+SHA256 checksum and a plain folder inside the ZIP, and the runtime is checked with
+fixed commands (`clamscan.exe --version`, `freshclam.exe --version`), never with
+commands from the manifest; whoever could change the manifest still cannot run
+programs on users' computers. Engine installation is confirmed before download. After installation,
 LibreWard starts database updating; scanning remains blocked until a database
 is available.
 

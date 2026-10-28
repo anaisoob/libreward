@@ -30,6 +30,11 @@ and restore metadata. Restored files outside quarantine are scanned normally.
 Parallel scanning is enabled by default in Settings. LibreWard probes local
 ClamD sockets and loopback ports, including common platform configuration
 locations. It reuses a responding daemon without stopping or reconfiguring it.
+On Linux it uses only a daemon that another user of the computer cannot have
+started in its place, because files are sent to it and its verdict is trusted: a
+socket in a folder that only root or a system account (such as `clamav`) can write,
+or a local port that root or a system account listens on. `/tmp/clamd.socket` and
+a port opened by an ordinary user are ignored.
 If none responds, it attempts to start an installed `clamd` from the detected
 runtime or PATH with a temporary configuration and the detected database.
 If startup fails or the executable is absent, the log explains the fallback

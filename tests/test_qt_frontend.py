@@ -703,6 +703,19 @@ class QtFrontendTests(unittest.TestCase):
         send.assert_called_once_with('LibreWard — notification test', 'Desktop notifications are working.')
         self.assertIn('sudo dnf install libnotify', section.notification_status.text())
 
+    def test_the_instance_socket_is_in_a_folder_only_this_user_can_use(self):
+        from ui.main_window import instance_server_name
+        with tempfile.TemporaryDirectory() as runtime:
+            os.chmod(runtime, 0o700)
+            with patch.dict(os.environ, {'XDG_RUNTIME_DIR': runtime}):
+                self.assertEqual(instance_server_name(), os.path.join(runtime, 'libreward-instance'))
+            os.chmod(runtime, 0o1777)  # shared like /tmp: not used
+            data = Path(runtime) / 'data'
+            with patch.dict(os.environ, {'XDG_RUNTIME_DIR': runtime}), \
+                    patch('ui.main_window.backend.data_dir', return_value=data):
+                self.assertEqual(instance_server_name(), str(data / 'instance.sock'))
+        self.assertFalse(instance_server_name().startswith('/tmp/libreward'))
+
     def test_second_launch_brings_window_forward_with_the_activation_token(self):
         from PySide6.QtNetwork import QLocalServer
         from ui.main_window import listen_for_instances, show_running_instance

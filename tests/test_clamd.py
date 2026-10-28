@@ -1,4 +1,5 @@
 """Exercise real socket framing, parallel work, cancellation and ownership."""
+import os
 import socketserver
 import struct
 import tempfile
@@ -229,3 +230,33 @@ class ClamdTests(unittest.TestCase):
         self.assertFalse(service.result['errors'])
         self.assertTrue(any('Using clamscan' in event for event in service.output_queue.queue
                             if isinstance(event, str)))
+
+
+class TrustedEndpointTests(unittest.TestCase):
+    """Files go only to a daemon that another user cannot have started in its place."""
+
+    def test_sockets_in_folders_anyone_can_write_are_not_used(self):
+        from backends.linux import trusted_clamd_endpoint
+        self.assertFalse(trusted_clamd_endpoint(('unix', '/tmp/clamd.socket')))
+        self.assertTrue(trusted_clamd_endpoint(('unix', '/usr/bin/clamd.sock')))  # root's folder
+        with tempfile.TemporaryDirectory() as folder:  # a person's own folder
+            self.assertFalse(trusted_clamd_endpoint(('unix', os.path.join(folder, 'clamd.sock'))))
+        self.assertFalse(trusted_clamd_endpoint(('unix', '/does/not/exist/clamd.sock')))
+
+    def test_ports_count_only_when_root_or_a_system_account_listens(self):
+        import socket
+        from backends.linux import trusted_clamd_endpoint
+        listener = socket.socket()
+        self.addCleanup(listener.close)
+        listener.bind(('127.0.0.1', 0))
+        listener.listen()
+        port = listener.getsockname()[1]
+        if os.getuid() >= 1000:
+            self.assertFalse(trusted_clamd_endpoint(('tcp', ('127.0.0.1', port))))  # this person's program
+        with tempfile.TemporaryDirectory() as proc:
+            os.makedirs(os.path.join(proc, 'net'))
+            with open(os.path.join(proc, 'net', 'tcp'), 'w') as table:
+                table.write('  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid\n'
+                            f'   0: 0100007F:{port:04X} 00000000:0000 0A 00000000:00000000 00:00000000 00000000   990\n')
+            self.assertTrue(trusted_clamd_endpoint(('tcp', ('127.0.0.1', port)), proc))  # clamav
+            self.assertFalse(trusted_clamd_endpoint(('tcp', ('127.0.0.1', port + 1)), proc))  # nobody listens

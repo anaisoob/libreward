@@ -1807,13 +1807,30 @@ class QtMainWindow(QMainWindow):
 
 
 def instance_server_name():
-    """Per-user name: a second launch shows the running window instead."""
-    import getpass
+    """Where a second launch finds the running window, private to this user.
+
+    Qt puts a plain name in /tmp on Linux, where another user of the computer could
+    take it first and keep LibreWard from opening, also to ask about a dangerous
+    file. A path in the user's own runtime or data folder cannot be taken.
+    """
+    if os.name == 'nt':
+        import getpass
+        try:
+            user = getpass.getuser()
+        except (KeyError, OSError):
+            user = 'user'
+        return f'libreward-{user}'
+    runtime = os.environ.get('XDG_RUNTIME_DIR')
     try:
-        user = getpass.getuser()
-    except (KeyError, OSError):  # no user name in containers without passwd entries
-        user = str(os.getuid()) if hasattr(os, 'getuid') else 'user'
-    return f'libreward-{user}'
+        info = os.stat(runtime) if runtime else None
+    except OSError:
+        info = None
+    # A Unix socket path has at most 107 characters.
+    if info is not None and info.st_uid == os.getuid() and not info.st_mode & 0o077 and len(runtime) < 80:
+        return os.path.join(runtime, 'libreward-instance')
+    folder = backend.data_dir()
+    folder.mkdir(parents=True, exist_ok=True)
+    return str(folder / 'instance.sock')
 
 
 def show_running_instance(name, request):

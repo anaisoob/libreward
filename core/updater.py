@@ -44,6 +44,28 @@ from core.runtime import (
 # fetch fails, and as a reference for local-only offline mode.
 _LOCAL_MANIFEST_PATH = Path(__file__).resolve().parent.parent / "updates" / "clamav-runtime-windows.json"
 
+# The manifest is fetched from the LibreWard repository; whoever could change it
+# must not be able to run programs on users' computers. Downloads come only from
+# official ClamAV releases, and the runtime is checked with fixed commands.
+OFFICIAL_DOWNLOADS = "https://github.com/Cisco-Talos/clamav/releases/download/"
+VALIDATION_COMMANDS = ("clamscan.exe --version", "freshclam.exe --version")
+
+
+def _unsafe_entry(platform_entry: dict) -> str | None:
+    """Why a manifest entry cannot be used, or None when it is safe."""
+    import re
+    download = platform_entry.get("download")
+    if not isinstance(download, dict):
+        return "Manifest entry has no download information."
+    url = download.get("url")
+    if not isinstance(url, str) or not url.startswith(OFFICIAL_DOWNLOADS) or ".." in url or "\\" in url:
+        return "The update manifest points to a download that is not an official ClamAV release."
+    if not re.fullmatch(r"[0-9a-fA-F]{64}", str(download.get("sha256", ""))):
+        return "The update manifest has no valid SHA256 checksum."
+    if not re.fullmatch(r"(?:[A-Za-z0-9][A-Za-z0-9._-]*)?", str(download.get("extract_dir", ""))):
+        return "The update manifest names an unsafe folder inside the download."
+    return None
+
 
 # ── manifest handling ───────────────────────────────────────────────
 
@@ -273,6 +295,8 @@ def _validate_runtime(runtime_dir: Path, validation_commands: list[str]) -> None
         parts = cmd_str.split()
         exe_name = parts[0]
         exe_args = parts[1:]
+        if PureWindowsPath(exe_name).name != exe_name or Path(exe_name).name != exe_name:
+            raise RuntimeError(f"Validation failed: {exe_name!r} is not a program of the runtime")
         exe_path = runtime_dir / exe_name
 
         if not exe_path.is_file():
@@ -429,13 +453,16 @@ def perform_update(
             "Automatic ClamAV runtime updates are not supported on this platform.\n"
             "ClamAV updates are handled by your system's package manager."
         )
+    problem = _unsafe_entry(platform_entry)
+    if problem:
+        return RuntimeError(problem)
     download_info = platform_entry.get("download", {})
     url = download_info.get("url")
     expected_sha256 = download_info.get("sha256", "").lower()
     extract_dir = download_info.get("extract_dir", "")
     runtime_root_mode = download_info.get("runtime_root_mode", "contents-of-extract-dir")
-    validation = platform_entry.get("validation", {})
-    validation_commands = validation.get("commands", [])
+    # Never commands from the manifest: they could run any program.
+    validation_commands = list(VALIDATION_COMMANDS)
 
     if not url:
         return RuntimeError("Manifest missing download URL.")

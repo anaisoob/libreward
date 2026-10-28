@@ -58,6 +58,42 @@ SYSTEM_DATABASE = Path('/var/lib/clamav')
 SYSTEM_DATABASE_MAX_AGE = 3 * 24 * 3600
 
 
+# Accounts below this are root and system accounts (clamav, clamscan); others are people.
+SYSTEM_UID_LIMIT = 1000
+
+
+def listening_uid(port, proc='/proc'):
+    """Owner of the TCP socket listening on `port` on this computer, or None."""
+    for name in ('tcp', 'tcp6'):
+        try:
+            lines = (Path(proc) / 'net' / name).read_text().splitlines()[1:]
+        except OSError:
+            continue
+        for line in lines:
+            fields = line.split()
+            if len(fields) > 7 and fields[3] == '0A' and int(fields[1].rsplit(':', 1)[1], 16) == port:
+                return int(fields[7])
+    return None
+
+
+def trusted_clamd_endpoint(endpoint, proc='/proc'):
+    """A daemon that another user of this computer cannot have started in its place.
+
+    Anyone may create /tmp/clamd.socket or listen on 127.0.0.1:3310; LibreWard would
+    send them the user's files and trust their "clean" answer.
+    """
+    import stat
+    kind, address = endpoint
+    if kind == 'unix':
+        try:
+            folder = os.stat(os.path.dirname(address))
+        except OSError:
+            return False
+        return folder.st_uid < SYSTEM_UID_LIMIT and not folder.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+    owner = listening_uid(address[1], proc)
+    return owner is not None and owner < SYSTEM_UID_LIMIT
+
+
 def remove_user_monitor_service(user):
     """Run as root on removal: stop and delete one user's folder monitoring service.
 
@@ -65,11 +101,21 @@ def remove_user_monitor_service(user):
     """
     import pwd
     try:
-        home = Path(pwd.getpwnam(user).pw_dir)
+        account = pwd.getpwnam(user)
     except KeyError:
         return None
+    home = Path(account.pw_dir)
     units = home / '.config' / 'systemd' / 'user'
     unit = units / MONITOR_UNIT
+    # Root deletes here: a folder on the way that is a link, or not the user's own,
+    # could point the deletion somewhere else.
+    for folder in (home / '.config', home / '.config' / 'systemd', units):
+        try:
+            info = folder.lstat()
+        except OSError:
+            return None
+        if folder.is_symlink() or info.st_uid != account.pw_uid:
+            return f'Did not remove the LibreWard service of {user}: {folder} is not a plain folder of that user.'
     if not unit.exists():
         return None
     systemctl = shutil.which('systemctl')
@@ -299,9 +345,9 @@ class LinuxBackend(PlatformBackend):
         return entries
 
     def clamd_endpoints(self):
+        """Running system daemons only: files are sent to them and their verdict trusted."""
         endpoints = [("unix", path) for path in (
-            "/run/clamav/clamd.ctl", "/run/clamd.scan/clamd.sock",
-            "/run/clamd/clamd.sock", "/tmp/clamd.socket")]
+            "/run/clamav/clamd.ctl", "/run/clamd.scan/clamd.sock", "/run/clamd/clamd.sock")]
         for config in (Path('/etc/clamav/clamd.conf'), Path('/etc/clamd.d/scan.conf')):
             try:
                 for line in config.read_text().splitlines():
@@ -314,7 +360,7 @@ class LinuxBackend(PlatformBackend):
                             endpoints.insert(0, ('tcp', ('127.0.0.1', port)))
             except (OSError, ValueError, UnicodeError):
                 pass
-        return endpoints + super().clamd_endpoints()
+        return [endpoint for endpoint in endpoints + super().clamd_endpoints() if trusted_clamd_endpoint(endpoint)]
 
     def clamd_listen_config(self, work_dir):
         path = str(work_dir / 'clamd.sock')
