@@ -34,7 +34,7 @@ domains with a local DNS filter in front of NetworkManager or systemd-resolved.
 # Pure Python; byte-compiled during installation.
 
 %install
-%make_install PREFIX=%{_prefix} PYTHON=%{__python3}
+%make_install PREFIX=%{_prefix} LIBEXECDIR=%{_libexecdir} PYTHON=%{__python3}
 
 %preun
 # Removal only ($1 is 0), not upgrades: turn Internet protection off and remove
@@ -53,6 +53,8 @@ fi
 %{_datadir}/icons/hicolor/scalable/apps/libreward.svg
 %{_datadir}/icons/hicolor/256x256/apps/libreward.png
 %{_userunitdir}/libreward-monitor.service
+%{_libexecdir}/libreward/
+%{_datadir}/polkit-1/actions/io.github.anaisoob.LibreWard.policy
 
 %changelog
 * Tue Oct 13 2026 anaisoob <anaisoob@tutamail.com> - 0.3.0-1

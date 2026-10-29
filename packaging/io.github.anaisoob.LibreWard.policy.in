@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!-- What LibreWard asks administrator rights for. pkexec chooses the action by
+     the program it starts; installed by `make install`. Administrators can
+     change who may do what with polkit rules in /etc/polkit-1/rules.d. -->
+<policyconfig>
+  <vendor>LibreWard</vendor>
+  <vendor_url>https://github.com/anaisoob/libreward</vendor_url>
+  <icon_name>libreward</icon_name>
+
+  <action id="io.github.anaisoob.LibreWard.system-check">
+    <description>Check the system for signs of tampering</description>
+    <message>LibreWard wants to check system files, system services and programs with special permissions. Nothing is changed.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">@HELPERDIR@/system-check</annotate>
+  </action>
+
+  <action id="io.github.anaisoob.LibreWard.internet-protection">
+    <description>Turn Internet protection on or off</description>
+    <message>LibreWard wants to change Internet protection: the local filter that blocks dangerous and unwanted websites for everyone on this computer.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">@HELPERDIR@/internet-protection</annotate>
+  </action>
+
+  <action id="io.github.anaisoob.LibreWard.firewall-read">
+    <description>Read the firewall rules</description>
+    <message>LibreWard wants to read the firewall rules. Nothing is changed.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">@HELPERDIR@/firewall-read</annotate>
+  </action>
+
+  <action id="io.github.anaisoob.LibreWard.firewall-change">
+    <description>Change the firewall</description>
+    <message>LibreWard wants to change the firewall: turn it on or off, or add or remove a rule.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">@HELPERDIR@/firewall-change</annotate>
+  </action>
+</policyconfig>

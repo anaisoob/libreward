@@ -668,26 +668,35 @@ class LinuxBackend(PlatformBackend):
     def deep_system_check_available(self):
         return bool(self._trusted_firewall_executable('pkexec') and self._trusted_firewall_executable('python3'))
 
-    def deep_system_check(self):
-        """The system check as root, through pkexec and a trusted python3 -I.
-
-        The helper is the source of linux_system_check (standard library only),
-        so root never imports files from the application folder.
-        """
-        import inspect
-        import json
-        from . import linux_system_check
-        python = self._trusted_firewall_executable('python3')
-        if not python:
-            raise RuntimeError('The deeper system check needs python3 in a system folder.')
+    def deep_check_settings(self):
+        """Package database and the trusted programs the root checks run."""
         manager = self.PACKAGE_DATABASES.get(self.distro_info().get('pkg_manager'))
         tools = {name: self._trusted_firewall_executable(name) for name in ('rpm', 'dpkg', 'pacman', 'find')}
         if not tools.get(manager):
             manager = None  # the process and task checks still run
-        source = inspect.getsource(linux_system_check) + '\nimport sys\nroot_main(sys.argv[1:])\n'
+        return {'manager': manager, 'tools': {name: path for name, path in tools.items() if path}}
+
+    def deep_system_check(self):
+        """The system check as root, through pkexec.
+
+        Installed: the system-check helper. From source: a trusted python3 -I
+        with the source of linux_system_check (standard library only), so root
+        never imports files from a folder the user can change.
+        """
+        import inspect
+        import json
+        from . import linux_system_check
+        helper = self._root_helper('system-check')
+        if helper:
+            command = [helper]
+        else:
+            python = self._trusted_firewall_executable('python3')
+            if not python:
+                raise RuntimeError('The deeper system check needs python3 in a system folder.')
+            source = inspect.getsource(linux_system_check) + '\nimport sys\nroot_main(sys.argv[1:])\n'
+            command = [python, '-I', '-c', source, json.dumps(self.deep_check_settings())]
         process = self.start_privileged(
-            [self._require_authorizer(), '--disable-internal-agent', python, '-I', '-c', source,
-             json.dumps({'manager': manager, 'tools': {name: path for name, path in tools.items() if path}})],
+            [self._require_authorizer(), '--disable-internal-agent', *command],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace')
         output, errors = process.communicate()
         self._privileged_finished(process)
@@ -933,11 +942,14 @@ class LinuxBackend(PlatformBackend):
         def query(command):
             if not privileged:
                 return self._firewall_query(command)
-            if tool_name == 'UFW':
+            helper = self._root_helper('firewall-read')
+            if helper:
+                command = [helper, tool_name]
+            elif tool_name == 'UFW':
                 shell = self._trusted_firewall_executable('sh')
                 if not shell:
                     raise RuntimeError('System shell is unavailable.')
-                command = [shell, '-c', shlex.join(command) + ' && ' + shlex.join([command[0], 'show', 'added'])]
+                command = [shell, '-c', ' && '.join(shlex.join(item) for item in self.firewall_read_commands(tool_name))]
             code, output = self._firewall_query([authorizer, '--disable-internal-agent', *command], timeout=120)
             self._check_authorization_exit(code)
             return code, output
@@ -1007,21 +1019,60 @@ class LinuxBackend(PlatformBackend):
             )
         return FirewallSnapshot(True, tools, instructions)
 
+    FIREWALL_READS = {
+        'UFW': ('ufw', [['status', 'verbose'], ['show', 'added']]),
+        'firewalld': ('firewall-cmd', [['--list-all-zones']]),
+        'nftables': ('nft', [['list', 'ruleset']]),
+        'iptables (IPv4)': ('iptables-save', [[]]),
+        'iptables (IPv6)': ('ip6tables-save', [[]]),
+    }
+
+    def firewall_read_commands(self, tool_name):
+        """The read with administrator rights of one firewall tool: fixed programs and options."""
+        if tool_name not in self.FIREWALL_READS:
+            raise ValueError('Select a detected firewall tool first.')
+        executable, reads = self.FIREWALL_READS[tool_name]
+        path = self._trusted_firewall_executable(executable)
+        if not path:
+            raise RuntimeError('The selected firewall tool is no longer available in a trusted system location.')
+        return [[path, *arguments] for arguments in reads]
+
+    @staticmethod
+    def _root_executable(path):
+        """An executable file that only root can change, like every folder above it."""
+        import stat
+        path = Path(path).resolve()
+        try:
+            if not path.is_file() or not os.access(path, os.X_OK):
+                return None
+            if all(item.stat().st_uid == 0 and not
+                   (item.stat().st_mode & (stat.S_IWGRP | stat.S_IWOTH)) for item in (path, *path.parents)):
+                return str(path)
+        except OSError:
+            pass
+        return None
+
     @staticmethod
     def _trusted_firewall_executable(name):
         """Elevated commands must never come from user-controlled PATH entries."""
-        import stat
         for folder in ('/usr/sbin', '/usr/bin', '/sbin', '/bin'):
-            path = Path(folder, name).resolve()
-            try:
-                chain = [path, *path.parents]
-                if not path.is_file() or not os.access(path, os.X_OK):
-                    continue
-                if all(item.stat().st_uid == 0 and not
-                       (item.stat().st_mode & (stat.S_IWGRP | stat.S_IWOTH)) for item in chain):
-                    return str(path)
-            except OSError:
-                continue
+            path = LinuxBackend._root_executable(Path(folder, name))
+            if path:
+                return path
+        return None
+
+    # A package installs one program per polkit action next to the application
+    # (packaging/libreward-root.in), so the password dialog says what LibreWard
+    # wants to do. Run from source there are none, and pkexec runs a trusted
+    # python3 with the helper code instead.
+    ROOT_HELPERS = ('system-check', 'internet-protection', 'firewall-read', 'firewall-change')
+
+    def _root_helper(self, name):
+        prefix = Path(__file__).resolve().parents[2]  # /usr for /usr/share/libreward/backends
+        for folder in ('libexec', 'lib'):
+            path = self._root_executable(prefix / folder / APP_NAME / name)
+            if path:
+                return path
         return None
 
     @staticmethod
@@ -1078,11 +1129,12 @@ class LinuxBackend(PlatformBackend):
         return '\n'.join(shlex.join([executable, *args]) for executable, args in
                          self._firewall_change_commands(tool_name, rule=rule, enabled=enabled))
 
-    def change_firewall(self, tool_name, *, rule=None, enabled=True, removal=None):
-        """One authorization for a validated change batch and verified refresh."""
+    def firewall_change_script(self, tool_name, *, rule=None, enabled=True, removal=None, marker):
+        """Shell, script and read command of one validated change and the read after it.
+
+        The script prints `marker:CHANGE:<status>` and `marker:READ:<status>`.
+        """
         import shlex
-        import uuid
-        from core.firewall import FirewallChangeResult, FirewallSnapshot, FirewallTool
         if removal is not None:
             from core.firewall import FirewallRemoval
             if not isinstance(removal, FirewallRemoval) or rule is not None:
@@ -1090,7 +1142,8 @@ class LinuxBackend(PlatformBackend):
             commands = [removal.arguments(tool_name)]
         else:
             commands = self._firewall_change_commands(tool_name, rule=rule, enabled=enabled)
-        authorizer = self._require_authorizer()
+        if not re.fullmatch(r'LIBREWARD_[0-9a-f]{32}', marker):
+            raise ValueError('Invalid marker.')
         shell = self._trusted_firewall_executable('sh')
         resolved = []
         for executable, args in commands:
@@ -1099,8 +1152,33 @@ class LinuxBackend(PlatformBackend):
                 raise RuntimeError('The firewall command is unavailable in a trusted system location.')
             resolved.append([path, *args])
         reader = self._trusted_firewall_executable('ufw' if tool_name == 'UFW' else 'firewall-cmd')
-        if not authorizer or not shell or not reader:
+        if not shell or not reader:
             raise RuntimeError('System authorization or firewall commands are unavailable in trusted system locations.')
+        read_command = [reader, 'status', 'verbose'] if tool_name == 'UFW' else [reader, '--list-all-zones']
+        read_script = shlex.join(read_command)
+        if tool_name == 'UFW':
+            read_script += ' && ' + shlex.join([reader, 'show', 'added'])
+        else:
+            read_script += ' && printf "\\nPermanent zones and rules\\n" && ' + shlex.join([reader, '--permanent', '--list-all-zones'])
+        # All commands are generated from validated fields and individually shell-quoted.
+        # No caller-supplied script, executable, option or shell fragment is accepted.
+        script = ('LC_ALL=C; export LC_ALL; ' + ' && '.join(shlex.join(command) for command in resolved)
+                  + '; change_status=$?; printf "\n' + marker + ':CHANGE:%s\n" "$change_status"; '
+                  + read_script
+                  + '; read_status=$?; printf "\n' + marker + ':READ:%s\n" "$read_status"')
+        return shell, script, read_command
+
+    def change_firewall(self, tool_name, *, rule=None, enabled=True, removal=None):
+        """One authorization for a validated change batch and verified refresh."""
+        import dataclasses
+        import json
+        import shlex
+        import uuid
+        from core.firewall import FirewallChangeResult, FirewallSnapshot, FirewallTool
+        marker = 'LIBREWARD_' + uuid.uuid4().hex
+        shell, script, read_command = self.firewall_change_script(
+            tool_name, rule=rule, enabled=enabled, removal=removal, marker=marker)
+        authorizer = self._require_authorizer()
         if rule is None and removal is None and enabled:
             other = 'firewall-cmd' if tool_name == 'UFW' else 'ufw'
             other_path = self._firewall_executable(other)
@@ -1110,20 +1188,20 @@ class LinuxBackend(PlatformBackend):
                 inactive = 'not running' in output.lower() if other == 'firewall-cmd' else code == 0 and 'status: inactive' in output.lower()
                 if active or not inactive:
                     raise RuntimeError('Another firewall manager is active or its state could not be verified. Keep only one manager active.')
-        read_command = [reader, 'status', 'verbose'] if tool_name == 'UFW' else [reader, '--list-all-zones']
-        read_script = shlex.join(read_command)
-        if tool_name == 'UFW':
-            read_script += ' && ' + shlex.join([reader, 'show', 'added'])
+        helper = self._root_helper('firewall-change')
+        if helper:
+            # The helper validates the same fields again and builds the same script as root.
+            request = {'tool': tool_name}
+            if removal is not None:
+                request['removal'] = dataclasses.asdict(removal)
+            elif rule is not None:
+                request['rule'] = dataclasses.asdict(rule)
+            else:
+                request['enabled'] = enabled
+            command = [helper, json.dumps(request), marker]
         else:
-            read_script += ' && printf "\\nPermanent zones and rules\\n" && ' + shlex.join([reader, '--permanent', '--list-all-zones'])
-        marker = 'LIBREWARD_' + uuid.uuid4().hex
-        # All commands are generated from validated fields and individually shell-quoted.
-        # No caller-supplied script, executable, option or shell fragment is accepted.
-        script = ('LC_ALL=C; export LC_ALL; ' + ' && '.join(shlex.join(command) for command in resolved)
-                  + '; change_status=$?; printf "\n' + marker + ':CHANGE:%s\n" "$change_status"; '
-                  + read_script
-                  + '; read_status=$?; printf "\n' + marker + ':READ:%s\n" "$read_status"')
-        code, output = self._firewall_query([authorizer, '--disable-internal-agent', shell, '-c', script], timeout=120)
+            command = [shell, '-c', script]
+        code, output = self._firewall_query([authorizer, '--disable-internal-agent', *command], timeout=120)
         self._check_authorization_exit(code)
         change_match = re.search(r'(?:^|\n)' + marker + r':CHANGE:([0-9]+)\n', output)
         read_match = re.search(r'(?:^|\n)' + marker + r':READ:([0-9]+)(?:\n|$)', output)
@@ -1540,11 +1618,21 @@ class LinuxBackend(PlatformBackend):
             return self._apply_database_protection(None)
         return state
 
+    def _internet_protection_executables(self):
+        return {name: self._trusted_firewall_executable(name)
+                for name in ('nmcli', 'NetworkManager', 'systemctl', 'python3', 'resolvectl')}
+
+    def internet_protection_source(self):
+        """The installer that root runs; it checks the mode, the DNS service and the domains itself."""
+        from .linux_dns_service import helper
+        executables = self._internet_protection_executables()
+        return helper(executables['nmcli'], executables['NetworkManager'], executables['systemctl'],
+                      executables['python3'], executables['resolvectl'])
+
     def _apply_database_protection(self, prepared, upstream=None):
         import json
         import tempfile
         from core.dns_providers import NETWORK, PROVIDERS
-        from .linux_dns_service import helper
         state = self.inspect_internet_protection()
         if prepared is not None and (not state.get('supported') or state.get('engine') not in ('sqlite-dns', 'sqlite-setup')):
             raise RuntimeError(state.get('message', 'Local DNS setup is unavailable.'))
@@ -1555,21 +1643,22 @@ class LinuxBackend(PlatformBackend):
                 raise ValueError('Choose a supported DNS service.')
             arguments = [mode, upstream]
         names = ['systemctl', 'python3'] + (['resolvectl'] if mode == 'resolved' else ['nmcli', 'NetworkManager'])
-        executables = {name: self._trusted_firewall_executable(name)
-                       for name in ('nmcli', 'NetworkManager', 'systemctl', 'python3', 'resolvectl')}
+        executables = self._internet_protection_executables()
         if not all(executables[name] for name in names):
             raise RuntimeError('System network and service tools are required for Internet protection.')
         if prepared is not None and mode == 'networkmanager':
             self._install_dns_runtime()
-        source = helper(executables['nmcli'], executables['NetworkManager'], executables['systemctl'],
-                        executables['python3'], executables['resolvectl'])
+        root_helper = self._root_helper('internet-protection')
+        if root_helper:
+            command = [root_helper]
+        else:
+            command = [executables['python3'], '-I', '-c', self.internet_protection_source()]
         authorizer = self._require_authorizer()
         with (open(prepared.path, 'rb') if prepared is not None else tempfile.TemporaryFile(mode='w+b')) as payload:
             if prepared is None:
                 payload.write(b'{"version":1,"count":0}\n')
                 payload.seek(0)
-            process = self.start_privileged([authorizer, '--disable-internal-agent', executables['python3'], '-I', '-c', source,
-                                             *arguments],
+            process = self.start_privileged([authorizer, '--disable-internal-agent', *command, *arguments],
                                          stdin=payload, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                          text=True, encoding='utf-8', errors='replace')
             # Building the root-owned database is disk work. Do not kill the

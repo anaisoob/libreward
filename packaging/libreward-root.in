@@ -1,0 +1,9 @@
+#!@PYTHON@ -I
+# LibreWard program that pkexec runs as root for one polkit action
+# (io.github.anaisoob.LibreWard.policy). Installed by `make install`.
+import sys
+
+sys.path.insert(0, '@APPDIR@')
+from backends.linux_root import main  # noqa: E402
+
+sys.exit(main('@ACTION@', sys.argv[1:]))

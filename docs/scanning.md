@@ -174,10 +174,13 @@ users and adds:
 | System services | a unit in the packages' folder belongs to no package, or a service runs a program from a temporary or home folder, or one that belongs to no package (normal for software installed by hand, and said so) |
 | Scheduled tasks of all users | crontabs of all users and `/etc/cron.{hourly,daily,weekly,monthly}` that download, decode or run programs from temporary folders |
 
-As with Internet protection, root never loads files from the application folder:
-pkexec starts the system's `/usr/bin/python3 -I` with the source of
-`backends/linux_system_check.py`, which uses only the Python standard library, and
-the system's own `rpm`, `dpkg`, `pacman` and `find`. Without a supported package
+An installed LibreWard asks with its own polkit action, *Check the system for signs
+of tampering*, through the program `/usr/libexec/libreward/system-check`, which takes
+no arguments and finds the system's own `rpm`, `dpkg`, `pacman` and `find` itself
+(see [Packaging](packaging.md#administrator-rights)). Run from source, root never
+loads files from the application folder: pkexec starts the system's
+`/usr/bin/python3 -I` with the source of `backends/linux_system_check.py`, which uses
+only the Python standard library. Without a supported package
 manager (for example Alpine) the package checks are skipped and listed as not run.
 
 The check cannot prove that a computer is clean: a rootkit in the kernel can hide

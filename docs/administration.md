@@ -73,6 +73,30 @@ The settings take the place of each user's own: LibreWard shows the controls as
 **Set by your administrator** and cannot change them, and the background service
 reads a changed policy within seconds.
 
+## Who may use administrator rights
+
+LibreWard asks for administrator rights with its own polkit actions (see
+[Packaging](packaging.md#administrator-rights)), so an administrator can change
+who may do what with a polkit rule. For example, users without administrator
+rights are then not even asked for the password to change Internet protection or
+the firewall:
+
+```bash
+sudo tee /etc/polkit-1/rules.d/50-libreward.rules >/dev/null <<'JS'
+polkit.addRule(function (action, subject) {
+    if ((action.id == "io.github.anaisoob.LibreWard.internet-protection" ||
+         action.id == "io.github.anaisoob.LibreWard.firewall-change") &&
+        !subject.isInGroup("wheel")) {
+        return polkit.Result.NO;
+    }
+});
+JS
+```
+
+Debian and Ubuntu name the administrator group `sudo` instead of `wheel`.
+`pkaction --verbose --action-id io.github.anaisoob.LibreWard.system-check` shows an
+action and its defaults.
+
 ## Limits
 
 Quarantined files are stored encoded in each user's quarantine, so a file copied

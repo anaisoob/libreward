@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Linux packages: LibreWard asks for administrator rights with its own polkit
+  actions, so the password dialog says what it wants to do (check the system,
+  change Internet protection, read or change the firewall) instead of “run
+  /usr/bin/python3”. Each action runs a fixed program in `/usr/libexec/libreward`
+  that accepts only fixed choices and validates them again as root, and
+  administrators can allow or forbid each action with polkit rules. Run from
+  source, LibreWard works as before.
+
 - Security fixes:
   - Windows: the ClamAV update manifest could name any download address and any
     program to run as a check (also outside the runtime folder). Downloads now come

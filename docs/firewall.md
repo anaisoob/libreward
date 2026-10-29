@@ -31,7 +31,9 @@ The choice of firewall program appears only when more than one was found.
 
 Click **Check protection status** if permission is required (**Check again** once
 the state is known).
-The system polkit dialog authorizes the read operation using pkexec.
+The system polkit dialog authorizes the read operation using pkexec; an installed
+LibreWard asks with its own actions, *Read the firewall rules* and *Change the
+firewall* (see [Packaging](packaging.md#administrator-rights)).
 UFW shows status and configured user rules; firewalld shows runtime zones. Reading
 permanent firewalld configuration is part of initial detection and may require
 permissions. The GUI remains unprivileged and never receives or stores passwords.

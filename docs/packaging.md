@@ -1,7 +1,7 @@
 # Packaging
 
 LibreWard is distributed as native packages. It is a system tool: it runs
-`pkexec` helpers, installs a systemd service, writes owned files under `/etc`
+programs as root through pkexec, installs a systemd service, writes owned files under `/etc`
 and uses the host's NetworkManager, systemd-resolved, firewall and ClamAV. A
 Flatpak sandbox blocks exactly these operations, and working around it with
 `flatpak-spawn --host` would remove the sandbox while suggesting isolation.
@@ -18,6 +18,8 @@ Flatpak sandbox blocks exactly these operations, and working around it with
 | `/usr/share/metainfo/io.github.anaisoob.LibreWard.metainfo.xml` | AppStream metadata for GNOME Software and KDE Discover (`packaging/`) |
 | `/usr/share/icons/hicolor/{scalable,256x256}/apps/libreward.*` | Icon |
 | `/usr/lib/systemd/user/libreward-monitor.service` | Background service for all users, not enabled; see [Administration](administration.md) |
+| `/usr/libexec/libreward/` (Arch: `/usr/lib/libreward/`) | The programs that run as root, one per polkit action (`packaging/libreward-root.in`) |
+| `/usr/share/polkit-1/actions/io.github.anaisoob.LibreWard.policy` | The polkit actions (`packaging/`) |
 
 The modules live in a private directory instead of site-packages because their
 names (`core`, `ui`, `config`, …) would clash with other packages. LibreWard
@@ -27,6 +29,31 @@ Folder monitoring, when a user turns it on, runs as that user's systemd service
 written by LibreWard rather than the package.
 Run `make test` for the test suite. `tests/test_packaging.py` checks that every
 module is installed and that package versions match.
+
+## Administrator rights
+
+Everything LibreWard does as root goes through one of four small programs, each
+with its own polkit action, so the password dialog says what LibreWard wants to do
+instead of “run /usr/bin/python3”:
+
+| Program | polkit action | Asks |
+| --- | --- | --- |
+| `system-check` | `io.github.anaisoob.LibreWard.system-check` | once, then kept for a few minutes (`auth_admin_keep`); nothing is changed |
+| `internet-protection` | `io.github.anaisoob.LibreWard.internet-protection` | every time (`auth_admin`) |
+| `firewall-read` | `io.github.anaisoob.LibreWard.firewall-read` | once, then kept for a few minutes; nothing is changed |
+| `firewall-change` | `io.github.anaisoob.LibreWard.firewall-change` | every time |
+
+Each program imports `backends/linux_root.py` from `/usr/share/libreward`, which
+only root can change, and accepts only fixed choices: the system check takes no
+arguments, the firewall programs a known firewall and a change that is validated
+again as root, Internet protection a mode and a DNS service from a fixed list. They
+find the system programs they run themselves. Installing ClamAV or the DNS
+component runs the package manager through pkexec directly; that dialog shows the
+exact install command.
+
+LibreWard uses these programs only when they are installed next to it and owned by
+root. Run from source, pkexec starts the system's `python3 -I` with LibreWard's
+helper code, and the dialog shows the generic polkit message.
 
 ## Removal
 

@@ -13,6 +13,13 @@ BINDIR = $(PREFIX)/bin
 APPDIR = $(PREFIX)/share/libreward
 DATADIR = $(PREFIX)/share
 USERUNITDIR = $(PREFIX)/lib/systemd/user
+# Arch packages use /usr/lib; LibreWard looks in both.
+LIBEXECDIR ?= $(PREFIX)/libexec
+HELPERDIR = $(LIBEXECDIR)/libreward
+POLKITDIR = $(DATADIR)/polkit-1/actions
+POLICY = io.github.anaisoob.LibreWard.policy
+# One program per polkit action, see backends/linux_root.py.
+ROOT_HELPERS = system-check internet-protection firewall-read firewall-change
 
 MODULES = main.py config.py scanner.py excludes.py
 PACKAGES = backends core ui
@@ -44,18 +51,26 @@ install:
 	sed -e 's|@BINDIR@|$(BINDIR)|g' packaging/libreward-monitor.service.in \
 		> $(DESTDIR)$(USERUNITDIR)/libreward-monitor.service
 	chmod 644 $(DESTDIR)$(USERUNITDIR)/libreward-monitor.service
+	install -d $(DESTDIR)$(HELPERDIR) $(DESTDIR)$(POLKITDIR)
+	for helper in $(ROOT_HELPERS); do \
+		sed -e 's|@PYTHON@|$(PYTHON)|g' -e 's|@APPDIR@|$(APPDIR)|g' -e "s|@ACTION@|$$helper|g" \
+			packaging/libreward-root.in > $(DESTDIR)$(HELPERDIR)/$$helper; \
+		chmod 755 $(DESTDIR)$(HELPERDIR)/$$helper; \
+	done
+	sed -e 's|@HELPERDIR@|$(HELPERDIR)|g' packaging/$(POLICY).in > $(DESTDIR)$(POLKITDIR)/$(POLICY)
+	chmod 644 $(DESTDIR)$(POLKITDIR)/$(POLICY)
 	$(PYTHON) -m compileall -q -d $(APPDIR) $(DESTDIR)$(APPDIR)
 
 # Package scripts run system_cleanup.py on removal; `make uninstall` does the same
 # for a direct installation (as root, without DESTDIR).
 uninstall:
 	if [ -z "$(DESTDIR)" ] && [ -f $(APPDIR)/system_cleanup.py ]; then $(PYTHON) -I $(APPDIR)/system_cleanup.py; fi
-	rm -rf $(DESTDIR)$(APPDIR)
+	rm -rf $(DESTDIR)$(APPDIR) $(DESTDIR)$(HELPERDIR)
 	rm -f $(DESTDIR)$(BINDIR)/libreward $(DESTDIR)$(DATADIR)/applications/libreward.desktop \
 		$(DESTDIR)$(DATADIR)/metainfo/io.github.anaisoob.LibreWard.metainfo.xml \
 		$(DESTDIR)$(DATADIR)/icons/hicolor/scalable/apps/libreward.svg \
 		$(DESTDIR)$(DATADIR)/icons/hicolor/256x256/apps/libreward.png \
-		$(DESTDIR)$(USERUNITDIR)/libreward-monitor.service
+		$(DESTDIR)$(USERUNITDIR)/libreward-monitor.service $(DESTDIR)$(POLKITDIR)/$(POLICY)
 
 test:
 	QT_QPA_PLATFORM=offscreen $(PYTHON) -m unittest discover -s tests
