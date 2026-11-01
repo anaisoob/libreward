@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
     QFileDialog, QHBoxLayout, QLabel, QLineEdit, QListWidget, QMainWindow,
     QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
     QTableWidget, QTableWidgetItem, QStackedWidget, QVBoxLayout, QWidget,
-    QFrame, QHeaderView, QSizePolicy, QSplitter,
+    QFrame, QHeaderView, QSizePolicy,
 )
 
 from backends import backend
@@ -36,6 +36,7 @@ from core.system_check import summary as system_check_summary
 from core.updater import check_for_updates, perform_update
 from excludes import get_active_exclude_patterns, get_common_excludes
 from .dialogs import (
+    ExcludesDialog, LogDialog,
     AntivirusSetupDialog, AuthorizationHelpDialog, ClamAVConsentDialog, ScanReportDialog, SystemCheckDialog,
     ThreatsFoundDialog, UpdateProgressDialog,
 )
@@ -812,7 +813,7 @@ class QtMainWindow(QMainWindow):
         self.path.setMinimumWidth(0)
         row.addWidget(self.path, 1)
         row.addWidget(self.button("Choose", self.choose_folder))
-        row.addWidget(self.button("Excludes", lambda: self.switch_page("settings")))
+        row.addWidget(self.button("Excludes", self.open_excludes, track=False))
         box.addLayout(row)
         self.exclude_summary = self.label("Excludes: none", "muted")
         box.addWidget(self.exclude_summary)
@@ -833,7 +834,7 @@ class QtMainWindow(QMainWindow):
         actions.addWidget(self.system_check_button)
         actions.addWidget(self.stop_button)
         actions.addStretch()
-        actions.addWidget(self.button("Clear log", self.log_clear))
+        actions.addWidget(self.button("Show details", self.show_log, track=False))
         layout.addLayout(actions)
         cards = QHBoxLayout()
         status_card, status_box = self.card()
@@ -863,7 +864,12 @@ class QtMainWindow(QMainWindow):
         progress_box.addWidget(self.progress)
         self.summary = self.label("Choose a folder or run a quick scan.", "muted")
         self.summary.setWordWrap(True)
-        progress_box.addWidget(self.summary)
+        row = QHBoxLayout()
+        row.addWidget(self.summary, 1)
+        self.report_button = self.button("View scan report", self.show_scan_report, track=False)
+        self.report_button.hide()  # until there is a report
+        row.addWidget(self.report_button)
+        progress_box.addLayout(row)
         self.activity = QProgressBar()
         self.activity.setObjectName("activityBar")
         self.activity.setRange(0, 0)
@@ -872,7 +878,6 @@ class QtMainWindow(QMainWindow):
         self.activity.hide()
         progress_box.addWidget(self.activity)
         layout.addWidget(progress_card)
-        self.scan_panels = QSplitter(Qt.Orientation.Vertical)
         self.findings_card, findings = self.card()
         findings.addWidget(self.label("Detected files", "sectionTitle"))
         self.results = self.table(["File", "Threat"])
@@ -884,42 +889,22 @@ class QtMainWindow(QMainWindow):
         row.addWidget(self.button("Delete selected", lambda: self.handle_findings("delete"), variant="danger", beside_scan=True))
         row.addWidget(self.button("Open location", self.open_finding_location, beside_scan=True))
         findings.addLayout(row)
-        self.scan_panels.addWidget(self.findings_card)
         self.findings_card.hide()
-        log_card, log_box = self.card()
-        log_card.setMinimumHeight(200)
-        row = QHBoxLayout()
-        row.addWidget(self.label("Event log", "sectionTitle"))
-        row.addStretch()
-        self.report_button = QPushButton("View scan report")
-        self.report_button.setObjectName("secondaryButton")
-        self.report_button.setEnabled(False)
-        self.report_button.clicked.connect(self.show_scan_report)
-        row.addWidget(self.report_button)
-        log_box.addLayout(row)
-        # Technical messages stay folded away; results and reports are shown elsewhere.
-        self.log_toggle = QPushButton('Show details')
-        self.log_toggle.setFlat(True)
-        log_box.addWidget(self.log_toggle, 0, Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(self.findings_card, 1)
+        layout.addStretch()
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
         self.log.setMaximumBlockCount(10000)
         self.log.setPlaceholderText("Scan events and update messages will appear here.")
-        self.log.hide()
-        self.log_toggle.clicked.connect(lambda: (self.log.setVisible(not self.log.isVisible()),
-                                                 self.log_toggle.setText('Hide details' if self.log.isVisible() else 'Show details')))
-        log_box.addWidget(self.log)
-        self.scan_panels.addWidget(log_card)
-        self.scan_panels.setChildrenCollapsible(False)
-        layout.addWidget(self.scan_panels, 1)
+        self.log_dialog = LogDialog(self, self.log)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setWidget(page)
         return scroll
 
-    def log_clear(self):
-        self.log.clear()
+    def show_log(self):
+        self.log_dialog.open()
 
     def show_scan_report(self):
         if self.last_result is None:
@@ -1033,31 +1018,8 @@ class QtMainWindow(QMainWindow):
         quarantine_note = self.label('LibreWard quarantine is always excluded from scans.', 'muted')
         quarantine_note.setWordWrap(True)
         box.addWidget(quarantine_note)
-        form.addWidget(card)
-        card, box = self.card()
-        box.addWidget(self.label("Common excludes", "sectionTitle"))
-        box.addWidget(self.label("Only selected exclusions are applied to scans.", "muted"))
-        self.exclude_checks = {}
-        enabled = self.config.get("enabled_common_excludes", [])
-        for label in get_common_excludes():
-            check = QCheckBox(label)
-            check.setChecked(label in enabled)
-            box.addWidget(check)
-            self.exclude_checks[label] = check
-        form.addWidget(card)
-        card, box = self.card()
-        box.addWidget(self.label("Custom excluded folders", "sectionTitle"))
-        self.excluded_paths = QListWidget()
-        self.excluded_paths.setMinimumHeight(100)
-        self.excluded_paths.setMaximumHeight(150)
-        self.excluded_paths.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        for path in self.config.get("user_excludes", []):
-            if isinstance(path, str):
-                self.excluded_paths.addItem(path)
-        box.addWidget(self.excluded_paths)
         row = QHBoxLayout()
-        row.addWidget(self.button("Add folder", self.add_exclude))
-        row.addWidget(self.button("Remove selected", self.remove_excludes))
+        row.addWidget(self.button("Excludes", self.open_excludes, track=False))
         row.addStretch()
         box.addLayout(row)
         form.addWidget(card)
@@ -1144,8 +1106,8 @@ class QtMainWindow(QMainWindow):
             self.apply_theme("system")
 
     def update_exclude_summary(self):
-        common = sum(check.isChecked() for check in self.exclude_checks.values())
-        custom = self.excluded_paths.count()
+        common = len(set(self.config.get("enabled_common_excludes", [])) & set(get_common_excludes()))
+        custom = sum(isinstance(path, str) for path in self.config.get("user_excludes", []))
         self.exclude_summary.setText(f"Excludes: {common} common groups · {custom} custom folders")
 
     def choose_folder(self):
@@ -1154,23 +1116,28 @@ class QtMainWindow(QMainWindow):
         if folder:
             self.path.setText(folder)
 
-    def add_exclude(self):
-        folder = QFileDialog.getExistingDirectory(self, "Exclude folder",
-            options=QFileDialog.Option.ShowDirsOnly | QFileDialog.Option.DontUseNativeDialog)
-        paths = [self.excluded_paths.item(i).text() for i in range(self.excluded_paths.count())]
-        if folder and folder not in paths:
-            self.excluded_paths.addItem(folder)
-
-    def remove_excludes(self):
-        for item in self.excluded_paths.selectedItems():
-            self.excluded_paths.takeItem(self.excluded_paths.row(item))
+    def open_excludes(self):
+        common = get_common_excludes()
+        folders = [path for path in self.config.get("user_excludes", []) if isinstance(path, str)]
+        dialog = ExcludesDialog(self, common, self.config.get("enabled_common_excludes", []), folders)
+        if not dialog.exec():
+            return
+        updated = dict(self.config, enabled_common_excludes=dialog.enabled_common(),
+                       user_excludes=dialog.folders())
+        try:
+            save_config(updated)
+        except OSError as exc:
+            QMessageBox.warning(self, "Excludes", f"Cannot save excludes: {exc}")
+            return
+        self.config = updated
+        self.update_exclude_summary()
+        # Exclusion changes reach a running agent through the saved file.
+        self.file_protection.ensure_running()
 
     def save_settings(self):
         updated = dict(self.config)
         updated.update(
             scan_path=self.path.text().strip(),
-            enabled_common_excludes=[label for label, check in self.exclude_checks.items() if check.isChecked()],
-            user_excludes=[self.excluded_paths.item(i).text() for i in range(self.excluded_paths.count())],
             suppress_clamav_setup_prompt=self.suppress_setup.isChecked(),
             qt_theme=self.theme.currentText(),
             parallel_scanning=self.parallel_scan.isChecked(),
@@ -1184,8 +1151,6 @@ class QtMainWindow(QMainWindow):
             QMessageBox.warning(self, "Settings", f"Cannot save settings: {exc}")
             return False
         self.config = updated
-        self.update_exclude_summary()
-        # Exclusion changes reach a running agent through the saved file.
         self.file_protection.ensure_running()
         self.settings_feedback.setText("Settings saved")
         return True
@@ -1349,7 +1314,7 @@ class QtMainWindow(QMainWindow):
         self.progress.setValue(0)
         self.percent.setText("0%")
         self.last_result = None
-        self.report_button.setEnabled(False)
+        self.report_button.hide()
         self.pending_setup = False
         self.service = ScanService(self.events, scan_profile=self.config.get('scan_profile', 'standard'),
                                    workers=self.config.get('scan_workers', 'auto'))
@@ -1801,7 +1766,7 @@ class QtMainWindow(QMainWindow):
             elif kind == "__SCAN_DONE__":
                 result = values[0]
                 self.last_result = result
-                self.report_button.setEnabled(True)
+                self.report_button.show()
                 self.findings_card.setVisible(bool(result["infected"]) or bool(self.results.rowCount()))
                 severity = "danger" if result.get("infected") or result.get("infected_found") or result.get("errors") else "warning" if result.get("warnings") else "normal"
                 self.set_status(scan_outcome(result), severity)

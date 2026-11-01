@@ -1525,9 +1525,11 @@ class QtFrontendTests(unittest.TestCase):
 
     def test_folder_choosers_use_themed_qt_dialog(self):
         from PySide6.QtWidgets import QFileDialog
-        with patch('ui.main_window.QFileDialog.getExistingDirectory', return_value='') as choose:
+        from ui.dialogs import ExcludesDialog
+        dialog = ExcludesDialog(self.window, [], [], [])
+        with patch('PySide6.QtWidgets.QFileDialog.getExistingDirectory', return_value='') as choose:
             self.window.choose_folder()
-            self.window.add_exclude()
+            dialog.add_folder()
         self.assertEqual(choose.call_count, 2)
         for call in choose.call_args_list:
             self.assertTrue(call.kwargs['options'] & QFileDialog.Option.DontUseNativeDialog)
@@ -1574,17 +1576,45 @@ class QtFrontendTests(unittest.TestCase):
         release.set()
         self.wait_idle()
 
-    def test_settings_preserve_unknown_keys_and_update_excludes(self):
+    def run_excludes(self, change, result):
+        """Open the dialog, let `change` edit it, and close it with `result`."""
+        from ui.dialogs import ExcludesDialog
+        def execute(dialog):
+            change(dialog)
+            return result
+        with patch.object(ExcludesDialog, 'exec', execute):
+            self.window.open_excludes()
+
+    def test_excludes_are_edited_and_saved_in_their_dialog(self):
         save = self.patch('ui.main_window.save_config')
+        def change(dialog):
+            next(iter(dialog.checks.values())).setChecked(True)
+            with patch('PySide6.QtWidgets.QFileDialog.getExistingDirectory', return_value='/skip'):
+                dialog.add_folder()
+                dialog.add_folder()  # once only
+            self.assertEqual(self.window.pages.currentIndex(), self.window.page_indices['security'])
+        self.run_excludes(change, True)
+        config = save.call_args.args[0]
+        self.assertEqual(config['unrelated_setting'], 'preserved')
+        self.assertEqual(len(config['enabled_common_excludes']), 1)
+        self.assertEqual(config['user_excludes'], ['/skip'])
+        self.assertEqual(self.window.exclude_summary.text(), 'Excludes: 1 common groups · 1 custom folders')
+        self.run_excludes(lambda dialog: self.assertEqual(dialog.folders(), ['/skip']), False)
+
+    def test_cancelled_excludes_change_nothing(self):
+        save = self.patch('ui.main_window.save_config')
+        self.run_excludes(lambda dialog: dialog.paths.addItem('/skip'), False)
+        save.assert_not_called()
+        self.assertNotIn('user_excludes', self.window.config)
+
+    def test_settings_preserve_unknown_keys_and_excludes(self):
+        save = self.patch('ui.main_window.save_config')
+        self.run_excludes(lambda dialog: dialog.paths.addItem('/skip'), True)
         self.window.path.setText('/scan')
-        label, check = next(iter(self.window.exclude_checks.items()))
-        check.setChecked(True)
-        self.window.excluded_paths.addItem('/skip')
         self.window.suppress_setup.setChecked(True)
         self.assertTrue(self.window.save_settings())
         config = save.call_args.args[0]
         self.assertEqual(config['unrelated_setting'], 'preserved')
-        self.assertIn(label, config['enabled_common_excludes'])
         self.assertEqual(config['user_excludes'], ['/skip'])
         self.assertTrue(config['suppress_clamav_setup_prompt'])
 
@@ -2141,9 +2171,34 @@ class QtFrontendTests(unittest.TestCase):
         app = QApplication.instance()
         self.assertIn('QMenu {', app.styleSheet())
         self.assertEqual(app.palette().color(QPalette.ColorRole.Window).name(), '#101713')
-        self.assertTrue(self.window.log.isHidden())
-        self.window.log_toggle.click()
-        self.assertFalse(self.window.log.isHidden())
+
+    def test_the_log_opens_in_a_dialog_and_keeps_collecting_while_closed(self):
+        self.window.events.put('A message while it was closed\n')
+        self.window.poll_events()
+        self.assertFalse(self.window.log_dialog.isVisible())
+        self.window.show_log()
+        self.assertTrue(self.window.log_dialog.isVisible())
+        self.assertTrue(self.window.log.isVisible())
+        self.assertIn('A message', self.window.log.toPlainText())
+        from PySide6.QtWidgets import QPushButton
+        buttons = {button.text(): button for button in self.window.log_dialog.findChildren(QPushButton)}
+        buttons['Clear log'].click()
+        self.assertEqual(self.window.log.toPlainText(), '')
+        buttons['Close'].click()
+        self.assertFalse(self.window.log_dialog.isVisible())
+
+    def test_details_can_be_read_during_a_scan(self):
+        self.window.set_busy('scan')
+        from PySide6.QtWidgets import QPushButton
+        details = [button for button in self.window.findChildren(QPushButton) if button.text() == 'Show details']
+        self.assertTrue(details and all(button.isEnabled() for button in details))
+
+    def test_the_report_button_appears_when_there_is_a_report(self):
+        self.assertTrue(self.window.report_button.isHidden())
+        result = {'infected': [], 'errors': [], 'warnings': [], 'scanned': 1, 'total': 1}
+        self.window.events.put(('__SCAN_DONE__', result))
+        self.window.poll_events()
+        self.assertFalse(self.window.report_button.isHidden())
 
     def test_package_authorization_failure_shows_help_after_report_close(self):
         from core.authorization import AuthorizationError, PackageInstallPlan

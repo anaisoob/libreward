@@ -1,14 +1,91 @@
 """Qt dialogs shared by setup and background update flows."""
 from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QPlainTextEdit,
-    QProgressBar, QPushButton, QVBoxLayout, QWidget, QListWidget, QListWidgetItem,
+    QAbstractItemView, QApplication, QCheckBox, QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout, QLabel,
+    QPlainTextEdit, QProgressBar, QPushButton, QVBoxLayout, QWidget, QListWidget, QListWidgetItem,
 )
 
 
 class _Relay(QObject):
     """Delivers a worker thread's result on the GUI thread."""
     done = Signal(object)
+
+
+class LogDialog(QDialog):
+    """The technical messages. Reopened, not rebuilt: `log` keeps collecting while it is closed."""
+    def __init__(self, parent, log):
+        super().__init__(parent)
+        self.setWindowTitle('Event log')
+        self.setModal(True)
+        self.resize(760, 480)
+        layout = QVBoxLayout(self)
+        layout.addWidget(log, 1)
+        row = QHBoxLayout()
+        clear = QPushButton('Clear log')
+        clear.clicked.connect(log.clear)
+        row.addWidget(clear)
+        row.addStretch()
+        close = QPushButton('Close')
+        close.clicked.connect(self.accept)
+        row.addWidget(close)
+        layout.addLayout(row)
+
+
+class ExcludesDialog(QDialog):
+    """What scans skip: common groups and the user's own folders."""
+    def __init__(self, parent, common, enabled, folders):
+        super().__init__(parent)
+        self.setWindowTitle('Excludes')
+        self.resize(560, 520)
+        layout = QVBoxLayout(self)
+        heading = QLabel('Common excludes')
+        heading.setObjectName('sectionTitle')
+        layout.addWidget(heading)
+        note = QLabel('Only selected exclusions are applied to scans.')
+        note.setObjectName('muted')
+        layout.addWidget(note)
+        self.checks = {}
+        for label in common:
+            check = QCheckBox(label)
+            check.setChecked(label in enabled)
+            layout.addWidget(check)
+            self.checks[label] = check
+        heading = QLabel('Custom excluded folders')
+        heading.setObjectName('sectionTitle')
+        layout.addWidget(heading)
+        self.paths = QListWidget()
+        self.paths.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.paths.addItems(folders)
+        layout.addWidget(self.paths, 1)
+        row = QHBoxLayout()
+        add = QPushButton('Add folder')
+        add.clicked.connect(self.add_folder)
+        row.addWidget(add)
+        remove = QPushButton('Remove selected')
+        remove.clicked.connect(self.remove_selected)
+        row.addWidget(remove)
+        row.addStretch()
+        layout.addLayout(row)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def folders(self):
+        return [self.paths.item(index).text() for index in range(self.paths.count())]
+
+    def enabled_common(self):
+        return [label for label, check in self.checks.items() if check.isChecked()]
+
+    def add_folder(self):
+        folder = QFileDialog.getExistingDirectory(
+            self, 'Exclude folder', options=QFileDialog.Option.ShowDirsOnly | QFileDialog.Option.DontUseNativeDialog)
+        if folder and folder not in self.folders():
+            self.paths.addItem(folder)
+
+    def remove_selected(self):
+        for item in self.paths.selectedItems():
+            self.paths.takeItem(self.paths.row(item))
 
 
 class ProtectedFoldersDialog(QDialog):

@@ -18,6 +18,10 @@
   and Virus scan, with a button to update it), and asks for a scan when none has
   finished for 14 days. An old system database was never updated by anything and
   never mentioned.
+- Virus scan page: the Event log card is gone; **Show details** opens the log in a
+  dialog with **Clear log**, **View scan report** sits next to the result, and
+  **Excludes** opens a dialog (it replaces the excludes on the Settings page, which
+  has a button for the same dialog).
 - A running scan no longer blocks work that has nothing to do with it: Internet
   protection (its status is read at once, and it can be turned on or off), the
   firewall, and quarantine and detected files. Updating the database or ClamAV and

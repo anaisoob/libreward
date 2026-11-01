@@ -18,7 +18,8 @@ checked. Browser caches, `~/.cache` and `%APPDATA%` are not part of a Quick scan
 they are large, change all the time, and new downloads are checked by Live
 protection when they arrive.
 
-Common and custom exclusions in Settings apply to both scan types. Only checked
+Common and custom exclusions, under **Excludes** on the Virus scan page or in
+Settings, apply to both scan types. Only checked
 common groups are active. A custom excluded folder includes its children, but
 not similarly named siblings. Exclusions take precedence even when an excluded
 location is itself a Quick scan target.
@@ -86,7 +87,8 @@ result; several other files can still be active. An animated icon appears beside
 
 Completed parallel work reaches 100% even with warnings/errors. Final status
 states the outcome separately; cancellation retains partial progress. The report
-dialog opens automatically afterward. **View scan report** reopens it.
+dialog opens automatically afterward. **View scan report**, next to the result,
+reopens it.
 
 The report leads with the outcome in colour (**No threats found**, **2 threats
 found**, **The scan did not finish**) and one sentence such as “18,234 files checked
