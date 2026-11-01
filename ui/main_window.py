@@ -941,8 +941,13 @@ class QtMainWindow(QMainWindow):
         def progress(count, path):
             self.events.put(('__CALL__', self.show_administrator_check_progress, (count, path)))
 
-        if not self.start_task('admin-check', lambda: check_as_administrator(paths, self.task_note, progress),
-                               title='Checking skipped files', on_done=self.administrator_check_finished):
+        def work():
+            result = check_as_administrator(paths, self.task_note, progress)
+            self.events.put(('__CALL__', self.show_administrator_check_outcome, result))
+            return result
+
+        if not self.start_task('admin-check', work, title='Checking skipped files',
+                               on_done=self.administrator_check_finished):
             return
         dialog = self.update_dialog
         # The first result comes after clamscan has loaded the database, which takes a while.
@@ -962,16 +967,21 @@ class QtMainWindow(QMainWindow):
             name = name if len(name) <= 60 else name[:57] + '…'
             self.update_dialog.status.setText(f'Checked {count:,} file{"s" if count != 1 else ""}. Now: {name}')
 
+    def show_administrator_check_outcome(self, result):
+        """The outcome stays in the progress dialog; no second message after it."""
+        if self.update_dialog:
+            title, text, _warning = administrator_check_outcome(result)
+            self.update_dialog.done_text = f'{title}. {text}'
+
     def administrator_check_finished(self, result):
+        title, _text, warning = administrator_check_outcome(result)
         if result['stopped']:
-            self.set_status('Check stopped')
+            self.set_status(title)
             return
         self.add_findings(result['infected'])
         if result['complete']:
             self.last_result = dict(self.last_result, denied_files=[])
-        title, text, warning = administrator_check_outcome(result)
         self.set_status(title, 'danger' if result['infected'] else 'warning' if warning else 'normal')
-        (QMessageBox.warning if warning else QMessageBox.information)(self, 'Skipped files', f'{title}. {text}')
 
     def add_findings(self, findings):
         for path, threat in findings:

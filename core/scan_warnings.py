@@ -52,7 +52,8 @@ def denied_path(line):
     start = line.find('/')
     if start < 0:
         return ''
-    return line[start:].strip().rsplit(': ', 1)[0].removesuffix(' ERROR').removesuffix(' WARNING').rstrip()
+    path = line[start:].strip().rsplit(': ', 1)[0].removesuffix(' ERROR').removesuffix(' WARNING').rstrip()
+    return path.removesuffix('.')  # "Can't open directory /a/b."
 
 
 MAX_DENIED = 20000

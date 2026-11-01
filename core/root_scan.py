@@ -41,6 +41,8 @@ def check_as_administrator(paths, log, progress=lambda _count, _path: None):
     paths, left_out = limited(paths)
     infected = []
     files = 0
+    for path in paths[:100]:
+        log(f'To check: {path}')
 
     def line_of_output(line):
         nonlocal files
@@ -62,6 +64,8 @@ def check_as_administrator(paths, log, progress=lambda _count, _path: None):
 
 def outcome(result):
     """(title, text, is it a warning) for a finished check."""
+    if result.get('stopped'):
+        return 'Check stopped', 'Files checked so far are listed under Show details.', False
     infected, checked = result['infected'], result['checked']
     files = result.get('files', 0)
     place = f'{files:,} file{"s" if files != 1 else ""} in {checked} skipped location{"s" if checked != 1 else ""}'
@@ -71,5 +75,8 @@ def outcome(result):
                  'password.'), True)
     if not result['complete']:
         return 'The check did not finish', 'See Show details for what happened.', True
+    if not files:
+        return ('Nothing to check', f'The {checked} skipped location{"s" if checked != 1 else ""} '
+                'hold no files that can be checked. Show details lists them.', False)
     more = f' {result["left_out"]} more could not be included; check them separately.' if result['left_out'] else ''
     return 'No threats found', f'LibreWard checked {place} with administrator rights.{more}', False

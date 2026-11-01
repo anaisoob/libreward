@@ -468,6 +468,7 @@ class UpdateProgressDialog(QDialog):
         self.setWindowModality(Qt.WindowModality.ApplicationModal)
         self.setMinimumWidth(460)
         self.active = True
+        self.done_text = 'Done.'  # the task can say more about how it ended
         layout = QVBoxLayout(self)
         heading = QLabel(title)
         heading.setObjectName('sectionTitle')
@@ -527,7 +528,7 @@ class UpdateProgressDialog(QDialog):
         self.cancel_button.hide()
         # One plain line; the full output stays under Show details.
         summary = (message or '').strip().splitlines()[0] if (message or '').strip() else ''
-        self.status.setText('Done.' if success else
+        self.status.setText(self.done_text if success else
                             'This did not finish. ' + (summary or 'Show details for more information.'))
         if message:
             self.log.appendPlainText(message.rstrip())

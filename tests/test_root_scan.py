@@ -107,7 +107,9 @@ class RootProgramTests(unittest.TestCase):
         process.stdin.close()
         process.stdout.close()
         self.assertIn(str(self.file), output)
-        self.assertNotIn('gone', output)  # a file gone meanwhile is not an error
+        # A file gone meanwhile is no error: it is named, and clamscan does not get it.
+        self.assertEqual(output.count(str(self.folder / 'gone')), 1)
+        self.assertIn('Not checked, it is gone or a link', output)
         self.assertIn('/x/eicar: Eicar FOUND', output)
 
     def test_links_are_not_passed_on(self):
@@ -116,7 +118,8 @@ class RootProgramTests(unittest.TestCase):
         process = self.start(self.program('echo STARTED\n'))
         self.request(process, [str(link)])
         output, _ = process.communicate()
-        self.assertEqual((process.returncode, output), (0, ''))
+        self.assertEqual(process.returncode, 0)
+        self.assertEqual(output, f'Not checked, it is gone or a link: {link}\n')  # clamscan never started
 
     def test_a_bad_request_is_refused_without_starting_clamscan(self):
         process = self.start(self.program('echo STARTED\n'))
@@ -232,6 +235,7 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(result['files'], 3)
         self.assertIn('/root/a: OK\n', logged)  # also under Show details
         self.assertEqual(logged[-1], 'Checked 3 files.')
+        self.assertEqual(logged[0], 'To check: /root')
 
     def test_a_failed_check_is_never_called_clean(self):
         result, _ = self.run_check(['/a'], 2)
@@ -245,6 +249,8 @@ class CoreTests(unittest.TestCase):
         self.assertIn('1,200 files in 3 skipped locations', core_root_scan.outcome(clean)[1])
         self.assertFalse(core_root_scan.outcome(clean)[2])
         self.assertIn('2 more', core_root_scan.outcome(dict(clean, left_out=2))[1])
+        self.assertEqual(core_root_scan.outcome(dict(clean, files=0))[0], 'Nothing to check')
+        self.assertEqual(core_root_scan.outcome(dict(clean, stopped=True))[0], 'Check stopped')
         found = dict(clean, infected=[('/x', 'Eicar')])
         self.assertIn('administrator password', core_root_scan.outcome(found)[1])
         # A finding counts even when the check ended early.
@@ -266,6 +272,7 @@ class SkippedFilesTests(unittest.TestCase):
                            ("WARNING: Can't open file /root/x: Permission denied", '/root/x'),
                            ("ERROR: Can't open file /root/x", '/root/x'),
                            ('/root/a: b: Permission denied', '/root/a: b'),
+                           ("LibClamAV Warning: Can't open directory /root/x.", '/root/x'),
                            ('Permission denied', '')):
             with self.subTest(line):
                 self.assertEqual(denied_path(line), path)

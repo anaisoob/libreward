@@ -88,6 +88,9 @@ def root_main():
         print(f'ERROR: {exc}', flush=True)
         return 2
     existing = [path for path in paths if os.path.exists(path) and not os.path.islink(path)]
+    for path in paths:
+        if path not in existing:
+            print(f'Not checked, it is gone or a link: {path}', flush=True)
     if not existing:
         return 0
     process = subprocess.Popen(clamscan_command(clamscan, database, existing), stdin=subprocess.DEVNULL,

@@ -1691,18 +1691,21 @@ class QtFrontendTests(unittest.TestCase):
         result = {'infected': [], 'errors': [], 'warnings': True, 'scanned': 1, 'total': 1,
                   'denied_files': ['/root/a']}
         check = self.patch('ui.main_window.check_as_administrator', return_value={
-            'checked': 1, 'left_out': 0, 'infected': [('/root/a', 'Eicar')], 'stopped': False, 'complete': True})
+            'checked': 1, 'files': 1, 'left_out': 0, 'infected': [('/root/a', 'Eicar')], 'stopped': False,
+            'complete': True})
         self.run_report(result, ScanReportDialog.CHECK_AS_ADMINISTRATOR)
         dialog = self.window.update_dialog
         self.assertFalse(dialog.cancel_button.isHidden())
         self.wait_idle()
         self.assertEqual(check.call_args.args[0], ['/root/a'])
+        self.assertIn('1 dangerous file found', dialog.status.text())  # in this dialog, no second message
+        self.assertIn('administrator password', dialog.status.text())
         dialog.close()
         self.app.processEvents()
-        self.wait_for(lambda: self.warning.called)
+        self.wait_for(lambda: self.window.results.rowCount() == 1)
+        self.warning.assert_not_called()
         self.assertEqual(self.window.results.item(0, 0).text(), '/root/a')
         self.assertFalse(self.window.findings_card.isHidden())
-        self.assertIn('administrator password', self.warning.call_args.args[2])
         self.assertEqual(self.window.last_result['denied_files'], [])
 
     def test_files_for_the_administrator_go_the_system_way_with_one_password(self):
@@ -1766,7 +1769,7 @@ class QtFrontendTests(unittest.TestCase):
     def test_the_check_explains_the_password_window_when_run_from_source(self):
         self.patch('ui.main_window.backend.password_note', return_value='It names Python.')
         self.patch('ui.main_window.check_as_administrator', return_value={
-            'checked': 1, 'left_out': 0, 'infected': [], 'stopped': False, 'complete': True})
+            'checked': 1, 'files': 3, 'left_out': 0, 'infected': [], 'stopped': False, 'complete': True})
         self.window.last_result = {'denied_files': ['/root/a']}
         self.window.check_skipped_as_administrator()
         dialog = self.window.update_dialog
@@ -1775,12 +1778,13 @@ class QtFrontendTests(unittest.TestCase):
         self.window.show_administrator_check_progress((1234, '/root/data/report.pdf'))
         self.assertEqual(dialog.status.text(), 'Checked 1,234 files. Now: report.pdf')
         self.wait_idle()
+        self.assertIn('No threats found. LibreWard checked 3 files', dialog.status.text())
         dialog.close()
 
     def test_a_stopped_check_changes_nothing(self):
         result = {'infected': [], 'errors': [], 'denied_files': ['/root/a']}
         self.window.last_result = result
-        self.window.administrator_check_finished({'stopped': True, 'infected': [], 'complete': False})
+        self.window.administrator_check_finished({'stopped': True, 'infected': [], 'complete': False, 'checked': 1})
         self.assertEqual(self.window.last_result['denied_files'], ['/root/a'])
         self.warning.assert_not_called()
 
