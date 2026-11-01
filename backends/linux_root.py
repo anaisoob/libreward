@@ -28,6 +28,14 @@ def system_check(arguments):
     return 0
 
 
+def scan_files(arguments):
+    """No arguments; the request comes on stdin, see linux_root_scan."""
+    from backends.linux_root_scan import root_main
+    if arguments:
+        raise ValueError('The check takes no arguments.')
+    return root_main()
+
+
 def internet_protection(arguments):
     """Arguments: none to pause, or the mode and the DNS service; the domain list on stdin."""
     from backends import backend
@@ -81,6 +89,7 @@ def firewall_change(arguments):
 
 ACTIONS = {
     'system-check': system_check,
+    'scan-files': scan_files,
     'internet-protection': internet_protection,
     'firewall-read': firewall_read,
     'firewall-change': firewall_change,

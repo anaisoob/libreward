@@ -39,13 +39,15 @@ instead of “run /usr/bin/python3”:
 | Program | polkit action | Asks |
 | --- | --- | --- |
 | `system-check` | `io.github.anaisoob.LibreWard.system-check` | once, then kept for a few minutes (`auth_admin_keep`); nothing is changed |
+| `scan-files` | `io.github.anaisoob.LibreWard.scan-files` | every time; nothing is changed |
 | `internet-protection` | `io.github.anaisoob.LibreWard.internet-protection` | every time (`auth_admin`) |
 | `firewall-read` | `io.github.anaisoob.LibreWard.firewall-read` | once, then kept for a few minutes; nothing is changed |
 | `firewall-change` | `io.github.anaisoob.LibreWard.firewall-change` | every time |
 
 Each program imports `backends/linux_root.py` from `/usr/share/libreward`, which
 only root can change, and accepts only fixed choices: the system check takes no
-arguments, the firewall programs a known firewall and a change that is validated
+arguments, `scan-files` a list of files and a database folder and chooses the
+`clamscan` and all its options itself, the firewall programs a known firewall and a change that is validated
 again as root, Internet protection a mode and a DNS service from a fixed list. They
 find the system programs they run themselves. Installing ClamAV or the DNS
 component runs the package manager through pkexec directly; that dialog shows the

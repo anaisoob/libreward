@@ -19,7 +19,10 @@ they are large, change all the time, and new downloads are checked by Live
 protection when they arrive.
 
 Common and custom exclusions, under **Excludes** on the Virus scan page or in
-Settings, apply to both scan types. Only checked
+Settings, apply to both scan types. The common groups cover what is large and rarely
+worth checking on most computers (containers, virtual machines, games, Flatpak and
+Snap apps, caches), then folders for developers. None is on by default: what is
+skipped is not checked. Only checked
 common groups are active. A custom excluded folder includes its children, but
 not similarly named siblings. Exclusions take precedence even when an excluded
 location is itself a Quick scan target.
@@ -188,6 +191,22 @@ manager (for example Alpine) the package checks are skipped and listed as not ru
 The check cannot prove that a computer is clean: a rootkit in the kernel can hide
 from any check that runs on the same system. For certainty, check the disk from a
 system started from a USB stick.
+
+## Files a scan could not open
+
+When your account may not open some files or folders, the scan report says how many
+and offers **Check as administrator**. LibreWard asks for the password and checks only
+those locations, not everything again: `clamscan` running as root reads untrusted files
+with full rights, so it should read as little as possible. There is deliberately no
+option to run whole scans this way, and parallel scanning could not help them.
+
+The check reads and reports; it changes nothing. A dangerous file found this way is
+listed under Detected files, but your account cannot move it, so it cannot go to
+quarantine: remove it with an administrator account. Symbolic links are not followed.
+The program is `/usr/libexec/libreward/scan-files` (see
+[Packaging](packaging.md#administrator-rights)); run from source, pkexec starts the
+system's `python3 -I` with the source of `backends/linux_root_scan.py`. Windows does not
+have this check yet.
 
 ## Live protection for new files
 

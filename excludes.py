@@ -22,6 +22,12 @@ def get_common_excludes() -> dict[str, list[str]]:
     return backend.default_common_excludes()
 
 
+def exclude_groups() -> list[tuple[str, list[str]]]:
+    """(heading, labels) in the order people need them."""
+    return [("Large programs and data", list(backend.large_data_excludes())),
+            ("For developers", list(backend.developer_excludes()))]
+
+
 def get_active_exclude_patterns(
     enabled_common_excludes: set[str], user_excludes: list[str]
 ) -> list[str]:

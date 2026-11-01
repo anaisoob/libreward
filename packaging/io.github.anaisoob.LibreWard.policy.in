@@ -20,6 +20,17 @@
     <annotate key="org.freedesktop.policykit.exec.path">@HELPERDIR@/system-check</annotate>
   </action>
 
+  <action id="io.github.anaisoob.LibreWard.scan-files">
+    <description>Check files your account cannot open for viruses</description>
+    <message>LibreWard wants to check for viruses the files that a scan could not open. Nothing is changed.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">@HELPERDIR@/scan-files</annotate>
+  </action>
+
   <action id="io.github.anaisoob.LibreWard.internet-protection">
     <description>Turn Internet protection on or off</description>
     <message>LibreWard wants to change Internet protection: the local filter that blocks dangerous and unwanted websites for everyone on this computer.</message>

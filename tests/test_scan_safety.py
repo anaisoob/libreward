@@ -152,6 +152,25 @@ class ScanSafetyTests(unittest.TestCase):
         self.assertIsNotNone(re.search(expression, r'C:\Users\Name\My folder'))
         self.assertIsNotNone(re.search(expression, 'C:/Users/Name/My folder'))
 
+    def test_denied_files_are_kept_by_path_for_a_check_as_administrator(self):
+        output = "/root/secret: Access denied. ERROR\n/home/a: OK\n----------- SCAN SUMMARY -----------\nInfected files: 0\n"
+        self.assertEqual(self.run_scan(output, 2).result['denied_files'], ['/root/secret'])
+
+    def test_common_groups_cover_containers_and_are_clamav_compatible(self):
+        from backends.linux import LinuxBackend
+        linux = LinuxBackend()
+        groups = linux.default_common_excludes()
+        self.assertEqual(set(groups), set(linux.large_data_excludes()) | set(linux.developer_excludes()))
+        self.assertTrue(path_is_excluded('/var/lib/docker/overlay2/x/a', groups['Containers (Docker, Podman)']))
+        self.assertFalse(path_is_excluded('/var/lib/dockerfile', groups['Containers (Docker, Podman)']))
+        self.assertTrue(path_is_excluded(os.path.expanduser('~/.local/share/containers/storage/a'),
+                                         groups['Containers (Docker, Podman)']))
+        self.assertTrue(path_is_excluded('/home/a/VirtualBox VMs/x.vdi',
+                                         groups['Virtual machines (VirtualBox, GNOME Boxes, libvirt)']))
+        for patterns in groups.values():
+            for argument in build_clamscan_exclude_args(patterns):
+                self.assertNotIn('(?', argument)  # POSIX ERE
+
     def test_missing_database_blocks_core_scan_readiness(self):
         runtime = RuntimeInfo('system-path', 'clamscan', 'freshclam', 'ClamAV 1', '1')
         self.assertFalse(StartupStatus(runtime, True, False, True, True).can_scan)

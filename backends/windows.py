@@ -503,6 +503,30 @@ $app = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell
     # ── excludes ────────────────────────────────────────────────────
 
     def default_common_excludes(self) -> dict[str, list[str]]:
+        return {**self.large_data_excludes(), **self.developer_excludes()}
+
+    def large_data_excludes(self) -> dict[str, list[str]]:
+        return {
+            "Containers and Linux (Docker Desktop, WSL)": [
+                r"(^|/)AppData/Local/Docker($|/)",
+                r"(^|/)AppData/Local/Packages/CanonicalGroupLimited[^/]*($|/)",
+            ],
+            "Virtual machines (VirtualBox, Hyper-V)": [
+                r"(^|/)VirtualBox VMs($|/)",
+                r"(^|/)Hyper-V($|/)",
+            ],
+            "Games (Steam)": [
+                r"(^|/)Steam/steamapps($|/)",
+            ],
+            "Windows recycle bin": [
+                r"(^|/)\$RECYCLE\.BIN($|/)",
+            ],
+            "System Volume Information": [
+                r"(^|/)System Volume Information($|/)",
+            ],
+        }
+
+    def developer_excludes(self) -> dict[str, list[str]]:
         return {
             "Python virtual environments (.venv, venv, env)": [
                 r"(^|/)\.venv($|/)",
@@ -520,12 +544,6 @@ $app = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell
             ],
             "Git directories (.git)": [
                 r"(^|/)\.git($|/)",
-            ],
-            "Windows recycle bin": [
-                r"(^|/)\$RECYCLE\.BIN($|/)",
-            ],
-            "System Volume Information": [
-                r"(^|/)System Volume Information($|/)",
             ],
         }
 

@@ -12,7 +12,7 @@ from core.clamd import ClamdSession, ScanCancelled, FileScanWarning, scan_file
 from core.file_discovery import FileDiscovery
 from core.scan_policy import scan_limits
 from core.scan_report import format_duration
-from core.scan_warnings import WarningSummary, alert_warning, clean_reason
+from core.scan_warnings import WarningSummary, alert_warning, clean_reason, denied_path
 from excludes import mandatory_exclude_patterns
 
 from backends import backend
@@ -94,7 +94,8 @@ class ScanService:
                     self.output_queue.put('Counting independently while scanning (scan queue limited to 256 files)...\n')
                     discovery = FileDiscovery(scan_root, exclude_patterns,
                                               lambda: self.stop_requested,
-                                              lambda event: None, lambda: self.scanned_files)
+                                              lambda event: None, lambda: self.scanned_files,
+                                              denied=self.folder_denied)
                     counter = FileDiscovery(scan_root, exclude_patterns,
                                             lambda: self.stop_requested,
                                             self.output_queue.put, lambda: self.scanned_files,
@@ -105,6 +106,7 @@ class ScanService:
                             infected, warnings_found, errors_found = self._run_parallel(
                                 discovery, endpoint, direct=not daemon.reused)
                             counter.finish()
+                            warnings_found = warnings_found or bool(self.warning_summary.denied)
                     finally:
                         self.progress_counter = None
                     total = discovery.total
@@ -210,7 +212,7 @@ class ScanService:
                             ))
                             if access_problem:
                                 file_warning_found = True
-                                self.warning_summary.add('', line)
+                                self.warning_summary.add(denied_path(line), line)
                             elif "ERROR" in line:
                                 fatal_output_found = True
                             elif 'WARNING' in line:
@@ -315,6 +317,7 @@ class ScanService:
                 "parallel": used_parallel,
                 'warning_counts': dict(self.warning_summary.counts),
                 'warning_details': self.warning_summary.details,
+                'denied_files': list(self.warning_summary.denied),
                 'warning_count': sum(self.warning_summary.counts.values()),
                 'scan_profile': self.scan_profile,
                 'duration_seconds': time.monotonic() - started if started is not None else None,
@@ -323,6 +326,10 @@ class ScanService:
             }
             self.result = result
             self.output_queue.put(("__SCAN_DONE__", result))
+
+    def folder_denied(self, folder):
+        self.warning_summary.add(folder, 'Permission denied', 'access')
+        self.output_queue.put(f"{folder}: Permission denied WARNING\n")
 
     def _run_parallel(self, files, endpoint, *, direct=False):
         """Keep a bounded queue and aggregate results on this worker thread."""

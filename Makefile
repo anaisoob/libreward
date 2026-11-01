@@ -19,7 +19,7 @@ HELPERDIR = $(LIBEXECDIR)/libreward
 POLKITDIR = $(DATADIR)/polkit-1/actions
 POLICY = io.github.anaisoob.LibreWard.policy
 # One program per polkit action, see backends/linux_root.py.
-ROOT_HELPERS = system-check internet-protection firewall-read firewall-change
+ROOT_HELPERS = system-check internet-protection firewall-read firewall-change scan-files
 
 MODULES = main.py config.py scanner.py excludes.py
 PACKAGES = backends core ui

@@ -20,6 +20,7 @@ from config import load_config, save_config
 from core.authorization import AuthorizationError
 from core.constants import APP_NAME, APP_VERSION, CLAMAV_HOMEPAGE, CLAMAV_SOURCE
 from core.monitor_agent import monitoring_enabled, read_state
+from core.root_scan import check_as_administrator, outcome as administrator_check_outcome
 from core.security_status import old_database_days
 from core.policy import load_policy
 from core.db_manager import (
@@ -35,7 +36,7 @@ from core.system_check import available as system_check_available, run_system_ch
 from core.system_check import deep_available as deep_system_check_available, run_deep_system_check
 from core.system_check import summary as system_check_summary
 from core.updater import check_for_updates, perform_update
-from excludes import get_active_exclude_patterns, get_common_excludes
+from excludes import exclude_groups, get_active_exclude_patterns, get_common_excludes
 from .dialogs import (
     ExcludesDialog, LogDialog,
     AntivirusSetupDialog, AuthorizationHelpDialog, ClamAVConsentDialog, ScanReportDialog, SystemCheckDialog,
@@ -917,16 +918,56 @@ class QtMainWindow(QMainWindow):
         if self.last_result is None:
             return
         try:
-            report = ScanReportDialog(self, self.last_result)
+            report = ScanReportDialog(self, self.last_result,
+                                      can_check_as_administrator=backend.root_scan_available())
         except Exception:
             # Never leave a finished scan without a visible outcome.
             import traceback
             self.log.appendPlainText('Scan report could not be shown:\n' + traceback.format_exc())
             QMessageBox.information(self, 'Scan report', scan_outcome(self.last_result) + '.')
             return
-        if report.exec() == ScanReportDialog.QUARANTINE_ALL:
+        choice = report.exec()
+        if choice == ScanReportDialog.QUARANTINE_ALL:
             self.results.selectAll()
             self.handle_findings('quarantine')
+        elif choice == ScanReportDialog.CHECK_AS_ADMINISTRATOR:
+            self.check_skipped_as_administrator()
+
+    def check_skipped_as_administrator(self):
+        paths = list(self.last_result.get('denied_files', []))
+        backend.reset_cancellation()
+        if not self.start_task('admin-check', lambda: check_as_administrator(paths, self.task_note),
+                               title='Checking skipped files', on_done=self.administrator_check_finished):
+            return
+        dialog = self.update_dialog
+
+        def stop():
+            backend.stop_root_scan()
+            dialog.status.setText('Stopping…')
+            dialog.cancel_button.setEnabled(False)
+        dialog.enable_cancel(stop)
+
+    def administrator_check_finished(self, result):
+        if result['stopped']:
+            self.set_status('Check stopped')
+            return
+        self.add_findings(result['infected'])
+        if result['complete']:
+            self.last_result = dict(self.last_result, denied_files=[])
+        title, text, warning = administrator_check_outcome(result)
+        self.set_status(title, 'danger' if result['infected'] else 'warning' if warning else 'normal')
+        (QMessageBox.warning if warning else QMessageBox.information)(self, 'Skipped files', f'{title}. {text}')
+
+    def add_findings(self, findings):
+        for path, threat in findings:
+            if any(self.results.item(i, 0).text() == path and self.results.item(i, 1).text() == threat
+                   for i in range(self.results.rowCount())):
+                continue
+            row = self.results.rowCount()
+            self.results.insertRow(row)
+            self.results.setItem(row, 0, QTableWidgetItem(path))
+            self.results.setItem(row, 1, QTableWidgetItem(threat))
+        self.findings_card.setVisible(self.results.rowCount() > 0)
 
     def start_system_check(self):
         if self.start_task('system-check', run_system_check, on_done=self.system_check_finished):
@@ -1124,9 +1165,8 @@ class QtMainWindow(QMainWindow):
             self.path.setText(folder)
 
     def open_excludes(self):
-        common = get_common_excludes()
         folders = [path for path in self.config.get("user_excludes", []) if isinstance(path, str)]
-        dialog = ExcludesDialog(self, common, self.config.get("enabled_common_excludes", []), folders)
+        dialog = ExcludesDialog(self, exclude_groups(), self.config.get("enabled_common_excludes", []), folders)
         if not dialog.exec():
             return
         updated = dict(self.config, enabled_common_excludes=dialog.enabled_common(),
@@ -1799,14 +1839,7 @@ class QtMainWindow(QMainWindow):
                                      "Counts may differ when files change or cannot be accessed.")
                 if result.get("warnings") and result.get("admin_hint"):
                     self.summary.setText(self.summary.text() + " For a deeper scan of protected locations, you can run LibreWard as Administrator.")
-                for path, threat in result["infected"]:
-                    if any(self.results.item(i, 0).text() == path and self.results.item(i, 1).text() == threat
-                           for i in range(self.results.rowCount())):
-                        continue
-                    row = self.results.rowCount()
-                    self.results.insertRow(row)
-                    self.results.setItem(row, 0, QTableWidgetItem(path))
-                    self.results.setItem(row, 1, QTableWidgetItem(threat))
+                self.add_findings(result["infected"])
             elif kind == "__TASK_DONE__":
                 self.completion = values
         # The completion event can arrive just before the worker returns. Wait

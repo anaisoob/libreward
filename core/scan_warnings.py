@@ -44,14 +44,31 @@ def clean_reason(reason):
     return reason
 
 
+def denied_path(line):
+    """The path in a clamscan line about a file it could not open, or ''.
+
+    "/a/b: Access denied. ERROR" or "WARNING: Can't open file /a/b: Permission denied".
+    """
+    start = line.find('/')
+    if start < 0:
+        return ''
+    return line[start:].strip().rsplit(': ', 1)[0].removesuffix(' ERROR').removesuffix(' WARNING').rstrip()
+
+
+MAX_DENIED = 20000
+
+
 class WarningSummary:
     def __init__(self):
         self.counts = Counter()
         self.details = []
+        self.denied = {}  # what administrator rights may be able to read
 
     def add(self, path, reason, category=None):
         category = category or warning_category(reason)
         self.counts[category] += 1
+        if category == 'access' and path and len(self.denied) < MAX_DENIED:
+            self.denied[str(path)] = True
         if len(self.details) < 200:
             self.details.append({'path': str(path), 'reason': clean_reason(reason), 'category': category})
         return category

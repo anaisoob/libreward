@@ -175,9 +175,16 @@ class PlatformBackend(ABC):
         """Return platform-appropriate default exclude patterns.
 
         Keys are human-readable labels, values are lists of regex patterns
-        or absolute-path prefixes.
+        or absolute-path prefixes. Stored by label: renaming one loses the choice.
         """
         ...
+
+    def large_data_excludes(self) -> dict[str, list[str]]:
+        """The groups that apply to most people, first in the list."""
+        return {}
+
+    def developer_excludes(self) -> dict[str, list[str]]:
+        return {}
 
     # ── quick scan paths ───────────────────────────────────────────
 
@@ -250,6 +257,17 @@ class PlatformBackend(ABC):
     def platform_arch(self) -> str:
         """Return a string like 'windows-x64', 'linux-x64', etc."""
         ...
+
+    def root_scan_available(self):
+        """Whether files this account cannot open can be checked with administrator rights."""
+        return False
+
+    def scan_as_root(self, paths, database, on_line):
+        """Check `paths`; returns (exit code, stopped); see backends/linux_root_scan.py."""
+        raise OSError('Checking as administrator is not available on this platform.')
+
+    def stop_root_scan(self):
+        pass
 
     def scan_may_need_admin(self, scan_roots) -> bool:
         """Whether selected targets warrant an optional deeper-scan hint."""

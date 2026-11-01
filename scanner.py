@@ -67,8 +67,11 @@ def normalize_scan_roots(scan_roots):
     return unique
 
 
-def iter_scan_files(scan_roots, exclude_patterns, check_stop):
-    """Discover files lazily, pruning overlapping roots without a file-sized set."""
+def iter_scan_files(scan_roots, exclude_patterns, check_stop, on_denied=None):
+    """Discover files lazily, pruning overlapping roots without a file-sized set.
+
+    `on_denied` hears about folders this account may not read.
+    """
     roots = normalize_scan_roots(scan_roots)
     for root in roots:
         if check_stop():
@@ -94,6 +97,9 @@ def iter_scan_files(scan_roots, exclude_patterns, check_stop):
                             yield entry.path
                     except OSError:
                         continue
+        except PermissionError:
+            if on_denied:
+                on_denied(folder)
         except OSError:
             continue
 

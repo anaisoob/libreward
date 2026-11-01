@@ -1652,6 +1652,66 @@ class QtFrontendTests(unittest.TestCase):
         self.assertEqual(self.window.exclude_summary.text(), 'Excludes: 1 common groups · 1 custom folders')
         self.run_excludes(lambda dialog: self.assertEqual(dialog.folders(), ['/skip']), False)
 
+    def test_excludes_put_large_data_first_and_warn_about_what_is_skipped(self):
+        from PySide6.QtWidgets import QCheckBox, QLabel
+        from ui.dialogs import ExcludesDialog
+        from excludes import exclude_groups
+        dialog = ExcludesDialog(self.window, exclude_groups(), [], [])
+        labels = [check.text() for check in dialog.findChildren(QCheckBox)]
+        self.assertEqual(labels[0], 'Containers (Docker, Podman)')
+        self.assertLess(labels.index('Games (Steam, Lutris, Heroic)'), labels.index('Git directories (.git)'))
+        self.assertTrue(any('not found' in label.text() for label in dialog.findChildren(QLabel)))
+        dialog.deleteLater()
+
+    def run_report(self, result, choice=None, available=True):
+        from ui.dialogs import ScanReportDialog
+        self.window.last_result = result
+        self.patch('ui.main_window.backend.root_scan_available', return_value=available)
+        shown = []
+        def execute(dialog):
+            shown.append(dialog)
+            return choice if choice is not None else 0
+        with patch.object(ScanReportDialog, 'exec', execute):
+            self.window.show_scan_report()
+        return shown[0]
+
+    def report_buttons(self, dialog):
+        from PySide6.QtWidgets import QPushButton
+        return [button.text() for button in dialog.findChildren(QPushButton)]
+
+    def test_the_report_offers_a_check_only_for_skipped_files(self):
+        result = {'infected': [], 'errors': [], 'warnings': True, 'scanned': 1, 'total': 1,
+                  'denied_files': ['/root/a']}
+        self.assertIn('Check as administrator', self.report_buttons(self.run_report(result)))
+        self.assertNotIn('Check as administrator', self.report_buttons(self.run_report(dict(result, denied_files=[]))))
+        self.assertNotIn('Check as administrator', self.report_buttons(self.run_report(result, available=False)))
+
+    def test_checking_skipped_files_lists_what_it_finds_and_closes_the_offer(self):
+        from ui.dialogs import ScanReportDialog
+        result = {'infected': [], 'errors': [], 'warnings': True, 'scanned': 1, 'total': 1,
+                  'denied_files': ['/root/a']}
+        check = self.patch('ui.main_window.check_as_administrator', return_value={
+            'checked': 1, 'left_out': 0, 'infected': [('/root/a', 'Eicar')], 'stopped': False, 'complete': True})
+        self.run_report(result, ScanReportDialog.CHECK_AS_ADMINISTRATOR)
+        dialog = self.window.update_dialog
+        self.assertFalse(dialog.cancel_button.isHidden())
+        self.wait_idle()
+        self.assertEqual(check.call_args.args[0], ['/root/a'])
+        dialog.close()
+        self.app.processEvents()
+        self.wait_for(lambda: self.warning.called)
+        self.assertEqual(self.window.results.item(0, 0).text(), '/root/a')
+        self.assertFalse(self.window.findings_card.isHidden())
+        self.assertIn('cannot quarantine', self.warning.call_args.args[2])
+        self.assertEqual(self.window.last_result['denied_files'], [])
+
+    def test_a_stopped_check_changes_nothing(self):
+        result = {'infected': [], 'errors': [], 'denied_files': ['/root/a']}
+        self.window.last_result = result
+        self.window.administrator_check_finished({'stopped': True, 'infected': [], 'complete': False})
+        self.assertEqual(self.window.last_result['denied_files'], ['/root/a'])
+        self.warning.assert_not_called()
+
     def test_cancelled_excludes_change_nothing(self):
         save = self.patch('ui.main_window.save_config')
         self.run_excludes(lambda dialog: dialog.paths.addItem('/skip'), False)

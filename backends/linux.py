@@ -565,6 +565,41 @@ class LinuxBackend(PlatformBackend):
     # ── excludes ────────────────────────────────────────────────────
 
     def default_common_excludes(self) -> dict[str, list[str]]:
+        return {**self.large_data_excludes(), **self.developer_excludes()}
+
+    def large_data_excludes(self) -> dict[str, list[str]]:
+        home = os.path.expanduser("~")
+        return {
+            "Containers (Docker, Podman)": [
+                "/var/lib/docker", "/var/lib/containers",
+                os.path.join(home, ".local/share/docker"),
+                os.path.join(home, ".local/share/containers"),
+            ],
+            "Virtual machines (VirtualBox, GNOME Boxes, libvirt)": [
+                r"(^|/)VirtualBox VMs($|/)",
+                "/var/lib/libvirt",
+                os.path.join(home, ".local/share/libvirt"),
+                os.path.join(home, ".local/share/gnome-boxes"),
+                os.path.join(home, ".var/app/org.gnome.Boxes"),
+            ],
+            "Games (Steam, Lutris, Heroic)": [
+                os.path.join(home, ".steam"),
+                os.path.join(home, ".local/share/Steam"),
+                os.path.join(home, ".var/app/com.valvesoftware.Steam"),
+                os.path.join(home, ".local/share/lutris"),
+                os.path.join(home, "Games"),
+            ],
+            "Flatpak and Snap apps": [
+                "/var/lib/flatpak", "/var/lib/snapd",
+                os.path.join(home, ".local/share/flatpak"),
+                os.path.join(home, "snap"),
+            ],
+            "General cache dirs (.cache)": [
+                r"(^|/)\.cache($|/)",
+            ],
+        }
+
+    def developer_excludes(self) -> dict[str, list[str]]:
         return {
             "Python virtual environments (.venv, venv, env)": [
                 r"(^|/)\.venv($|/)",
@@ -588,13 +623,10 @@ class LinuxBackend(PlatformBackend):
             "Git directories (.git)": [
                 r"(^|/)\.git($|/)",
             ],
-            "General cache dirs (.cache)": [
-                r"(^|/)\.cache($|/)",
-            ],
-            "Podman rootless internal storage": [
-                os.path.join(
-                    os.path.expanduser("~"), ".local/share/containers/storage"
-                ),
+            "Java and Go build caches (.gradle, .m2, go/pkg)": [
+                r"(^|/)\.gradle($|/)",
+                r"(^|/)\.m2($|/)",
+                r"(^|/)go/pkg($|/)",
             ],
         }
 
@@ -705,6 +737,61 @@ class LinuxBackend(PlatformBackend):
             raise RuntimeError('The deeper system check did not finish. ' + errors.strip()[-500:])
         result = json.loads(output)
         return result['findings'], result['checks']
+
+    def root_scan_available(self):
+        from .linux_root_scan import trusted_clamscan
+        return bool(self._trusted_firewall_executable('pkexec') and self._trusted_firewall_executable('python3')
+                    and trusted_clamscan())
+
+    def scan_as_root(self, paths, database, on_line):
+        """Runs in a worker; `on_line` hears clamscan's output as it comes."""
+        import inspect
+        import json
+        from . import linux_root_scan
+        helper = self._root_helper('scan-files')
+        if helper:
+            command = [helper]
+        else:
+            python = self._trusted_firewall_executable('python3')
+            if not python:
+                raise RuntimeError('Checking as administrator needs python3 in a system folder.')
+            source = inspect.getsource(linux_root_scan) + '\nimport sys\nsys.exit(root_main())\n'
+            command = [python, '-I', '-c', source]
+        self._root_scan_stopped = False
+        process = self.start_privileged(
+            [self._require_authorizer(), '--disable-internal-agent', *command], stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace')
+        self._root_scan = process
+        try:
+            try:
+                process.stdin.write(json.dumps({'database': database, 'paths': paths}) + '\n')
+                process.stdin.flush()
+            except (OSError, ValueError):
+                pass  # authorization refused or stopped: the exit code says so
+            for line in process.stdout:
+                on_line(line)
+            code = process.wait()
+        finally:
+            self._root_scan = None
+            self._close_quietly(process.stdin)
+            self._close_quietly(process.stdout)
+        self._privileged_finished(process)
+        self._check_authorization_exit(code)
+        return code, self._root_scan_stopped
+
+    @staticmethod
+    def _close_quietly(stream):
+        try:
+            stream.close()
+        except (OSError, ValueError):
+            pass
+
+    def stop_root_scan(self):
+        process = getattr(self, '_root_scan', None)
+        if self.cancel_authorization() or process is None:
+            return  # still waiting for the password
+        self._root_scan_stopped = True
+        self._close_quietly(process.stdin)  # the check ends itself when its input closes
 
     def autostart_programs(self) -> list[str]:
         """Programs of this user's autostart entries and systemd user services."""
@@ -1065,7 +1152,7 @@ class LinuxBackend(PlatformBackend):
     # (packaging/libreward-root.in), so the password dialog says what LibreWard
     # wants to do. Run from source there are none, and pkexec runs a trusted
     # python3 with the helper code instead.
-    ROOT_HELPERS = ('system-check', 'internet-protection', 'firewall-read', 'firewall-change')
+    ROOT_HELPERS = ('system-check', 'internet-protection', 'firewall-read', 'firewall-change', 'scan-files')
 
     def _root_helper(self, name):
         prefix = Path(__file__).resolve().parents[2]  # /usr for /usr/share/libreward/backends

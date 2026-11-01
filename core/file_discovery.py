@@ -7,9 +7,10 @@ from scanner import iter_scan_files
 
 
 class FileDiscovery:
-    def __init__(self, roots, excludes, stopped, report, processed, *, count_only=False):
+    def __init__(self, roots, excludes, stopped, report, processed, *, count_only=False, denied=None):
         self.roots, self.excludes = roots, excludes
         self.count_only = count_only
+        self.denied = denied
         self.stopped, self.report, self.processed = stopped, report, processed
         self.queue = queue.Queue(maxsize=256)
         self.cancel = threading.Event()
@@ -32,7 +33,7 @@ class FileDiscovery:
 
     def _discover(self):
         try:
-            for path in iter_scan_files(self.roots, self.excludes, self.is_stopped):
+            for path in iter_scan_files(self.roots, self.excludes, self.is_stopped, self.denied):
                 if self.count_only:
                     self.total += 1
                     self.notify()

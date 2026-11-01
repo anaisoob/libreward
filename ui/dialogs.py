@@ -33,23 +33,26 @@ class LogDialog(QDialog):
 
 class ExcludesDialog(QDialog):
     """What scans skip: common groups and the user's own folders."""
-    def __init__(self, parent, common, enabled, folders):
+    def __init__(self, parent, groups, enabled, folders):
         super().__init__(parent)
         self.setWindowTitle('Excludes')
-        self.resize(560, 520)
+        self.resize(600, 640)
         layout = QVBoxLayout(self)
-        heading = QLabel('Common excludes')
-        heading.setObjectName('sectionTitle')
-        layout.addWidget(heading)
-        note = QLabel('Only selected exclusions are applied to scans.')
+        note = QLabel('Scans skip what you select here and a virus in it is not found. '
+                      'Skip only folders you trust, to make scans faster.')
         note.setObjectName('muted')
+        note.setWordWrap(True)
         layout.addWidget(note)
         self.checks = {}
-        for label in common:
-            check = QCheckBox(label)
-            check.setChecked(label in enabled)
-            layout.addWidget(check)
-            self.checks[label] = check
+        for title, labels in groups:
+            heading = QLabel(title)
+            heading.setObjectName('sectionTitle')
+            layout.addWidget(heading)
+            for label in labels:
+                check = QCheckBox(label)
+                check.setChecked(label in enabled)
+                layout.addWidget(check)
+                self.checks[label] = check
         heading = QLabel('Custom excluded folders')
         heading.setObjectName('sectionTitle')
         layout.addWidget(heading)
@@ -551,8 +554,9 @@ class UpdateProgressDialog(QDialog):
 class ScanReportDialog(QDialog):
     """Outcome first in plain words; file lists and engine output under Show details."""
     QUARANTINE_ALL = 2
+    CHECK_AS_ADMINISTRATOR = 3
 
-    def __init__(self, parent, result):
+    def __init__(self, parent, result, *, can_check_as_administrator=False):
         from html import escape
         from core.scan_report import friendly_report, report_summary
         from core.scan_warnings import warning_report
@@ -601,6 +605,12 @@ class ScanReportDialog(QDialog):
             quarantine = buttons.addButton('Move all to quarantine', QDialogButtonBox.ButtonRole.ActionRole)
             quarantine.setObjectName('primaryButton')
             quarantine.clicked.connect(lambda: self.done(self.QUARANTINE_ALL))
+        skipped = len(result.get('denied_files', []))
+        if skipped and can_check_as_administrator:
+            layout.insertWidget(layout.indexOf(self.details_button), QLabel(
+                f'{skipped} skipped location{"s" if skipped != 1 else ""} can be checked with administrator rights.'))
+            check = buttons.addButton('Check as administrator', QDialogButtonBox.ButtonRole.ActionRole)
+            check.clicked.connect(lambda: self.done(self.CHECK_AS_ADMINISTRATOR))
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
