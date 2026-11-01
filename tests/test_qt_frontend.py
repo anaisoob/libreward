@@ -146,8 +146,8 @@ class QtFrontendTests(unittest.TestCase):
         page.refresh()
         self.security_rows()
         warnings = [entry['key'] for entry in page.items if entry['severity'] == 'warning']
-        self.assertEqual(warnings, ['updates', 'firewall', 'files', 'screen-lock'])
-        self.assertIn('4 things need your attention', page.summary.text())
+        self.assertEqual(warnings, ['updates', 'firewall', 'files', 'screen-lock', 'scan'])
+        self.assertIn('5 things need your attention', page.summary.text())
         from PySide6.QtWidgets import QPushButton
         buttons = {button.text() for button in page.page.findChildren(QPushButton)}
         self.assertTrue({'Open software updates', 'Open Firewall', 'Turn on', 'Check again'} <= buttons)
@@ -179,21 +179,22 @@ class QtFrontendTests(unittest.TestCase):
         with patch.object(self.window, 'switch_page') as switch:
             page.primary.click()
         switch.assert_called_once_with('internet')
-        problems = {'files', 'firewall', 'screen-lock'}
+        problems = {'files', 'firewall', 'scan', 'screen-lock'}
         self.assertEqual(len(self.visible_tiles(page)), len(page.items) - len(problems))
         shown = [label.text() for label in page.page.findChildren(type(page.summary), 'statusValue')]
         self.assertEqual(shown, ['!  New downloads are not checked for viruses', '!  Firewall is off',
-                                 '!  Screen does not lock by itself'])
+                                 '!  This computer has not been scanned yet', '!  Screen does not lock by itself'])
 
     def test_security_status_without_problems_offers_a_scan(self):
         self.agent_running.return_value = True
         self.patch('ui.security_page.backend.internet_protection_available', return_value=False)
         self.patch('ui.security_page.monitoring_enabled', return_value=True)
+        self.window.remember_scan()
         page = self.window.security_page
         page.refresh()
         self.security_rows()
         self.assertEqual(page.summary.text(), 'This computer is well protected')
-        self.assertEqual(page.primary.text(), 'Run a Quick scan')
+        self.assertEqual(page.primary.text(), 'Scan now')
         self.assertEqual(page.page.findChildren(type(page.summary), 'statusValue'), [])
         self.assertEqual(len(self.visible_tiles(page)), len(page.items))
         with patch.object(self.window, 'start_quick_scan') as scan:
@@ -213,6 +214,25 @@ class QtFrontendTests(unittest.TestCase):
         page.refresh()
         self.security_rows()
         self.assertEqual(page.activity.text(), 'Last scan 3 days ago · 2 files in quarantine')
+
+    def test_an_old_database_comes_first_and_is_said_on_the_scan_page(self):
+        self.patch('ui.security_page.database_time', return_value=time.time() - 21 * 86400)
+        self.patch('ui.main_window.database_time', return_value=time.time() - 21 * 86400)
+        self.assertTrue(self.window.database_notice.isHidden())
+        self.window.check_runtime(quiet=True)
+        self.wait_for(lambda: not self.window.database_notice.isHidden())
+        self.assertIn('21 days old', self.window.database_notice_text.text())
+        page = self.window.security_page
+        page.refresh()
+        self.security_rows()
+        self.assertEqual(page.primary.text(), 'Update virus database')
+        self.assertEqual(page.primary_action, ('Update virus database', 'database'))
+        with patch.object(self.window, 'update_database') as update:
+            page.primary.click()
+        update.assert_called_once_with()
+        self.patch('ui.main_window.database_time', return_value=time.time())
+        self.window.check_runtime(quiet=True)
+        self.wait_for(lambda: self.window.database_notice.isHidden())
 
     def test_a_finished_scan_is_remembered_but_a_stopped_one_is_not(self):
         result = {'infected': [], 'errors': [], 'warnings': [], 'scanned': 1, 'total': 1, 'stopped': True}

@@ -12,11 +12,17 @@ UPDATE_COMMANDS = {'apt': 'sudo apt update && sudo apt upgrade', 'dnf': 'sudo dn
                    'zypper': 'sudo zypper update', 'pacman': 'sudo pacman -Syu'}
 # Older than this, installing updates needs attention.
 UPDATE_DAYS = 14
+# New viruses appear daily; older than this, the database needs attention.
+DATABASE_DAYS = 3
+# Longer than the longest scheduled scan interval (a week), so that only
+# scans that really stopped happening are reported.
+SCAN_DAYS = 14
 LABELS = {'updates': 'System updates', 'firewall': 'Firewall', 'websites': 'Dangerous websites',
           'files': 'New downloads', 'antivirus': 'Virus scanning', 'network': 'Other computers',
-          'screen-lock': 'Screen lock', 'disk': 'Disk encryption', 'account': 'This account'}
+          'screen-lock': 'Screen lock', 'disk': 'Disk encryption', 'account': 'This account',
+          'database': 'Virus database', 'scan': 'Last scan'}
 # What to fix first: without a working scanner nothing else about viruses helps.
-FIX_ORDER = ('antivirus', 'files', 'firewall', 'network', 'updates', 'websites', 'screen-lock')
+FIX_ORDER = ('antivirus', 'database', 'files', 'firewall', 'network', 'scan', 'updates', 'websites', 'screen-lock')
 
 
 def item(key, title, detail, severity='ok', action=None, *, state):
@@ -142,6 +148,38 @@ def summary(items):
     if not count:
         return 'This computer is well protected', 'success'
     return f'{count} thing{"s" if count > 1 else ""} need{"" if count > 1 else "s"} your attention', 'warning'
+
+
+def old_database_days(database_time, now=None):
+    """Age in days of a database that is too old, otherwise None."""
+    now = time.time() if now is None else now
+    if not database_time or now - database_time <= DATABASE_DAYS * 86400:
+        return None
+    return int((now - database_time) // 86400)
+
+
+def upkeep_items(database_time, scan_time, *, scanning_ready, can_update_database, now=None):
+    """Things that go out of date; shown only when they have. Recent dates are in activity()."""
+    now = time.time() if now is None else now
+    items = []
+    days = old_database_days(database_time, now)
+    if days is not None:
+        items.append(item('database', f'Virus database is {days} days old',
+                          'New viruses are not recognised until the database is updated.', 'warning',
+                          ('Update virus database', 'database') if can_update_database else ('Set up', 'setup'),
+                          state=f'{days} days old'))
+    if not scanning_ready:
+        return items  # 'Virus scanning needs setup' says what to do first
+    if not scan_time:
+        items.append(item('scan', 'This computer has not been scanned yet',
+                          'A Quick scan checks the places where harmful files usually are.', 'warning',
+                          ('Scan now', 'scan'), state='No scan yet'))
+    elif now - scan_time > SCAN_DAYS * 86400:
+        days = int((now - scan_time) // 86400)
+        items.append(item('scan', f'Last scan was {days} days ago',
+                          'A Quick scan checks the places where harmful files usually are.', 'warning',
+                          ('Scan now', 'scan'), state=f'{days} days ago'))
+    return items
 
 
 def attention(items):

@@ -6,7 +6,9 @@ scan finished and how many files are in quarantine. Its main button fixes the mo
 important problem, or runs a Quick scan when there is none. Parts that need
 attention follow as cards, each with a button that fixes it or opens the page where
 it is fixed; the most important is first. All other parts are small tiles, and
-hovering over one explains it. The page reads the system as your user, needs no
+hovering over one explains it. An old virus database is also said on the Virus scan
+page, with a button to update it. Scanning still works, as an old database is better
+than none. The page reads the system as your user, needs no
 password and changes nothing by itself. **Check again** reads it anew; it is also
 read whenever the page opens.
 
@@ -18,6 +20,8 @@ read whenever the page opens.
 | New downloads | Live protection for new files is off | **Turn on** (Live protection) |
 | Virus scanning | the antivirus engine or virus database is missing | **Set up** |
 | Programs reachable from other computers | a program waits for TCP connections on a non-local address (`/proc/net/tcp`, `tcp6`) and no firewall is on; with a firewall it is information. Usual desktop services (local name lookup, KDE Connect) are not counted | **Open Firewall** |
+| Virus database | the database that scans use is more than 3 days old. Automatic updates cover only LibreWard's own database, so an old system database needs this button once | **Update virus database** |
+| Last scan | no scan has finished yet, or the last one was more than 14 days ago (from the window or a scheduled scan; stopped or failed scans do not count) | **Scan now** |
 | Screen lock | GNOME or KDE does not lock the screen by itself | **Turn on**: locks after five minutes without use (`gsettings` or `kwriteconfig`, a setting of your account only) |
 | Disk encryption | information only: `/` or `/home` is not on an encrypted (LUKS) device; encryption is chosen when the system is installed | — |
 | Administrator account | information only: the account is in the `wheel`, `sudo` or `admin` group; children are safer with an account without administrator rights | — |

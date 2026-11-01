@@ -19,9 +19,10 @@ from config import load_config, save_config
 from core.authorization import AuthorizationError
 from core.constants import APP_NAME, APP_VERSION, CLAMAV_HOMEPAGE, CLAMAV_SOURCE
 from core.monitor_agent import monitoring_enabled, read_state
+from core.security_status import old_database_days
 from core.policy import load_policy
 from core.db_manager import (
-    auto_update_due, database_summary, last_update_attempt, own_database_needs_refresh, run_freshclam_update,
+    auto_update_due, database_summary, database_time, last_update_attempt, own_database_needs_refresh, run_freshclam_update,
 )
 from core.quarantine import (
     delete_file, delete_quarantined_file, list_quarantined_files,
@@ -54,6 +55,7 @@ class QtMainWindow(QMainWindow):
         self.service = None
         self.operation = None
         self.startup_status = None
+        self.database_time = None
         self.update_dialog = None
         self.completion = None
         self.on_done = None
@@ -787,6 +789,17 @@ class QtMainWindow(QMainWindow):
 
     def build_scan_page(self):
         page, layout = self.page("Virus scan", "Run ClamAV scans, monitor progress and review detected files.")
+        self.database_notice = QFrame()
+        self.database_notice.setObjectName("noticeBar")
+        notice = QHBoxLayout(self.database_notice)
+        notice.setContentsMargins(18, 10, 12, 10)
+        self.database_notice_text = self.label("")
+        self.database_notice_text.setWordWrap(True)
+        notice.addWidget(self.database_notice_text, 1)
+        self.database_notice_button = self.button("Update virus database", self.update_database)
+        notice.addWidget(self.database_notice_button)
+        self.database_notice.hide()
+        layout.addWidget(self.database_notice)
         folder, box = self.card()
         box.addWidget(self.label("SCAN FOLDER", "eyebrow"))
         row = QHBoxLayout()
@@ -1224,7 +1237,8 @@ class QtMainWindow(QMainWindow):
 
     def check_runtime(self, *, quiet=False):
         status = check_startup(log=None if quiet else self.events.put)
-        state = {"status": status, "database": database_summary(), "quarantine": list_quarantined_files()}
+        state = {"status": status, "database": database_summary(), "quarantine": list_quarantined_files(),
+                 "database_time": database_time()}
         self.events.put(("__STATE__", state))
         return status
 
@@ -1300,6 +1314,9 @@ class QtMainWindow(QMainWindow):
                 self.events.put(("__NEEDS_SETUP__",))
                 return
             self.refresh_before_scan(status)  # Stop meanwhile ends the scan right at its start
+            days = old_database_days(database_time())
+            if days is not None:
+                self.events.put(f'The virus database is {days} days old; new viruses may not be recognised.')
             self.service.run(roots, patterns, status.runtime.clamscan,
                              parallel=self.config.get("parallel_scanning", True))
 
@@ -1392,6 +1409,15 @@ class QtMainWindow(QMainWindow):
         elif not self.refresh_database(status.runtime.freshclam, wait=True):
             # Offline, for example: the scan still runs, with the database it has.
             self.events.put('The virus database could not be updated; scanning with the current one.')
+
+    def show_database_notice(self):
+        """The Virus scan page says so when a scan would use an old database."""
+        days = old_database_days(self.database_time)
+        status = self.startup_status
+        self.database_notice.setVisible(days is not None)
+        self.database_notice_button.setVisible(bool(status and status.can_update_db))
+        if days is not None:
+            self.database_notice_text.setText(f'The virus database is {days} days old, so scans may miss new viruses.')
 
     def remember_scan(self):
         """For Security status; losing this date is harmless, so a failed save stays silent."""
@@ -1660,6 +1686,8 @@ class QtMainWindow(QMainWindow):
                     f"clamscan: {runtime.clamscan or 'not found'}\nfreshclam: {runtime.freshclam or 'not found'}\n\n{state['database']}"
                 )
                 self.show_quarantine(state["quarantine"])
+                self.database_time = state["database_time"]
+                self.show_database_notice()
                 self.sidebar_status.setText("●  Engine ready" if self.startup_status.can_scan else "●  Setup needed")
                 self.sidebar_status.setProperty("ready", self.startup_status.can_scan)
                 self.sidebar_status.style().unpolish(self.sidebar_status)

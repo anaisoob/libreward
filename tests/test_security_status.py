@@ -9,7 +9,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from backends import linux_security as security
-from core.security_status import FIX_ORDER, activity, attention, security_items, summary
+from core.security_status import (FIX_ORDER, activity, attention, old_database_days, security_items, summary,
+                                  upkeep_items)
 
 APP = {'websites_available': True, 'websites_on': True, 'files_on': True, 'scanning_ready': True}
 
@@ -17,8 +18,10 @@ APP = {'websites_available': True, 'websites_on': True, 'files_on': True, 'scann
 class OverviewTests(unittest.TestCase):
     def test_everything_that_can_need_attention_has_a_place_in_the_order(self):
         facts = {'firewall': False, 'listening_ports': [22], 'last_update': 0, 'screen_lock': False}
+        now = 86400 * 100
         items = security_items(facts, websites_available=True, websites_on=False, files_on=False,
-                               scanning_ready=False, now=86400 * 100)
+                               scanning_ready=False, now=now)
+        items += upkeep_items(1, None, scanning_ready=True, can_update_database=True, now=now)
         self.assertEqual([entry['key'] for entry in attention(items)], list(FIX_ORDER))
 
     def test_every_item_has_a_short_form(self):
@@ -29,6 +32,35 @@ class OverviewTests(unittest.TestCase):
                                    scanning_ready=firewall, now=0)
             for entry in items:
                 self.assertTrue(entry['label'] and entry['state'], entry)
+
+    def upkeep(self, database_days, scan_days, **changes):
+        now = 86400 * 100
+        times = [None if days is None else now - days * 86400 for days in (database_days, scan_days)]
+        options = {'scanning_ready': True, 'can_update_database': True, **changes}
+        return {entry['key']: entry for entry in upkeep_items(*times, **options, now=now)}
+
+    def test_a_current_database_and_a_recent_scan_are_no_problem(self):
+        self.assertEqual(self.upkeep(3, 14), {})
+
+    def test_an_old_database_is_reported_with_a_way_to_update_it(self):
+        database = self.upkeep(21, 1)['database']
+        self.assertEqual((database['title'], database['severity'], database['action']),
+                         ('Virus database is 21 days old', 'warning', ('Update virus database', 'database')))
+        self.assertEqual(self.upkeep(21, 1, can_update_database=False)['database']['action'], ('Set up', 'setup'))
+        self.assertEqual(old_database_days(0, 4 * 86400), None)  # 0: unknown
+        self.assertEqual(old_database_days(86400, 4 * 86400 + 1), 3)
+        self.assertIsNone(old_database_days(86400, 4 * 86400))
+
+    def test_no_database_at_all_is_a_setup_problem(self):
+        self.assertNotIn('database', self.upkeep(None, 1))
+
+    def test_an_old_or_missing_scan_asks_for_one(self):
+        self.assertEqual(self.upkeep(1, 15)['scan']['title'], 'Last scan was 15 days ago')
+        self.assertEqual(self.upkeep(1, 15)['scan']['action'], ('Scan now', 'scan'))
+        self.assertEqual(self.upkeep(1, None)['scan']['title'], 'This computer has not been scanned yet')
+
+    def test_no_scan_is_asked_for_when_scanning_cannot_run(self):
+        self.assertEqual(self.upkeep(1, None, scanning_ready=False), {})
 
     def test_activity_line(self):
         now = 86400 * 10

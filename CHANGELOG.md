@@ -14,6 +14,10 @@
   and one main button at the top, problems as cards with the most important first,
   and everything else as small tiles. LibreWard now remembers when the last scan
   from the window finished.
+- LibreWard says when the virus database is more than 3 days old (Security status
+  and Virus scan, with a button to update it), and asks for a scan when none has
+  finished for 14 days. An old system database was never updated by anything and
+  never mentioned.
 - Quarantine no longer loses files when another program touches them at the same
   moment: restoring never replaces a file that appeared during the restore,
   temporary files have unique names, so a file of the user's with the old fixed

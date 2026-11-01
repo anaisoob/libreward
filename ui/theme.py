@@ -43,6 +43,7 @@ def stylesheet(dark):
     QFrame#card {{ background: {c['surface']}; border: 1px solid {c['border']}; border-radius: 12px; }}
     QFrame#pendingBar {{ background: {c['selected']}; border: 1px solid {c['accent']}; border-radius: 12px; }}
     QLabel {{ background: transparent; border: none; }}
+    QFrame#noticeBar {{ background: {c['surface']}; border: 1px solid {'#dfbf79' if dark else '#b7791f'}; border-radius: 12px; }}
     QFrame#hero {{ background: {c['surface']}; border: 1px solid {c['border']}; border-radius: 16px; }}
     QFrame#hero[severity="warning"] {{ border-color: {'#dfbf79' if dark else '#b7791f'}; }}
     QFrame#tile {{ background: {c['surface']}; border: 1px solid {c['border']}; border-radius: 10px; }}

@@ -40,6 +40,16 @@ def last_update_attempt(config, state):
     return max(attempts, key=lambda entry: entry[0]) if attempts else (None, True)
 
 
+def database_time():
+    """When the database that scans use was last updated (time.time()), or None."""
+    from backends.base import newest_database_time
+    for location in backend.system_db_locations():
+        newest = newest_database_time(location)
+        if newest is not None:
+            return newest
+    return None
+
+
 def own_database_needs_refresh():
     """Automatic updates refresh only LibreWard's own existing database.
 

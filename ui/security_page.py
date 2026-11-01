@@ -13,14 +13,20 @@ from PySide6.QtWidgets import (
 )
 
 from backends import backend
-from backends.base import newest_database_time
+from core.db_manager import database_time
 from core.monitor_agent import last_scheduled_scan, monitoring_enabled, read_state
-from core.security_status import activity, attention, security_items, summary
+from core.security_status import (
+    activity,
+    attention,
+    security_items,
+    summary,
+    upkeep_items,
+)
 
 from .theme import shield_pixmap
 
 TILE_COLUMNS = 3
-QUICK_SCAN = ('Run a Quick scan', 'scan')
+QUICK_SCAN = ('Scan now', 'scan')
 
 
 class SecurityStatusPage:
@@ -97,9 +103,8 @@ class SecurityStatusPage:
 
     def recent_times(self):
         """(virus database, last scan) as time.time() values or None."""
-        times = [newest_database_time(path) for path in backend.system_db_locations()]
         scans = [self.window.config.get('last_scan_at'), last_scheduled_scan(read_state()).get('time')]
-        return (max(filter(None, times), default=None),
+        return (database_time(),
                 max((scan for scan in scans if isinstance(scan, (int, float))), default=None))
 
     def show(self, result):
@@ -122,6 +127,8 @@ class SecurityStatusPage:
             websites_on=backend.internet_protection_enabled(),
             files_on=monitoring_enabled(window.config) and backend.monitor_agent_running(),
             scanning_ready=scanning_ready)
+        self.items += upkeep_items(*times, scanning_ready=scanning_ready,
+                                   can_update_database=bool(status and status.can_update_db))
         self.set_summary(*summary(self.items))
         fixes = attention(self.items)
         self.set_primary(fixes, scanning_ready)
@@ -229,6 +236,8 @@ class SecurityStatusPage:
         elif key == 'scan':
             window.switch_page('scan')
             window.start_quick_scan()
+        elif key == 'database':
+            window.update_database()
         elif key == 'setup':
             window.open_antivirus_setup(window.startup_status)
         elif key == 'updates':
