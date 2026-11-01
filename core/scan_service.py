@@ -12,7 +12,7 @@ from core.clamd import ClamdSession, ScanCancelled, FileScanWarning, scan_file
 from core.file_discovery import FileDiscovery
 from core.scan_policy import scan_limits
 from core.scan_report import format_duration
-from core.scan_warnings import WarningSummary, alert_warning, clean_reason, denied_path
+from core.scan_warnings import WarningSummary, alert_warning, clean_reason, denied_path, is_access_problem
 from excludes import mandatory_exclude_patterns
 
 from backends import backend
@@ -201,19 +201,20 @@ class ScanService:
 
                         continue
 
+                    if is_access_problem(line):
+                        warnings_found = True
+                        file_warning_found = True
+                        self.warning_summary.add(denied_path(line), line, 'access')
+                        self.output_queue.put(line)
+                        continue
+
                     should_log, self.summary_started = should_log_line(
                         line, self.summary_started
                     )
                     if should_log:
                         if "WARNING" in line or "ERROR" in line:
                             warnings_found = True
-                            access_problem = any(message in line.lower() for message in (
-                                "can't open file", "permission denied", "can't get file status", "access denied",
-                            ))
-                            if access_problem:
-                                file_warning_found = True
-                                self.warning_summary.add(denied_path(line), line)
-                            elif "ERROR" in line:
+                            if "ERROR" in line:
                                 fatal_output_found = True
                             elif 'WARNING' in line:
                                 self.warning_summary.add('', line)

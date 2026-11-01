@@ -44,6 +44,17 @@ def clean_reason(reason):
     return reason
 
 
+def is_access_problem(line):
+    """A clamscan line about a file or folder that could not be opened.
+
+    The wording varies between versions, and some have neither ERROR nor WARNING:
+    "/a/b: Access denied", "/a/c: Can't open directory.".
+    """
+    text = line.lower()
+    return any(message in text for message in ("can't open file", "can't open directory", 'permission denied',
+                                                "can't get file status", 'access denied'))
+
+
 def denied_path(line):
     """The path in a clamscan line about a file it could not open, or ''.
 

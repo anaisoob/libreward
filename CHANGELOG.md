@@ -18,6 +18,9 @@
   and Virus scan, with a button to update it), and asks for a scan when none has
   finished for 14 days. An old system database was never updated by anything and
   never mentioned.
+- Recent ClamAV versions word "access denied" without ERROR. LibreWard missed those
+  lines, so a scan without parallel scanning could end as failed, and skipped files
+  were not listed.
 - System quarantine (Linux): dangerous files your account cannot touch can be moved,
   restored and deleted with the administrator password. Root keeps them in
   `/var/lib/libreward/quarantine`, and detects them again before touching them.

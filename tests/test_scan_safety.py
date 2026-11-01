@@ -1,7 +1,9 @@
 """Regression checks for findings, quarantine boundaries and scan outcomes."""
+import hashlib
 import io
 import json
 import os
+import queue
 import re
 import shutil
 import stat
@@ -155,6 +157,41 @@ class ScanSafetyTests(unittest.TestCase):
     def test_denied_files_are_kept_by_path_for_a_check_as_administrator(self):
         output = "/root/secret: Access denied. ERROR\n/home/a: OK\n----------- SCAN SUMMARY -----------\nInfected files: 0\n"
         self.assertEqual(self.run_scan(output, 2).result['denied_files'], ['/root/secret'])
+
+    def test_access_lines_of_recent_clamav_versions_are_warnings_not_failures(self):
+        output = ("/root/secret: Access denied\n/root/folder: Can't open directory.\n/home/a: OK\n"
+                  "----------- SCAN SUMMARY -----------\nTotal errors: 2\n")
+        result = self.run_scan(output, 2).result
+        self.assertEqual(result['denied_files'], ['/root/secret', '/root/folder'])
+        self.assertFalse(result['errors'])
+        self.assertTrue(result['warnings'])
+        self.assertEqual(result['warning_counts'], {'access': 2})
+
+    @unittest.skipIf(shutil.which('clamscan') is None or os.name == 'nt' or os.geteuid() == 0,
+                     'needs clamscan and an ordinary account')
+    def test_the_real_clamscan_reports_what_it_cannot_open(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'db').mkdir()
+            data = b'LibreWard test signature'
+            (root / 'db' / 'test.hdb').write_text(f'{hashlib.md5(data).hexdigest()}:{len(data)}:Test.Sample\n')
+            folder, locked = root / 'data', root / 'data' / 'locked'
+            locked.mkdir(parents=True)
+            (folder / 'clean.txt').write_text('hello')
+            unreadable = folder / 'unreadable'
+            unreadable.write_text('x')
+            unreadable.chmod(0)
+            locked.chmod(0)
+            events = queue.Queue()
+            try:
+                with patch('scanner._first_database_dir', return_value=root / 'db'):
+                    scans.ScanService(events).run([str(folder)], [], shutil.which('clamscan'), parallel=False)
+            finally:
+                locked.chmod(0o700)
+            result = next(event[1] for event in events.queue if event[0] == '__SCAN_DONE__')
+        self.assertEqual(sorted(result['denied_files']), [str(locked), str(unreadable)])
+        self.assertFalse(result['errors'])
+        self.assertFalse(result['infected_found'])
 
     def test_common_groups_cover_containers_and_are_clamav_compatible(self):
         from backends.linux import LinuxBackend
