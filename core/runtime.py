@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Callable
 
 from backends import backend, RuntimeInfo
+from backends.base import database_paths
 
 
 # ── startup check ───────────────────────────────────────────────────
@@ -19,7 +20,7 @@ class StartupStatus:
 
     runtime: RuntimeInfo
     runtime_ok: bool        # clamscan found and --version works
-    db_found: bool          # at least one .cvd/.cld file exists in db_dir
+    db_found: bool          # at least one usable database file exists in db_dir
     db_needs_update: bool   # db_found but possibly stale (always True for now)
     freshclam_ok: bool      # freshclam found and --version works
     clamd_path: str | None = None
@@ -155,16 +156,8 @@ def is_newer_version(new_ver: str | None, current_ver: str | None) -> bool:
 # ── database helpers ────────────────────────────────────────────────
 
 def _check_database_dir(db_dir: Path) -> bool:
-    """Check if at least one ClamAV database file exists in the directory."""
-    try:
-        if not db_dir.is_dir():
-            return False
-        for entry in db_dir.iterdir():
-            if entry.suffix.lower() in (".cvd", ".cld"):
-                return True
-    except OSError:
-        pass
-    return False
+    """Check if at least one usable ClamAV database file exists in the directory."""
+    return bool(database_paths(db_dir))
 
 
 def database_files(db_dir: Path | None = None) -> list[str]:
@@ -183,15 +176,7 @@ def database_files(db_dir: Path | None = None) -> list[str]:
 
 
 def _list_db_files(db_dir: Path) -> list[str]:
-    try:
-        if not db_dir.is_dir():
-            return []
-        return sorted(
-            p.name for p in db_dir.iterdir()
-            if p.suffix.lower() in (".cvd", ".cld")
-        )
-    except OSError:
-        return []
+    return sorted(path.name for path in database_paths(db_dir))
 
 
 # ── runtime lock ────────────────────────────────────────────────────
@@ -201,16 +186,15 @@ def _lock_path() -> Path:
 
 
 def is_update_locked() -> bool:
-    return _lock_path().exists()
+    path = _lock_path()
+    return path.exists() and backend.instance_running(path)
 
 
-def create_update_lock() -> None:
-    backend.data_dir().mkdir(parents=True, exist_ok=True)
-    _lock_path().write_text("locked")
+def acquire_update_lock():
+    """The lock file, held until closed, or None while another update runs.
 
-
-def release_update_lock() -> None:
-    try:
-        _lock_path().unlink(missing_ok=True)
-    except OSError:
-        pass
+    The operating system holds the lock for this process, so it ends with the
+    process and an interrupted update leaves nothing to clean up. The file stays:
+    removing it could separate two processes that hold different files.
+    """
+    return backend.acquire_instance_lock(_lock_path())

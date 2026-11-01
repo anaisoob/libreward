@@ -10,6 +10,16 @@
   administrators can allow or forbid each action with polkit rules. Run from
   source, LibreWard works as before.
 
+- Quarantine no longer loses files when another program touches them at the same
+  moment: restoring never replaces a file that appeared during the restore,
+  temporary files have unique names, so a file of the user's with the old fixed
+  name is left alone, and quarantining removes a file only if it is still the one
+  that was copied. Old unencoded quarantine entries restore the same way.
+- ClamAV runtime updates (Windows): only one update can run at a time, and an
+  interrupted update no longer leaves a lock that pauses monitoring.
+- A folder, an empty or an unreadable file named like a virus database no longer
+  counts as a database.
+
 - Security fixes:
   - Windows: the ClamAV update manifest could name any download address and any
     program to run as a check (also outside the runtime folder). Downloads now come

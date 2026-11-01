@@ -1,5 +1,6 @@
 """Regression checks for findings, quarantine boundaries and scan outcomes."""
 import io
+import json
 import os
 import re
 import shutil
@@ -13,12 +14,13 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import core.quarantine as quarantine
+import core.runtime as runtime_module
 import core.scan_service as scans
 from core.runtime import StartupStatus
-from backends.base import RuntimeInfo
+from backends.base import RuntimeInfo, newest_database_time
 from excludes import path_is_excluded, build_clamscan_exclude_args
 from excludes import _clamav_literal
-from scanner import collect_files, parse_clamscan_result_line
+from scanner import _first_database_dir, collect_files, parse_clamscan_result_line
 
 
 class ScanSafetyTests(unittest.TestCase):
@@ -155,6 +157,53 @@ class ScanSafetyTests(unittest.TestCase):
         self.assertFalse(StartupStatus(runtime, True, False, True, True).can_scan)
 
 
+class DatabaseFileTests(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.directory = Path(temp.name)
+
+    def assert_no_database(self):
+        self.assertFalse(runtime_module._check_database_dir(self.directory))
+        self.assertEqual(runtime_module.database_files(self.directory), [])
+        self.assertIsNone(newest_database_time(self.directory))
+        with patch('scanner.backend', SimpleNamespace(system_db_locations=lambda: [self.directory])):
+            self.assertIsNone(_first_database_dir())
+
+    def test_a_folder_named_like_a_database_is_not_a_database(self):
+        (self.directory / 'fake.cvd').mkdir()
+        self.assert_no_database()
+
+    def test_an_empty_file_is_not_a_database(self):
+        (self.directory / 'daily.cld').touch()
+        self.assert_no_database()
+
+    def test_a_link_to_nowhere_is_not_a_database(self):
+        (self.directory / 'main.cvd').symlink_to(self.directory / 'missing')
+        self.assert_no_database()
+
+    @unittest.skipIf(os.name == 'nt' or (hasattr(os, 'geteuid') and os.geteuid() == 0), 'root reads everything')
+    def test_an_unreadable_file_is_not_a_database(self):
+        path = self.directory / 'main.cvd'
+        path.write_bytes(b'db')
+        path.chmod(0)
+        self.assert_no_database()
+
+    def test_a_folder_that_does_not_exist_has_no_database(self):
+        self.directory = self.directory / 'missing'
+        self.assert_no_database()
+
+    def test_real_files_are_found_next_to_fake_ones(self):
+        (self.directory / 'fake.cvd').mkdir()
+        (self.directory / 'daily.cld').write_bytes(b'db')
+        (self.directory / 'main.cvd').write_bytes(b'db')
+        self.assertTrue(runtime_module._check_database_dir(self.directory))
+        self.assertEqual(runtime_module.database_files(self.directory), ['daily.cld', 'main.cvd'])
+        self.assertIsNotNone(newest_database_time(self.directory))
+        with patch('scanner.backend', SimpleNamespace(system_db_locations=lambda: [self.directory])):
+            self.assertEqual(_first_database_dir(), self.directory)
+
+
 class QuarantineSafetyTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -206,9 +255,87 @@ class QuarantineSafetyTests(unittest.TestCase):
             self.assertTrue(quarantine.quarantine_file(str(original), 'Test').startswith('Cannot quarantine:'))
         self.assertEqual(original.read_text(), 'dummy')
         self.assertEqual(list(self.qdir.iterdir()), [])
-        with patch.object(Path, 'unlink', side_effect=[OSError('read-only folder'), None, None]):
+        real_unlink = os.unlink
+        refused = []
+        def unlink(path, **kwargs):
+            if '.libreward-quarantine-' in str(path) and not refused:
+                refused.append(path)
+                raise OSError('read-only folder')
+            real_unlink(path, **kwargs)
+        with patch('os.unlink', unlink):
             self.assertTrue(quarantine.quarantine_file(str(original), 'Test').startswith('Cannot quarantine:'))
+        self.assertTrue(refused)
         self.assertEqual(original.read_text(), 'dummy')
+        self.assertEqual(list(self.qdir.iterdir()), [])
+        self.assertEqual([entry.name for entry in self.root.iterdir() if entry.name.startswith('.')], [])
+
+    def encoding_then(self, change):
+        real = quarantine._encode_into
+        def encode(src, dest):
+            result = real(src, dest)
+            change(src)
+            return result
+        return patch.object(quarantine, '_encode_into', encode)
+
+    def test_a_file_swapped_in_during_quarantine_is_kept(self):
+        original = self.root / 'sample'
+        original.write_text('harmful')
+        def swap(path):
+            replacement = self.root / 'replacement'
+            replacement.write_text('new user file')
+            os.replace(replacement, path)
+        with self.encoding_then(swap):
+            message = quarantine.quarantine_file(str(original), 'Test')
+        self.assertTrue(message.startswith('Cannot quarantine:'), message)
+        self.assertEqual(original.read_text(), 'new user file')
+        self.assertEqual(list(self.qdir.iterdir()), [])
+        self.assertEqual([entry.name for entry in self.root.iterdir() if entry.name.startswith('.')], [])
+
+    def test_a_file_changed_during_quarantine_is_kept(self):
+        original = self.root / 'sample'
+        original.write_text('harmful')
+        def change(path):
+            with open(path, 'a') as stream:
+                stream.write(' and more')
+        with self.encoding_then(change):
+            message = quarantine.quarantine_file(str(original), 'Test')
+        self.assertTrue(message.startswith('Cannot quarantine:'), message)
+        self.assertEqual(original.read_text(), 'harmful and more')
+        self.assertEqual(list(self.qdir.iterdir()), [])
+
+    def test_a_file_written_while_it_is_read_is_not_quarantined(self):
+        original = self.root / 'sample'
+        original.write_bytes(b'x' * 10)
+        real = quarantine._xor
+        def write_more(data, offset):
+            if not offset:  # once: the reader would otherwise never reach the end
+                with open(original, 'ab') as stream:
+                    stream.write(b'more')
+            return real(data, offset)
+        with patch.object(quarantine, '_xor', write_more):
+            message = quarantine.quarantine_file(str(original), 'Test')
+        self.assertTrue(message.startswith('Cannot quarantine:'), message)
+        self.assertTrue(original.exists())
+        self.assertEqual(list(self.qdir.iterdir()), [])
+
+    def test_a_new_file_at_the_path_while_the_old_one_is_held_is_kept(self):
+        original = self.root / 'sample'
+        original.write_text('harmful')
+        real = quarantine._identity
+        calls = []
+        def identity(status):
+            calls.append(status)
+            if len(calls) == 3:  # after the rename, before the removal is decided
+                original.write_text('new user file')
+                return ('changed',)
+            return real(status)
+        with patch.object(quarantine, '_identity', identity):
+            message = quarantine.quarantine_file(str(original), 'Test')
+        self.assertTrue(message.startswith('Cannot quarantine:'), message)
+        self.assertIn('kept as', message)
+        self.assertEqual(original.read_text(), 'new user file')
+        kept = [entry for entry in self.root.iterdir() if entry.name.startswith('.libreward-quarantine-')]
+        self.assertEqual([entry.read_text() for entry in kept], ['harmful'])
 
     def test_quarantined_copy_cannot_be_used_and_restores_exactly(self):
         original = self.root / 'tool.sh'
@@ -222,11 +349,103 @@ class QuarantineSafetyTests(unittest.TestCase):
         self.assertNotIn(b'EICAR', stored)  # no scanner or indexer sees the harmful content
         self.assertEqual(len(stored), len(quarantine.HEADER) + len(payload))
         self.assertTrue(item['encoded'])
-        # An attempt interrupted earlier left its temporary file behind.
-        (self.root / '.tool.sh.libreward-restore').write_bytes(b'partial')
+        # The file name once used for decoding may be somebody's file.
+        (self.root / '.tool.sh.libreward-restore').write_bytes(b'not ours')
         self.assertTrue(quarantine.restore_file(item['quarantine_name']).startswith('Restored:'))
         self.assertEqual(original.read_bytes(), payload)
-        self.assertFalse((self.root / '.tool.sh.libreward-restore').exists())
+        self.assertEqual((self.root / '.tool.sh.libreward-restore').read_bytes(), b'not ours')
+        self.assertEqual(self.hidden_files(), ['.tool.sh.libreward-restore'])
+
+    def hidden_files(self):
+        return sorted(entry.name for entry in self.root.iterdir() if entry.name.startswith('.'))
+
+    def quarantined(self, name='sample', contents=b'original'):
+        original = self.root / name
+        original.write_bytes(contents)
+        self.assertTrue(quarantine.quarantine_file(str(original), 'Test').startswith('Quarantined:'))
+        return original, quarantine.list_quarantined_files()[0]
+
+    def decoding_then(self, change):
+        real = quarantine._decode_into
+        def decode(*args):
+            digest = real(*args)
+            change()
+            return digest
+        return patch.object(quarantine, '_decode_into', decode)
+
+    def test_a_file_created_during_restore_is_not_overwritten(self):
+        original, item = self.quarantined()
+        with self.decoding_then(lambda: original.write_bytes(b'new user file')):
+            message = quarantine.restore_file(item['quarantine_name'])
+        self.assertEqual(message, f'Original file already exists: {original}')
+        self.assertEqual(original.read_bytes(), b'new user file')
+        self.assertEqual(self.hidden_files(), [])
+        # The quarantined copy and its metadata remain, the restore can be retried.
+        original.unlink()
+        self.assertTrue(quarantine.restore_file(item['quarantine_name']).startswith('Restored:'))
+        self.assertEqual(original.read_bytes(), b'original')
+
+    def test_a_dangling_link_created_during_restore_is_not_replaced(self):
+        original, item = self.quarantined()
+        with self.decoding_then(lambda: original.symlink_to(self.root / 'nowhere')):
+            message = quarantine.restore_file(item['quarantine_name'])
+        self.assertIn('already exists', message)
+        self.assertTrue(original.is_symlink())
+
+    def test_overwrite_replaces_the_existing_file_when_asked(self):
+        original, item = self.quarantined()
+        original.write_bytes(b'newer')
+        self.assertTrue(quarantine.restore_file(item['quarantine_name'], overwrite=True).startswith('Restored:'))
+        self.assertEqual(original.read_bytes(), b'original')
+
+    def test_restore_without_hard_links_still_refuses_a_taken_name(self):
+        original, item = self.quarantined(contents=b'original')
+        with patch('os.link', side_effect=PermissionError('no hard links')):
+            with self.decoding_then(lambda: original.write_bytes(b'new user file')):
+                message = quarantine.restore_file(item['quarantine_name'])
+            self.assertIn('already exists', message)
+            self.assertEqual(original.read_bytes(), b'new user file')
+            original.unlink()
+            self.assertTrue(quarantine.restore_file(item['quarantine_name']).startswith('Restored:'))
+        self.assertEqual(original.read_bytes(), b'original')
+        self.assertEqual(stat.S_IMODE(original.stat().st_mode), item['original_mode'])
+
+    def test_parallel_restores_of_one_location_leave_one_file(self):
+        original, first = self.quarantined(contents=b'first')
+        original.write_bytes(b'second')
+        quarantine.quarantine_file(str(original), 'Test')
+        second = next(item for item in quarantine.list_quarantined_files()
+                      if item['quarantine_name'] != first['quarantine_name'])
+        real = quarantine._decode_into
+        done = []
+        def decode(*args):
+            digest = real(*args)
+            if not done:
+                done.append(True)  # the other restore runs while this one is decoding
+                self.assertTrue(quarantine.restore_file(second['quarantine_name']).startswith('Restored:'))
+            return digest
+        with patch.object(quarantine, '_decode_into', decode):
+            message = quarantine.restore_file(first['quarantine_name'])
+        self.assertIn('already exists', message)
+        self.assertEqual(original.read_bytes(), b'second')
+        self.assertEqual(self.hidden_files(), [])
+
+    def test_old_unencoded_files_restore_with_the_same_protection(self):
+        original, item = self.quarantined()
+        path = Path(item['quarantine_path'])
+        path.chmod(0o600)
+        path.write_bytes(b'stored as it was')
+        metadata = Path(item['metadata_path'])
+        old = json.loads(metadata.read_text())
+        del old['sha256'], old['encoded']
+        metadata.write_text(json.dumps(old))
+        with self.decoding_then(lambda: original.write_bytes(b'new user file')):
+            self.assertIn('already exists', quarantine.restore_file(item['quarantine_name']))
+        self.assertEqual(original.read_bytes(), b'new user file')
+        original.unlink()
+        self.assertTrue(quarantine.restore_file(item['quarantine_name']).startswith('Restored:'))
+        self.assertEqual(original.read_bytes(), b'stored as it was')
+        self.assertFalse(path.exists())
 
     def test_a_damaged_quarantined_copy_is_not_restored(self):
         original = self.root / 'report.pdf'

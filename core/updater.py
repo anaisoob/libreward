@@ -15,7 +15,8 @@ Full update flow for Windows (and potentially Linux in the future):
     11. Update config.json
     12. Cleanup
 
-The update lock (.runtime-update.lock) prevents concurrent updates.
+The update lock (runtime-update.lock) prevents concurrent updates, which share
+the staging directories below.
 """
 
 import hashlib
@@ -34,9 +35,7 @@ from core.constants import (
     CLAMAV_RUNTIME_MANIFEST_URL,
 )
 from core.runtime import (
-    is_update_locked,
-    create_update_lock,
-    release_update_lock,
+    acquire_update_lock,
     is_newer_version,
 )
 
@@ -468,10 +467,12 @@ def perform_update(
         return RuntimeError("Manifest missing download URL.")
 
     # ── lock ────────────────────────────────────────────────────
-    if is_update_locked():
-        return RuntimeError("An update is already in progress (lock file exists).")
-
-    create_update_lock()
+    try:
+        lock = acquire_update_lock()
+    except OSError as e:
+        return RuntimeError(f"Update failed: {e}")
+    if lock is None:
+        return RuntimeError("An update is already in progress.")
 
     updates_dir = backend.updates_dir()
     staging_dir = updates_dir / "clamav-staging"
@@ -578,7 +579,7 @@ def perform_update(
         return RuntimeError(f"Update failed: {e}")
 
     finally:
-        release_update_lock()
+        lock.close()
 
 
 # ── helpers ─────────────────────────────────────────────────────────

@@ -15,10 +15,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import secrets
 import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
 
@@ -113,10 +115,10 @@ def quarantine_file(original_path: str, threat_name: str) -> str:
     # The encoded copy is complete before the original goes away; any failure
     # leaves the original where it was and nothing in quarantine.
     try:
-        meta["sha256"] = _encode_into(src, dest)
+        meta["sha256"], copied = _encode_into(src, dest)
         meta["encoded"] = True
         meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
-        src.unlink()
+        _remove_if_unchanged(src, copied)
     except OSError as exc:
         dest.unlink(missing_ok=True)
         meta_path.unlink(missing_ok=True)
@@ -189,38 +191,33 @@ def restore_file(quarantine_name: str, *, overwrite: bool = False) -> str:
     if original.exists() and overwrite and not original.is_file():
         return f"Cannot overwrite non-file path: {original}"
 
-    if _is_encoded(qpath):
-        return _restore_encoded(qpath, meta_path, meta, original, mode)
+    # A new file of our own next to the original location: complete and checked
+    # before it takes the original name. The quarantined copy stays until then.
     try:
-        if original.exists() and overwrite:
-            original.unlink()
-        shutil.move(str(qpath), str(original))
-        os.chmod(original, mode & 0o777)  # do not restore special privilege bits
-        meta_path.unlink(missing_ok=True)
-        return f"Restored: {original}"
-    except (OSError, PermissionError) as exc:
+        descriptor, name = tempfile.mkstemp(prefix=".libreward-restore-", dir=original.parent)
+    except OSError as exc:
         return f"Cannot restore: {exc}"
-
-
-def _restore_encoded(qpath, meta_path, meta, original, mode):
-    """Decode next to the original location, check it, then put it in place."""
-    temporary = original.with_name(f".{original.name}.libreward-restore")
+    temporary = Path(name)
     try:
-        temporary.unlink(missing_ok=True)  # left by an interrupted earlier attempt
-        digest = _decode_into(qpath, temporary)
+        digest = _decode_into(qpath, descriptor, _is_encoded(qpath))
         expected = meta.get("sha256")
         if isinstance(expected, str) and digest != expected:
-            temporary.unlink(missing_ok=True)
             return f"Cannot restore: the quarantined copy of {original.name} is damaged"
         os.chmod(temporary, mode & 0o777)  # do not restore special privilege bits
-        os.replace(temporary, original)
+        if overwrite:
+            os.replace(temporary, original)
+        else:
+            _place_new(temporary, original)
         os.chmod(qpath, stat.S_IRUSR | stat.S_IWUSR)
         qpath.unlink()
         meta_path.unlink(missing_ok=True)
         return f"Restored: {original}"
-    except (OSError, PermissionError) as exc:
-        temporary.unlink(missing_ok=True)
+    except FileExistsError:
+        return f"Original file already exists: {original}"
+    except OSError as exc:
         return f"Cannot restore: {exc}"
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def delete_quarantined_file(quarantine_name: str) -> str:
@@ -298,11 +295,20 @@ def _open_regular(path: Path):
     return os.fdopen(os.open(path, flags), "rb")
 
 
-def _encode_into(src: Path, dest: Path) -> str:
-    """Write the encoded copy of `src` to `dest`; returns the SHA256 of the original."""
+def _identity(status: os.stat_result) -> tuple:
+    """Which file this is and whether its contents were changed."""
+    return status.st_dev, status.st_ino, status.st_size, status.st_mtime_ns
+
+
+def _encode_into(src: Path, dest: Path) -> tuple[str, tuple]:
+    """Write the encoded copy of `src` to `dest`.
+
+    Returns the SHA256 of the original and the identity of the file copied.
+    """
     digest = hashlib.sha256()
     offset = 0
     with _open_regular(src) as source, open(dest, "xb") as target:
+        copied = _identity(os.fstat(source.fileno()))
         target.write(HEADER)
         while chunk := source.read(CHUNK):
             digest.update(chunk)
@@ -310,7 +316,52 @@ def _encode_into(src: Path, dest: Path) -> str:
             offset += len(chunk)
         target.flush()
         os.fsync(target.fileno())
-    return digest.hexdigest()
+        if _identity(os.fstat(source.fileno())) != copied:
+            raise OSError("the file changed while it was being copied")
+    return digest.hexdigest(), copied
+
+
+def _remove_if_unchanged(src: Path, copied: tuple) -> None:
+    """Remove `src` only if it is still the file that was copied.
+
+    Renaming first takes that one file off the path, so a file that appears
+    there afterwards is never touched. Anything else goes back where it was.
+    """
+    held = src.with_name(f".libreward-quarantine-{secrets.token_hex(8)}")
+    os.rename(src, held)
+    try:
+        if _identity(os.lstat(held)) != copied:
+            raise OSError("the file changed while it was being copied")
+        held.unlink()
+    except OSError as exc:
+        try:
+            _place_new(held, src)
+        except FileExistsError:
+            raise OSError(f"{exc}; a new file took its place, it was kept as {held}") from exc
+        raise
+
+
+def _place_new(source: Path, target: Path) -> None:
+    """Move `source` to `target`; FileExistsError if that name is already taken.
+
+    Checking first would leave a gap, and a rename on Linux replaces what it finds.
+    """
+    if os.name == "nt":
+        os.rename(source, target)  # refuses an existing name on Windows
+        return
+    try:
+        os.link(source, target, follow_symlinks=False)
+    except FileExistsError:
+        raise
+    except OSError:  # no hard links here, for example on a FAT USB stick
+        with open(source, "rb") as stream, open(target, "xb") as copy:
+            try:
+                shutil.copyfileobj(stream, copy)
+                shutil.copymode(source, target)
+            except OSError:
+                target.unlink(missing_ok=True)
+                raise
+    source.unlink()
 
 
 def _is_encoded(path: Path) -> bool:
@@ -321,14 +372,15 @@ def _is_encoded(path: Path) -> bool:
         return False
 
 
-def _decode_into(qpath: Path, target_path: Path) -> str:
-    """Write the original contents to `target_path`; returns their SHA256."""
+def _decode_into(qpath: Path, descriptor: int, encoded: bool) -> str:
+    """Write the original contents to the open file `descriptor`; returns their SHA256."""
     digest = hashlib.sha256()
     offset = 0
-    with open(qpath, "rb") as source, open(target_path, "xb") as target:
-        source.read(len(HEADER))
+    with open(qpath, "rb") as source, os.fdopen(descriptor, "wb") as target:
+        if encoded:
+            source.read(len(HEADER))
         while chunk := source.read(CHUNK):
-            data = _xor(chunk, offset)
+            data = _xor(chunk, offset) if encoded else chunk
             digest.update(data)
             target.write(data)
             offset += len(chunk)

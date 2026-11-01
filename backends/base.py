@@ -29,11 +29,28 @@ class RuntimeInfo:
         return self.freshclam is not None
 
 
+def database_paths(directory):
+    """ClamAV database files in `directory`: regular, readable and not empty."""
+    try:
+        return [path for path in Path(directory).iterdir()
+                if path.suffix.lower() in ('.cvd', '.cld', '.cud')
+                and path.is_file() and _has_contents(path)]
+    except OSError:
+        return []
+
+
+def _has_contents(path):
+    try:
+        with open(path, 'rb') as stream:
+            return bool(stream.read(1))
+    except OSError:
+        return False
+
+
 def newest_database_time(directory):
     """Modification time of the newest ClamAV database file, or None."""
     try:
-        times = [path.stat().st_mtime for path in Path(directory).iterdir()
-                 if path.suffix.lower() in ('.cvd', '.cld', '.cud')]
+        times = [path.stat().st_mtime for path in database_paths(directory)]
     except OSError:
         return None
     return max(times) if times else None

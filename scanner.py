@@ -4,6 +4,7 @@ import os
 import re
 
 from backends import backend
+from backends.base import database_paths
 from excludes import path_is_excluded, build_clamscan_exclude_args
 from core.scan_policy import scan_limits
 
@@ -140,13 +141,8 @@ def build_clamscan_command(scan_roots, exclude_patterns, clamscan_path=None, *, 
 def _first_database_dir():
     """Return the first configured database directory containing ClamAV DB files."""
     for db_dir in backend.system_db_locations():
-        try:
-            if not db_dir.is_dir():
-                continue
-            if any(p.suffix.lower() in (".cvd", ".cld") for p in db_dir.iterdir()):
-                return db_dir
-        except OSError:
-            continue
+        if database_paths(db_dir):
+            return db_dir
     return None
 
 
