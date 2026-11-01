@@ -16,7 +16,8 @@ USERUNITDIR = $(PREFIX)/lib/systemd/user
 # Arch packages use /usr/lib; LibreWard looks in both.
 LIBEXECDIR ?= $(PREFIX)/libexec
 HELPERDIR = $(LIBEXECDIR)/libreward
-POLKITDIR = $(DATADIR)/polkit-1/actions
+# Whatever PREFIX is: this is the folder polkit reads.
+POLKITDIR ?= /usr/share/polkit-1/actions
 POLICY = io.github.anaisoob.LibreWard.policy
 # One program per polkit action, see backends/linux_root.py.
 ROOT_HELPERS = system-check internet-protection firewall-read firewall-change scan-files system-quarantine
@@ -51,6 +52,7 @@ install:
 	sed -e 's|@BINDIR@|$(BINDIR)|g' packaging/libreward-monitor.service.in \
 		> $(DESTDIR)$(USERUNITDIR)/libreward-monitor.service
 	chmod 644 $(DESTDIR)$(USERUNITDIR)/libreward-monitor.service
+	rm -f $(DESTDIR)$(DATADIR)/polkit-1/actions/$(POLICY)  # where earlier versions put it
 	install -d $(DESTDIR)$(HELPERDIR) $(DESTDIR)$(POLKITDIR)
 	for helper in $(ROOT_HELPERS); do \
 		sed -e 's|@PYTHON@|$(PYTHON)|g' -e 's|@APPDIR@|$(APPDIR)|g' -e "s|@ACTION@|$$helper|g" \

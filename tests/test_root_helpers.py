@@ -39,10 +39,40 @@ class ClientTests(unittest.TestCase):
 
     def test_helpers_are_looked_up_next_to_the_installed_application(self):
         backend = LinuxBackend()
-        prefix = Path(sys.modules['backends.linux'].__file__).resolve().parents[2]
+        prefix = Path(sys.modules['backends.linux'].__file__).resolve().parents[3]
         wanted = prefix / 'lib/libreward/firewall-read'
         with patch.object(LinuxBackend, '_root_executable', side_effect=lambda path: str(path) if path == wanted else None):
             self.assertEqual(backend._root_helper('firewall-read'), str(wanted))
+
+    def installed_with_prefix(self, prefix):
+        """(temporary folder, code result) of an application installed by `make install`."""
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        subprocess.run(['make', '-s', 'install', f'DESTDIR={directory.name}', f'PREFIX={prefix}'],
+                       cwd=Path(__file__).resolve().parent.parent, check=True, capture_output=True)
+        return Path(directory.name)
+
+    def test_an_installed_application_finds_its_programs(self):
+        for prefix in ('/usr', '/usr/local'):
+            with self.subTest(prefix):
+                stage = self.installed_with_prefix(prefix)
+                application = stage / prefix.lstrip('/') / 'share/libreward'
+                code = ('import sys\nfrom pathlib import Path\n'
+                        f'sys.path.insert(0, {str(application)!r})\n'
+                        'from backends.linux import LinuxBackend\n'
+                        'LinuxBackend._root_executable = staticmethod(lambda path: str(path) if Path(path).exists() else None)\n'
+                        'print(LinuxBackend()._root_helper("scan-files"))\n'
+                        'print(repr(LinuxBackend().password_note()))\n')
+                output = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True, check=True).stdout
+                self.assertEqual(output.split(), [str(stage / prefix.lstrip('/') / 'libexec/libreward/scan-files'), "''"])
+
+    def test_the_policy_goes_where_polkit_reads_it_for_any_prefix(self):
+        for prefix in ('/usr', '/usr/local'):
+            with self.subTest(prefix):
+                stage = self.installed_with_prefix(prefix)
+                policy = stage / 'usr/share/polkit-1/actions/io.github.anaisoob.LibreWard.policy'
+                self.assertIn(f'{prefix}/libexec/libreward/scan-files', policy.read_text())
+                self.assertFalse((stage / 'usr/local/share/polkit-1').exists())
 
     def test_system_check_passes_no_arguments(self):
         backend = self.backend()

@@ -1202,7 +1202,7 @@ class LinuxBackend(PlatformBackend):
                     'system-quarantine')
 
     def _root_helper(self, name):
-        prefix = Path(__file__).resolve().parents[2]  # /usr for /usr/share/libreward/backends
+        prefix = Path(__file__).resolve().parents[3]  # /usr for /usr/share/libreward/backends/linux.py
         for folder in ('libexec', 'lib'):
             path = self._root_executable(prefix / folder / APP_NAME / name)
             if path:

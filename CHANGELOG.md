@@ -18,6 +18,10 @@
   and Virus scan, with a button to update it), and asks for a scan when none has
   finished for 14 days. An old system database was never updated by anything and
   never mentioned.
+- Installed LibreWard never found its programs for administrator rights, because it
+  looked one folder too deep, so the password window said "run python". With
+  `PREFIX=/usr/local` the polkit texts also went to a folder polkit does not reliably
+  read; they now always go to `/usr/share/polkit-1/actions`.
 - Recent ClamAV versions word "access denied" without ERROR. LibreWard missed those
   lines, so a scan without parallel scanning could end as failed, and skipped files
   were not listed.
