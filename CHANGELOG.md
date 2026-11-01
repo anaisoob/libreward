@@ -18,6 +18,8 @@
   and Virus scan, with a button to update it), and asks for a scan when none has
   finished for 14 days. An old system database was never updated by anything and
   never mentioned.
+- Ctrl-C in the terminal and a termination request now end LibreWard: open
+  questions close, a running scan stops, and the window closes when it has ended.
 - Virus scan page: the Event log card is gone; **Show details** opens the log in a
   dialog with **Clear log**, **View scan report** sits next to the result, and
   **Excludes** opens a dialog (it replaces the excludes on the Settings page, which

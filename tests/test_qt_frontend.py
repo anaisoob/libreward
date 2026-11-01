@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 try:
@@ -339,6 +339,57 @@ class QtFrontendTests(unittest.TestCase):
         self.assertIsNone(self.window.update_dialog)
         dialog.close()
         self.wait_for(lambda: done == ['on'])
+
+    def test_quit_signal_stops_a_scan_and_closes_when_it_has_ended(self):
+        release = threading.Event()
+        self.addCleanup(release.set)
+        self.window.show()
+        self.window.service = scans = Mock(stop_requested=False)
+        scans.stop.side_effect = lambda: setattr(scans, 'stop_requested', True)
+        self.window.start_task('scan', release.wait)
+        self.window.request_quit()
+        self.window.quit_when_requested()
+        scans.stop.assert_called_once_with()
+        self.window.quit_when_requested()
+        scans.stop.assert_called_once_with()  # waits, does not stop again
+        self.assertTrue(self.window.isVisible())
+        release.set()
+        self.wait_for(lambda: not self.window.isVisible())
+
+    def test_quit_signal_closes_an_open_question_first(self):
+        from PySide6.QtWidgets import QMessageBox
+        self.window.show()
+        question = QMessageBox(QMessageBox.Icon.Question, 'Question', 'Sure?',
+                               QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, self.window)
+        question.open()
+        self.app.processEvents()
+        self.window.request_quit()
+        self.window.quit_when_requested()
+        self.assertFalse(question.isVisible())
+        self.window.quit_when_requested()
+        self.assertFalse(self.window.isVisible())
+
+    def test_quitting_shows_no_notices(self):
+        self.patch('ui.main_window.backend.internet_protection_enabled', return_value=True)
+        self.window.show()
+        with patch.object(self.window.internet_page, 'explain_once') as explain:
+            self.window.request_quit()
+            self.window.quit_when_requested()
+        explain.assert_not_called()
+        self.assertFalse(self.window.isVisible())
+
+    def test_quit_request_reaches_a_dialog_opened_from_the_event_poll(self):
+        from PySide6.QtCore import QTimer
+        from PySide6.QtWidgets import QDialog
+        self.window.show()
+        answers = []
+        def ask(_result):
+            QTimer.singleShot(0, self.window.request_quit)
+            answers.append(QDialog(self.window).exec())
+        self.window.start_task('check', lambda: None, on_done=ask)
+        self.window.timer.start(1)
+        self.wait_for(lambda: answers)
+        self.assertEqual(answers, [QDialog.DialogCode.Rejected])
 
     def test_a_finished_scan_is_remembered_but_a_stopped_one_is_not(self):
         result = {'infected': [], 'errors': [], 'warnings': [], 'scanned': 1, 'total': 1, 'stopped': True}

@@ -1,6 +1,7 @@
 """PySide6 frontend using shared core services and platform backends."""
 import os
 import queue
+import signal
 import threading
 import time
 
@@ -56,6 +57,7 @@ class QtMainWindow(QMainWindow):
         self.service = None
         self.operation = None
         self.startup_status = None
+        self.quit_requested = False
         self.beside_scan = None  # (operation, on_done) of a task running next to a scan
         self.database_time = None
         self.update_dialog = None
@@ -98,6 +100,11 @@ class QtMainWindow(QMainWindow):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.poll_events)
         self.timer.start(100)
+        # Its own timer: Qt does not start a timer again while its slot is running,
+        # and poll_events stays in its slot while it shows a dialog such as setup.
+        self.quit_timer = QTimer(self)
+        self.quit_timer.timeout.connect(self.quit_when_requested)
+        self.quit_timer.start(200)
         self.database_watch_checks = 0
         self.database_watch_timer = QTimer(self)
         self.database_watch_timer.setInterval(10000)
@@ -1676,6 +1683,20 @@ class QtMainWindow(QMainWindow):
                 cell.setData(Qt.ItemDataRole.UserRole, item)
                 self.quarantine_table.setItem(row, col, cell)
 
+    def request_quit(self, *_signal):
+        """Ctrl-C or SIGTERM. Only a note: a signal handler may interrupt anything."""
+        self.quit_requested = True
+
+    def quit_when_requested(self):
+        """Repeats, so the window closes as soon as a stopped scan or a task has ended."""
+        if not self.quit_requested or (self.operation == 'scan' and self.service and self.service.stop_requested):
+            return
+        modal = QApplication.activeModalWidget()
+        if modal is not None:
+            modal.close()  # a question is answered with its safe choice; a running task's dialog stays
+        else:
+            self.close()
+
     def poll_events(self):
         for _ in range(200):
             try:
@@ -1856,17 +1877,18 @@ class QtMainWindow(QMainWindow):
                 self.set_status("Wait for the current operation before closing.")
             event.ignore()
             return
-        if backend.internet_protection_enabled():
+        if not self.quit_requested and backend.internet_protection_enabled():
             # Once: closing the app does not switch protection off.
             self.internet_page.explain_once('internet_protection_close_notice', 'Internet protection stays on',
                 'LibreWard is closing, but Internet protection keeps blocking websites, like the firewall. '
                 'To turn it off, open LibreWard and choose Turn off under Websites on the Live protection page.')
-        if monitoring_enabled(self.config) and backend.monitor_agent_running():
+        if not self.quit_requested and monitoring_enabled(self.config) and backend.monitor_agent_running():
             self.internet_page.explain_once('folder_monitoring_close_notice', 'Live protection keeps working',
                 'LibreWard is closing, but new files and downloads are still checked for viruses. '
                 'If a file is dangerous, LibreWard tells you and opens. '
                 'To stop it, open LibreWard and turn it off on the Live protection page.')
         self.timer.stop()
+        self.quit_timer.stop()
         self.file_protection.stop()
         self.database_watch_timer.stop()
         updated = dict(self.config)
@@ -1993,6 +2015,8 @@ def run(autostart=False, threats=False):
     except OSError:
         gui_lock = None
     window = QtMainWindow()
+    signal.signal(signal.SIGINT, window.request_quit)
+    signal.signal(signal.SIGTERM, window.request_quit)
     window.instance_server = listen_for_instances(window, name)
     window.show()
     if threats:
