@@ -75,6 +75,8 @@ class QtFrontendTests(unittest.TestCase):
         return patcher.start()
 
     def tearDown(self):
+        if self.window.operation == 'scan' and not self.window.worker:
+            self.window.set_busy(None)  # set directly by a test
         if self.window.worker:
             self.window.worker.join(timeout=3)
         self.window.poll_events()
@@ -87,7 +89,8 @@ class QtFrontendTests(unittest.TestCase):
 
     def wait_idle(self):
         deadline = time.monotonic() + 3
-        while self.window.operation is not None and time.monotonic() < deadline:
+        while ((self.window.operation is not None or self.window.internet_page.checking)
+               and time.monotonic() < deadline):
             self.app.processEvents()
             self.window.poll_events()
             time.sleep(.005)
@@ -233,6 +236,109 @@ class QtFrontendTests(unittest.TestCase):
         self.patch('ui.main_window.database_time', return_value=time.time())
         self.window.check_runtime(quiet=True)
         self.wait_for(lambda: self.window.database_notice.isHidden())
+
+    def wait_beside_scan(self):
+        self.wait_for(lambda: self.window.beside_scan is None)
+
+    def test_the_website_status_is_read_during_a_scan(self):
+        self.patch('ui.internet_page.backend.inspect_internet_protection',
+                   return_value={'supported': True, 'active': False, 'message': ''})
+        page = self.window.internet_page
+        self.window.set_busy('scan')
+        self.window.switch_page('internet')
+        self.wait_for(lambda: not page.checking)
+        self.assertEqual(page.status.text(), 'Internet protection is off')
+        self.assertTrue(page.toggle_button.isEnabled())
+
+    def test_a_scan_lets_unrelated_tasks_run_and_keeps_the_others_waiting(self):
+        self.window.set_busy('scan')
+        done = []
+        for operation in ('quarantine-action', 'firewall-change', 'internet-apply', 'file-action'):
+            self.assertTrue(self.window.start_task(operation, lambda: 'finished', on_done=done.append))
+            self.wait_beside_scan()
+        self.assertEqual(done, ['finished'] * 4)
+        for operation in ('database', 'check', 'runtime-install', 'system-check', 'scan'):
+            self.assertFalse(self.window.start_task(operation, lambda: self.fail('started')))
+        self.assertEqual(self.window.operation, 'scan')
+
+    def test_quarantine_buttons_work_during_a_scan(self):
+        item = {'quarantine_name': 'sample', 'original_path': '/sample'}
+        self.window.show_quarantine([item])
+        self.window.quarantine_table.selectRow(0)
+        self.window.set_busy('scan')
+        from PySide6.QtWidgets import QPushButton
+        buttons = {button.text(): button for button in self.window.quarantine_table.parent().findChildren(QPushButton)}
+        self.assertTrue(buttons['Delete selected'].isEnabled())
+        self.assertFalse(self.window.database_button.isEnabled())
+        self.assertFalse(self.window.scan_button.isEnabled())
+        delete = self.patch('ui.main_window.delete_quarantined_file', return_value='Permanently deleted: sample')
+        with patch.object(self.window, 'confirm', return_value=True):
+            self.window.delete_quarantine_selected()
+        self.wait_beside_scan()
+        delete.assert_called_once_with('sample')
+
+    def test_a_task_beside_a_scan_can_outlast_the_scan(self):
+        import threading
+        release = threading.Event()
+        self.window.set_busy('scan')
+        done = []
+        self.assertTrue(self.window.start_task('firewall-change', lambda: release.wait(3) and 'finished', on_done=done.append))
+        self.window.set_busy(None)  # the scan ends first
+        self.assertTrue(self.window.busy())
+        self.assertFalse(self.window.start_task('check', lambda: None))
+        self.assertFalse(self.window.database_button.isEnabled() and self.window.idle_buttons[0].isEnabled())
+        self.assertFalse(self.window.scan_button.isEnabled())
+        release.set()
+        self.wait_beside_scan()
+        self.assertEqual(done, ['finished'])
+        self.assertFalse(self.window.busy())
+        self.assertTrue(self.window.scan_button.isEnabled())
+
+    def test_a_failed_task_beside_a_scan_is_reported(self):
+        self.window.set_busy('scan')
+        def fail():
+            raise OSError('no access')
+        self.window.start_task('quarantine-action', fail)
+        self.wait_beside_scan()
+        self.warning.assert_called_once()
+        self.assertIn('no access', self.warning.call_args.args[2])
+
+    def test_scan_lines_stay_out_of_a_progress_dialog_beside_it(self):
+        import threading
+        release = threading.Event()
+        self.window.set_busy('scan')
+        self.window.start_task('internet-apply', lambda: release.wait(3), title='Applying changes')
+        dialog = self.window.update_dialog
+        self.window.events.put('Warning: /some/file cannot be read\n')
+        self.window.task_note('Preparing the domain database on disk…\n')
+        self.wait_for(lambda: 'Preparing' in dialog.log.toPlainText())
+        self.assertNotIn('/some/file', dialog.log.toPlainText())
+        self.assertIn('/some/file', self.window.log.toPlainText())
+        release.set()
+        self.wait_beside_scan()
+        dialog.close()
+
+    def test_a_real_scan_task_ending_leaves_the_dialog_beside_it_open(self):
+        scan_may_end, change_may_end = threading.Event(), threading.Event()
+        self.addCleanup(scan_may_end.set)
+        self.addCleanup(change_may_end.set)
+        scan_report = []
+        self.assertTrue(self.window.start_task('scan', scan_may_end.wait, on_done=scan_report.append))
+        done = []
+        self.assertTrue(self.window.start_task('internet-apply', lambda: change_may_end.wait(3) and 'on',
+                                               on_done=done.append, title='Applying changes'))
+        dialog = self.window.update_dialog
+        scan_may_end.set()
+        self.wait_for(lambda: self.window.operation is None)
+        self.assertEqual(scan_report, [True])
+        self.assertIs(self.window.update_dialog, dialog)  # still the change's, not finished with the scan
+        self.assertEqual(done, [])
+        self.assertTrue(self.window.busy())
+        change_may_end.set()
+        self.wait_beside_scan()
+        self.assertIsNone(self.window.update_dialog)
+        dialog.close()
+        self.wait_for(lambda: done == ['on'])
 
     def test_a_finished_scan_is_remembered_but_a_stopped_one_is_not(self):
         result = {'infected': [], 'errors': [], 'warnings': [], 'scanned': 1, 'total': 1, 'stopped': True}
@@ -1234,7 +1340,7 @@ class QtFrontendTests(unittest.TestCase):
         release = threading.Event()
         self.addCleanup(release.set)
         query = self.patch('ui.main_window.backend.inspect_firewall', return_value=FirewallSnapshot(True))
-        self.window.start_task('scan', lambda: release.wait(2))
+        self.window.start_task('database', lambda: release.wait(2))
         self.window.switch_page('firewall')
         query.assert_not_called()
         self.assertTrue(self.window.firewall_refresh_pending)
@@ -1243,12 +1349,21 @@ class QtFrontendTests(unittest.TestCase):
         query.assert_called_once()
         self.assertIsNotNone(self.window.firewall_snapshot)
 
+    def test_firewall_is_checked_during_a_scan(self):
+        from core.firewall import FirewallSnapshot
+        query = self.patch('ui.main_window.backend.inspect_firewall', return_value=FirewallSnapshot(True))
+        self.window.set_busy('scan')
+        self.window.switch_page('firewall')
+        self.wait_beside_scan()
+        query.assert_called_once()
+        self.assertIsNotNone(self.window.firewall_snapshot)
+
     def test_deferred_firewall_check_does_not_run_after_leaving_page(self):
         from core.firewall import FirewallSnapshot
         release = threading.Event()
         self.addCleanup(release.set)
         query = self.patch('ui.main_window.backend.inspect_firewall', return_value=FirewallSnapshot(True))
-        self.window.start_task('scan', lambda: release.wait(2))
+        self.window.start_task('database', lambda: release.wait(2))
         self.window.switch_page('firewall')
         self.window.switch_page('scan')
         release.set()

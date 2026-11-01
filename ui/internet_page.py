@@ -19,6 +19,7 @@ class InternetProtectionPage:
         self.window = window
         self.state = None
         self.pending = False
+        self.checking = False
         self.recovery_noticed = False
         # Cancelling stops before the system change starts or while authorization is pending.
         self.cancel_lock = threading.Lock()
@@ -353,8 +354,17 @@ class InternetProtectionPage:
         save_config(config)
         self.window.config = config
 
+    def can_change(self):
+        """A running scan does not stand in the way, other tasks do."""
+        return not self.window.busy()
+
+    def changing(self):
+        """A status read now could show the state from before this change."""
+        return (str(self.window.operation).startswith('internet-')
+                or self.window.beside_scan is not None)
+
     def add_domain(self, key, field):
-        if self.window.operation:
+        if not self.can_change():
             return
         try:
             domain = normalize_domain(field.text())
@@ -373,7 +383,7 @@ class InternetProtectionPage:
         self.changed()
 
     def remove_domain(self, key):
-        if self.window.operation:
+        if not self.can_change():
             return
         listing = self.domain_lists[key]
         for item in listing.selectedItems():
@@ -385,15 +395,36 @@ class InternetProtectionPage:
         self.maybe_refresh()
 
     def maybe_refresh(self):
-        if (self.pending and self.window.operation is None
+        if (self.pending and not self.checking and not self.changing()
                 and QApplication.activeModalWidget() is None
                 and self.window.pages.currentIndex() == self.window.page_indices['internet']):
             self.refresh()
 
     def refresh(self):
-        if self.window.start_task('internet-status', backend.inspect_internet_protection, on_done=self.show_state):
-            self.pending = False
-            self.status.setText('Checking Internet protection…')
+        """Only reads the state, in its own thread: no other task has to wait for it, or it for them."""
+        self.checking = True
+        self.pending = False
+        self.status.setText('Checking Internet protection…')
+
+        def work():
+            try:
+                result = backend.inspect_internet_protection()
+            except Exception as exc:  # noqa: BLE001 - reported on the page
+                result = str(exc)
+            self.window.events.put(('__CALL__', self.status_read, result))
+
+        threading.Thread(target=work, name='internet-status', daemon=True).start()
+
+    def status_read(self, result):
+        self.checking = False
+        if self.changing():
+            self.pending = True  # read before the change finished
+        elif isinstance(result, str):
+            self.window.log.appendPlainText(result)
+            self.unknown()
+            self.pending = False  # again when the page opens, not in a loop
+        else:
+            self.show_state(result)
 
     def watch_state(self):
         directory = backend.internet_protection_state_directory()
@@ -457,16 +488,14 @@ class InternetProtectionPage:
         self.update_controls()
 
     def update_controls(self):
-        idle = self.window.operation is None
-        # A background status check must not interrupt editing.
-        editable = idle or self.window.operation == 'internet-status'
-        self.toggle_button.setEnabled(idle and bool(self.state and (self.state.get('supported') or self.state.get('active'))))
-        self.apply_button.setEnabled(idle)
+        free = self.can_change()
+        self.toggle_button.setEnabled(free and bool(self.state and (self.state.get('supported') or self.state.get('active'))))
+        self.apply_button.setEnabled(free)
         for widget in [*self.categories.values(), *self.domain_lists.values(), *self.domain_fields, self.upstream,
                        *self.levels.values(), *self.simple_choices.values()]:
-            widget.setEnabled(editable)
+            widget.setEnabled(free)
         self.update_pending()
-        if idle and self.scroll_position is not None:
+        if free and self.scroll_position is not None:
             self.scroll_restore_timer.start(0)
 
     def unknown(self):
@@ -480,7 +509,7 @@ class InternetProtectionPage:
         self.update_controls()
 
     def download(self):
-        if self.window.operation:
+        if not self.can_change():
             return
         settings = self.settings()
         if not settings['categories']:
@@ -490,8 +519,8 @@ class InternetProtectionPage:
                 'Download the latest lists of unwanted websites from The Block List Project on GitHub?'):
             return
         def work():
-            bundle = self.store.update(settings['categories'], self.window.events.put)
-            self.window.events.put(f"Downloaded {bundle.get('count', 0):,} websites.\n")
+            bundle = self.store.update(settings['categories'], self.window.task_note)
+            self.window.task_note(f"Downloaded {bundle.get('count', 0):,} websites.\n")
             return {'updated': bundle['updated']}
 
         def done(_bundle):
@@ -528,7 +557,7 @@ class InternetProtectionPage:
             'you can allow them later. Your password is needed.'])
 
     def apply(self, confirmed=False, changes=False):
-        if self.window.operation or not self.state or not self.state.get('supported'):
+        if not self.can_change() or not self.state or not self.state.get('supported'):
             return
         settings = self.settings()
         if settings['level'] == 'advanced' and not settings['categories'] and not settings['blocked']:
@@ -560,16 +589,16 @@ class InternetProtectionPage:
                 lists = settings
                 available = set(self.store.load()['lists'])
                 if any(key not in available for key in settings['categories']):
-                    self.store.update(settings['categories'], self.window.events.put)
-            self.window.events.put('Preparing the domain database on disk…\n')
+                    self.store.update(settings['categories'], self.window.task_note)
+            self.window.task_note('Preparing the domain database on disk…\n')
             with self.store.prepare(lists) as domains:
                 if settings['level'] == 'advanced' and not len(domains):
                     raise ValueError('Nothing is left to block: your allowed websites cover everything on the lists.')
-                self.window.events.put(f'Applying {len(domains):,} blocked websites. Waiting for system authorization…\n')
+                self.window.task_note(f'Applying {len(domains):,} blocked websites. Waiting for system authorization…\n')
                 self.start_system_change()
                 state = backend.apply_internet_protection(domains, upstream=upstream)
             name = 'your internet provider or router' if upstream == NETWORK else PROVIDERS[upstream].name
-            self.window.events.put(f"Protection is on: {state['count']:,} websites blocked by your lists; "
+            self.window.task_note(f"Protection is on: {state['count']:,} websites blocked by your lists; "
                                    f"websites are found through {name}.\n")
             return state
         self.reset_cancel()
@@ -619,7 +648,7 @@ class InternetProtectionPage:
         self.update_pending()
 
     def pause(self):
-        if self.window.operation or not self.state or not self.state.get('active'):
+        if not self.can_change() or not self.state or not self.state.get('active'):
             return
         if not self.window.confirm('Turn off Internet protection',
                 'Websites will no longer be blocked. Your choices are kept for next time. Your password is needed.'):

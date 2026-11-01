@@ -55,6 +55,7 @@ class QtMainWindow(QMainWindow):
         self.service = None
         self.operation = None
         self.startup_status = None
+        self.beside_scan = None  # (operation, on_done) of a task running next to a scan
         self.database_time = None
         self.update_dialog = None
         self.completion = None
@@ -66,6 +67,7 @@ class QtMainWindow(QMainWindow):
         # Settings an administrator set for all users; their controls are locked.
         self.policy = load_policy()
         self.idle_buttons = []
+        self.beside_scan_buttons = []
         self.scan_actions = []
         self.last_result = None
         self.monitor_state_mtime = None
@@ -339,7 +341,7 @@ class QtMainWindow(QMainWindow):
 
     def switch_page(self, key):
         leaving_internet = (key != 'internet' and self.pages.currentIndex() == self.page_indices.get('internet')
-                            and self.operation is None)
+                            and not self.busy())
         if leaving_internet and self.internet_page.has_pending():
             answer = QMessageBox.question(
                 self, 'Apply your changes?',
@@ -360,7 +362,7 @@ class QtMainWindow(QMainWindow):
             self.internet_page.request_refresh()
         if key == 'firewall' and self.firewall_snapshot is None:
             self.firewall_refresh_pending = True
-            if self.operation:
+            if self.busy():
                 self.firewall_status.setText('Waiting for the current operation before checking firewall…')
             self.maybe_refresh_firewall()
 
@@ -419,7 +421,7 @@ class QtMainWindow(QMainWindow):
         layout.setSpacing(12)
         return frame, layout
 
-    def button(self, text, callback, *, scan_action=False, variant="secondary", track=True):
+    def button(self, text, callback, *, scan_action=False, variant="secondary", track=True, beside_scan=False):
         """track=False for buttons in content that is rebuilt: a deleted button must not
         stay in the lists that set_busy enables and disables."""
         button = QPushButton(text)
@@ -428,7 +430,8 @@ class QtMainWindow(QMainWindow):
         button.setMinimumHeight(38)
         button.clicked.connect(callback)
         if track:
-            (self.scan_actions if scan_action else self.idle_buttons).append(button)
+            (self.scan_actions if scan_action else self.beside_scan_buttons if beside_scan
+             else self.idle_buttons).append(button)
         return button
 
     @staticmethod
@@ -464,12 +467,12 @@ class QtMainWindow(QMainWindow):
         self.firewall_tools.currentIndexChanged.connect(self.show_firewall_tool)
         self.firewall_tools.hide()
         actions.addWidget(self.firewall_tools)
-        self.firewall_enable_button = self.button("Enable firewall", self.enable_firewall, variant="primary")
-        self.firewall_add_button = self.button("Add rule", self.add_firewall_rule)
+        self.firewall_enable_button = self.button("Enable firewall", self.enable_firewall, variant="primary", beside_scan=True)
+        self.firewall_add_button = self.button("Add rule", self.add_firewall_rule, beside_scan=True)
         actions.addWidget(self.firewall_enable_button)
         actions.addWidget(self.firewall_add_button)
         actions.addStretch()
-        self.firewall_check_button = self.button("Check protection status", self.authorize_firewall, variant="primary")
+        self.firewall_check_button = self.button("Check protection status", self.authorize_firewall, variant="primary", beside_scan=True)
         self.firewall_check_button.setToolTip("Reads the firewall with administrator rights; may ask for your password")
         actions.addWidget(self.firewall_check_button)
         box.addLayout(actions)
@@ -484,7 +487,7 @@ class QtMainWindow(QMainWindow):
         header = QHBoxLayout()
         header.addWidget(self.label("RULES", "eyebrow"))
         header.addStretch()
-        self.firewall_delete_button = self.button('Delete selected rule', self.delete_firewall_rule, variant='danger')
+        self.firewall_delete_button = self.button('Delete selected rule', self.delete_firewall_rule, variant='danger', beside_scan=True)
         self.firewall_delete_button.setToolTip('Select a rule in the list first')
         header.addWidget(self.firewall_delete_button)
         box.addLayout(header)
@@ -543,7 +546,7 @@ class QtMainWindow(QMainWindow):
         return self.internet_page.page
 
     def maybe_refresh_firewall(self):
-        if (self.firewall_refresh_pending and self.operation is None
+        if (self.firewall_refresh_pending and not self.busy()
                 and self.pages.currentIndex() == self.page_indices['firewall']
                 and QApplication.activeModalWidget() is None):
             self.refresh_firewall()
@@ -670,7 +673,7 @@ class QtMainWindow(QMainWindow):
 
     def update_firewall_controls(self):
         tool = self.selected_firewall_tool()
-        idle = self.operation is None
+        idle = not self.busy()
         managed = tool is not None and tool.name in ('UFW', 'firewalld')
         self.firewall_enable_button.setEnabled(idle and managed and tool.state in ('Inactive', 'Not running', 'Active', 'Running'))
         self.firewall_enable_button.setText('Disable firewall' if tool and tool.state in ('Active', 'Running') else 'Enable firewall')
@@ -697,7 +700,7 @@ class QtMainWindow(QMainWindow):
 
     def enable_firewall(self):
         tool = self.selected_firewall_tool()
-        if self.operation or not tool or tool.name not in ('UFW', 'firewalld') or tool.state not in ('Inactive', 'Not running', 'Active', 'Running'):
+        if self.busy() or not tool or tool.name not in ('UFW', 'firewalld') or tool.state not in ('Inactive', 'Not running', 'Active', 'Running'):
             return
         enabled = tool.state in ('Inactive', 'Not running')
         try:
@@ -722,7 +725,7 @@ class QtMainWindow(QMainWindow):
 
     def add_firewall_rule(self):
         tool = self.selected_firewall_tool()
-        if self.operation or not tool or tool.name not in ('UFW', 'firewalld'):
+        if self.busy() or not tool or tool.name not in ('UFW', 'firewalld'):
             return
         if tool.name == 'firewalld' and tool.state != 'Running':
             return
@@ -763,7 +766,7 @@ class QtMainWindow(QMainWindow):
     def delete_firewall_rule(self):
         tool = self.selected_firewall_tool()
         index = self.firewall_rule_list.currentRow()
-        if self.operation or not tool or not 0 <= index < len(self.firewall_removals):
+        if self.busy() or not tool or not 0 <= index < len(self.firewall_removals):
             return
         removal = self.firewall_removals[index]
         text = ('Delete this connection rule?\n\n' + removal.description(tool.name)
@@ -877,9 +880,9 @@ class QtMainWindow(QMainWindow):
         self.findings_card.setMinimumHeight(230)
         findings.addWidget(self.results)
         row = QHBoxLayout()
-        row.addWidget(self.button("Quarantine selected", lambda: self.handle_findings("quarantine"), variant="primary"))
-        row.addWidget(self.button("Delete selected", lambda: self.handle_findings("delete"), variant="danger"))
-        row.addWidget(self.button("Open location", self.open_finding_location))
+        row.addWidget(self.button("Quarantine selected", lambda: self.handle_findings("quarantine"), variant="primary", beside_scan=True))
+        row.addWidget(self.button("Delete selected", lambda: self.handle_findings("delete"), variant="danger", beside_scan=True))
+        row.addWidget(self.button("Open location", self.open_finding_location, beside_scan=True))
         findings.addLayout(row)
         self.scan_panels.addWidget(self.findings_card)
         self.findings_card.hide()
@@ -962,13 +965,13 @@ class QtMainWindow(QMainWindow):
         self.quarantine_table = self.table(["Original file", "Threat", "Quarantined at", "Size"])
         box.addWidget(self.quarantine_table, 1)
         row = QHBoxLayout()
-        restore = self.button("Restore selected", self.restore_selected, variant="primary")
+        restore = self.button("Restore selected", self.restore_selected, variant="primary", beside_scan=True)
         # An administrator can decide that dangerous files never come back.
         restore.setVisible(self.policy['dangerous_files'] != 'quarantine')
         row.addWidget(restore)
-        row.addWidget(self.button("Delete selected", self.delete_quarantine_selected, variant="danger"))
+        row.addWidget(self.button("Delete selected", self.delete_quarantine_selected, variant="danger", beside_scan=True))
         row.addStretch()
-        row.addWidget(self.button("Refresh", self.refresh_state))
+        row.addWidget(self.button("Refresh", self.refresh_quarantine, beside_scan=True))
         box.addLayout(row)
         layout.addWidget(card, 1)
         layout.addWidget(self.label("Restoring never overwrites an existing file. Permanent deletion requires confirmation.", "muted"))
@@ -1187,6 +1190,21 @@ class QtMainWindow(QMainWindow):
         self.settings_feedback.setText("Settings saved")
         return True
 
+    def busy(self):
+        """Whether a task beside a scan has to wait; only a scan leaves room for them."""
+        return self.operation not in (None, 'scan') or self.beside_scan is not None
+
+    def update_busy_controls(self):
+        idle = self.operation is None and self.beside_scan is None
+        for button in self.idle_buttons:
+            button.setEnabled(idle)
+        for button in self.scan_actions:
+            button.setEnabled(idle and self.startup_status is not None and self.startup_status.can_scan)
+        for button in self.beside_scan_buttons:
+            button.setEnabled(not self.busy())
+        self.update_firewall_controls()
+        self.internet_page.update_controls()
+
     def set_busy(self, operation):
         if operation is not None:
             self.internet_page.prepare_operation()
@@ -1194,12 +1212,7 @@ class QtMainWindow(QMainWindow):
         if operation == 'scan':
             self.summary.setText('Preparing scan — checking the antivirus engine and database…')
         self.update_scan_indicator()
-        for button in self.idle_buttons:
-            button.setEnabled(operation is None)
-        for button in self.scan_actions:
-            button.setEnabled(operation is None and self.startup_status is not None and self.startup_status.can_scan)
-        self.update_firewall_controls()
-        self.internet_page.update_controls()
+        self.update_busy_controls()
         self.stop_button.setEnabled(operation == "scan")
         # The thin bar shows that a running scan is still busy, for example on a
         # large file; it appears with the first checked file, not while preparing.
@@ -1214,7 +1227,42 @@ class QtMainWindow(QMainWindow):
         else:
             self.progress.setRange(0, 100)
 
+    def start_beside_scan(self, operation, target, on_done, title):
+        """A scan can take hours; work that has nothing to do with it need not wait.
+
+        One such task at a time, and until it ends nothing else starts, also when
+        the scan finishes first.
+        """
+        self.beside_scan = (operation, on_done)
+        if title:
+            self.update_dialog = UpdateProgressDialog(self, title)
+            self.update_dialog.show()
+        self.update_busy_controls()
+
+        def run_worker():
+            try:
+                self.events.put(("__BESIDE_SCAN_DONE__", True, target()))
+            except Exception as exc:
+                self.events.put(("__BESIDE_SCAN_DONE__", False, exc if isinstance(exc, AuthorizationError) else str(exc)))
+
+        threading.Thread(target=run_worker, daemon=False).start()
+        return True
+
+    def finish_beside_scan(self, success, payload):
+        (operation, callback), self.beside_scan = self.beside_scan, None
+        dialog, self.update_dialog = self.update_dialog, None
+        self.update_busy_controls()
+        self.report_task(operation, success, payload, callback, dialog)
+
+    def task_note(self, text):
+        """A line from a running task for its progress dialog; a scan's lines stay out of it."""
+        self.events.put(("__TASK_NOTE__", text))
+
     def start_task(self, operation, target, *, on_done=None, title=None):
+        if self.beside_scan is not None:
+            return False
+        if self.operation == 'scan' and operation.startswith(BESIDE_SCAN):
+            return self.start_beside_scan(operation, target, on_done, title)
         if self.operation is not None or (self.worker and self.worker.is_alive()):
             return False
         self.on_done = on_done
@@ -1548,7 +1596,7 @@ class QtMainWindow(QMainWindow):
 
     def handle_findings(self, action, files=None, *, confirmed=False):
         """Quarantine or delete files (default: the selected findings); False when nothing started."""
-        if self.operation is not None:
+        if self.busy():
             return False
         if files is None:
             files = [(self.results.item(row, 0).text(), self.results.item(row, 1).text())
@@ -1606,15 +1654,21 @@ class QtMainWindow(QMainWindow):
         return [self.quarantine_table.item(row, 0).data(Qt.ItemDataRole.UserRole) for row in self.selected_rows(self.quarantine_table)]
 
     def restore_selected(self):
-        if self.operation is not None or self.policy['dangerous_files'] == 'quarantine':
+        if self.busy() or self.policy['dangerous_files'] == 'quarantine':
             return
         items = self.selected_quarantine_items()
         if not items or not self.confirm("Restore files", f"Restore {len(items)} selected file(s) to their original locations? Restore only files you trust. Existing files will not be overwritten."):
             return
         self.quarantine_action(items, restore_file, "Restored:")
 
+    def refresh_quarantine(self):
+        if self.operation == 'scan':  # the full check would replace the scan's status
+            self.start_task('quarantine-action', lambda: self.events.put(('__QUARANTINE__', list_quarantined_files())))
+        else:
+            self.refresh_state()
+
     def delete_quarantine_selected(self):
-        if self.operation is not None:
+        if self.busy():
             return
         items = self.selected_quarantine_items()
         if not items or not self.confirm("Delete quarantined files", f"Permanently delete {len(items)} selected quarantined file(s)? This cannot be undone."):
@@ -1665,10 +1719,18 @@ class QtMainWindow(QMainWindow):
                 break
             if isinstance(event, str):
                 self.log.appendPlainText(event.rstrip())
-                if self.update_dialog:
+                if self.update_dialog and self.beside_scan is None:
                     self.update_dialog.append(event)
                 continue
             kind, *values = event
+            if kind == '__TASK_NOTE__':
+                self.log.appendPlainText(values[0].rstrip())
+                if self.update_dialog:
+                    self.update_dialog.append(values[0])
+                continue
+            if kind == '__BESIDE_SCAN_DONE__':
+                self.finish_beside_scan(*values)
+                continue
             if kind == '__CALL__':
                 callback, result = values
                 callback(result)
@@ -1769,50 +1831,58 @@ class QtMainWindow(QMainWindow):
             callback = self.on_done
             self.completion = None
             self.on_done = None
-            dialog = self.update_dialog
-            self.update_dialog = None
+            dialog = None if self.beside_scan else self.update_dialog
+            if self.beside_scan is None:
+                self.update_dialog = None
             self.set_busy(None)
-            if dialog:
-                # Keep the outcome visible. Follow-up steps (confirmation or
-                # database update) start after the user dismisses this report.
-                if success and callback:
-                    dialog.finished.connect(lambda _result, cb=callback, value=payload: cb(value))
-                if not success and isinstance(payload, AuthorizationError) and payload.kind != 'cancelled':
-                    dialog.finished.connect(lambda _result, issue=str(payload): self.show_authorization_help(issue))
-                dialog.finish(success, '' if success else str(payload))
-                if (success and completed_operation == 'database'
-                        and isinstance(payload, dict) and payload.get('pending')):
-                    dialog.status.setText('System updater is running — latest update completion is not confirmed. Close this report to continue.')
-                    dialog.progress.setRange(0, 0)
-            if success:
-                if callback and not dialog:
-                    callback(payload)
-            else:
-                self.set_status("Operation failed", "danger")
-                cancelled = isinstance(payload, AuthorizationError) and payload.kind == 'cancelled'
-                if completed_operation.startswith('internet-') and not cancelled:
-                    self.internet_page.unknown()
-                if completed_operation == 'firewall-change':
-                    tool = self.selected_firewall_tool()
-                    if tool:
-                        tool.state = 'Unknown — refresh required after unverified change'
-                        tool.rules = 'Previous snapshot — refresh to verify current rules.\n\n' + tool.rules
-                        self.show_firewall_tool(self.firewall_tools.currentIndex())
-                    self.firewall_change_result.setText('Change was not confirmed. Read current rules before retrying.\n' + str(payload))
-                if completed_operation == 'scan':
-                    self.summary.setText('Scan could not finish. See the event log for details.')
-                if completed_operation not in ('firewall', 'firewall-change', 'firewall-networks'):
-                    self.log.appendPlainText(str(payload))
-                if not dialog:
-                    if isinstance(payload, AuthorizationError) and payload.kind != 'cancelled':
-                        self.show_authorization_help(str(payload))
-                    else:
-                        QMessageBox.warning(self, "LibreWard", str(payload))
+            self.report_task(completed_operation, success, payload, callback, dialog)
 
         self.maybe_refresh_firewall()
         self.internet_page.maybe_refresh()
 
+    def report_task(self, completed_operation, success, payload, callback, dialog):
+        if dialog:
+            # Keep the outcome visible. Follow-up steps (confirmation or
+            # database update) start after the user dismisses this report.
+            if success and callback:
+                dialog.finished.connect(lambda _result, cb=callback, value=payload: cb(value))
+            if not success and isinstance(payload, AuthorizationError) and payload.kind != 'cancelled':
+                dialog.finished.connect(lambda _result, issue=str(payload): self.show_authorization_help(issue))
+            dialog.finish(success, '' if success else str(payload))
+            if (success and completed_operation == 'database'
+                    and isinstance(payload, dict) and payload.get('pending')):
+                dialog.status.setText('System updater is running — latest update completion is not confirmed. Close this report to continue.')
+                dialog.progress.setRange(0, 0)
+        if success:
+            if callback and not dialog:
+                callback(payload)
+        else:
+            self.set_status("Operation failed", "danger")
+            cancelled = isinstance(payload, AuthorizationError) and payload.kind == 'cancelled'
+            if completed_operation.startswith('internet-') and not cancelled:
+                self.internet_page.unknown()
+            if completed_operation == 'firewall-change':
+                tool = self.selected_firewall_tool()
+                if tool:
+                    tool.state = 'Unknown — refresh required after unverified change'
+                    tool.rules = 'Previous snapshot — refresh to verify current rules.\n\n' + tool.rules
+                    self.show_firewall_tool(self.firewall_tools.currentIndex())
+                self.firewall_change_result.setText('Change was not confirmed. Read current rules before retrying.\n' + str(payload))
+            if completed_operation == 'scan':
+                self.summary.setText('Scan could not finish. See the event log for details.')
+            if completed_operation not in ('firewall', 'firewall-change', 'firewall-networks'):
+                self.log.appendPlainText(str(payload))
+            if not dialog:
+                if isinstance(payload, AuthorizationError) and payload.kind != 'cancelled':
+                    self.show_authorization_help(str(payload))
+                else:
+                    QMessageBox.warning(self, "LibreWard", str(payload))
+
     def closeEvent(self, event):
+        if self.beside_scan is not None:
+            self.set_status("Wait for the current operation before closing.")
+            event.ignore()
+            return
         if self.operation is not None or (self.worker and self.worker.is_alive()):
             if self.operation == "scan":
                 self.stop_scan()
@@ -1842,6 +1912,11 @@ class QtMainWindow(QMainWindow):
         except OSError as exc:
             self.log.appendPlainText(f'Cannot save window size and position: {exc}')
         event.accept()
+
+
+# Tasks that a running scan does not affect. The database, the antivirus engine
+# and other scans do depend on it.
+BESIDE_SCAN = ('internet-', 'firewall', 'quarantine-action', 'file-action', 'open-location')
 
 
 def instance_server_name():

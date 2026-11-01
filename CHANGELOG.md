@@ -18,6 +18,10 @@
   and Virus scan, with a button to update it), and asks for a scan when none has
   finished for 14 days. An old system database was never updated by anything and
   never mentioned.
+- A running scan no longer blocks work that has nothing to do with it: Internet
+  protection (its status is read at once, and it can be turned on or off), the
+  firewall, and quarantine and detected files. Updating the database or ClamAV and
+  starting a System check still wait for the scan to end.
 - Quarantine no longer loses files when another program touches them at the same
   moment: restoring never replaces a file that appeared during the restore,
   temporary files have unique names, so a file of the user's with the old fixed
