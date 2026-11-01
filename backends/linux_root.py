@@ -36,6 +36,14 @@ def scan_files(arguments):
     return root_main()
 
 
+def system_quarantine(arguments):
+    """No arguments; the request comes on stdin, see linux_root_quarantine."""
+    from backends.linux_root_quarantine import quarantine_main
+    if arguments:
+        raise ValueError('This program takes no arguments.')
+    return quarantine_main()
+
+
 def internet_protection(arguments):
     """Arguments: none to pause, or the mode and the DNS service; the domain list on stdin."""
     from backends import backend
@@ -90,6 +98,7 @@ def firewall_change(arguments):
 ACTIONS = {
     'system-check': system_check,
     'scan-files': scan_files,
+    'system-quarantine': system_quarantine,
     'internet-protection': internet_protection,
     'firewall-read': firewall_read,
     'firewall-change': firewall_change,

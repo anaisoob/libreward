@@ -13,12 +13,6 @@ Planned work that has been discussed but is not implemented yet.
 
 ## Protection
 
-- **System quarantine, only with on-access blocking below.** Each user's
-  quarantine stores files encoded, so a copy taken out by hand is unusable; only
-  someone who decodes it on purpose gets it back. A quarantine only root can read
-  (for example `/var/lib/libreward/quarantine`) needs a root service; it is worth
-  that risk only together with the root service on-access blocking requires.
-
 - **Block opening a file until it is checked (on-access scanning).** ClamAV's
   `clamonacc` uses the kernel's fanotify interface to hold `open()` on a file until
   clamd has checked it (`OnAccessPrevention yes`). This is what Windows Defender

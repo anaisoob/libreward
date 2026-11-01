@@ -18,8 +18,12 @@
   and Virus scan, with a button to update it), and asks for a scan when none has
   finished for 14 days. An old system database was never updated by anything and
   never mentioned.
+- System quarantine (Linux): dangerous files your account cannot touch can be moved,
+  restored and deleted with the administrator password. Root keeps them in
+  `/var/lib/libreward/quarantine`, and detects them again before touching them.
 - Files a scan could not open can be checked with administrator rights from the scan
-  report, only those and not everything again (Linux). Scans also now report folders
+  report, only those and not everything again (Linux). The check shows how many files it has
+  checked and which one, and lists them under Show details. Scans also now report folders
   they could not read, and the file paths of denied files.
 - Excludes: new groups for containers (Docker and Podman), virtual machines, games,
   and Flatpak and Snap apps come first, developer folders after them. The Podman

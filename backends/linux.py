@@ -786,6 +786,52 @@ class LinuxBackend(PlatformBackend):
         except (OSError, ValueError):
             pass
 
+    def root_quarantine_available(self):
+        return self.root_scan_available()
+
+    def quarantine_as_root(self, request):
+        import inspect
+        import json
+        from . import linux_root_quarantine, linux_root_scan
+        helper = self._root_helper('system-quarantine')
+        if helper:
+            command = [helper]
+        else:
+            python = self._trusted_firewall_executable('python3')
+            if not python:
+                raise RuntimeError('This needs python3 in a system folder.')
+            source = (inspect.getsource(linux_root_scan) + '\n' + inspect.getsource(linux_root_quarantine)
+                      + '\nimport sys\nsys.exit(quarantine_main())\n')
+            command = [python, '-I', '-c', source]
+        process = self.start_privileged(
+            [self._require_authorizer(), '--disable-internal-agent', *command], stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace')
+        output, errors = process.communicate(json.dumps(request) + '\n')
+        self._privileged_finished(process)
+        self._check_authorization_exit(process.returncode)
+        try:
+            answer = json.loads(output)
+        except ValueError:
+            raise RuntimeError('The system quarantine did not finish. ' + errors.strip()[-500:]) from None
+        if 'results' not in answer:
+            raise RuntimeError(answer.get('error', 'The system quarantine did not finish.'))
+        return answer['results']
+
+    def installed_by_package(self, path):
+        """True when removing `path` could break an installed program."""
+        commands = {'rpm': ['-qf', '--'], 'dpkg': ['-S', '--'], 'pacman': ['-Qo', '--']}
+        for name, arguments in commands.items():
+            tool = self._trusted_firewall_executable(name)
+            if tool:
+                result = subprocess.run([tool, *arguments, path], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                        stderr=subprocess.DEVNULL, timeout=20, check=False)
+                return result.returncode == 0
+        return False
+
+    def password_note(self):
+        return ('' if self._root_helper('scan-files') else
+                'Run from source, the password window names Python, not LibreWard.')
+
     def stop_root_scan(self):
         process = getattr(self, '_root_scan', None)
         if self.cancel_authorization() or process is None:
@@ -1152,7 +1198,8 @@ class LinuxBackend(PlatformBackend):
     # (packaging/libreward-root.in), so the password dialog says what LibreWard
     # wants to do. Run from source there are none, and pkexec runs a trusted
     # python3 with the helper code instead.
-    ROOT_HELPERS = ('system-check', 'internet-protection', 'firewall-read', 'firewall-change', 'scan-files')
+    ROOT_HELPERS = ('system-check', 'internet-protection', 'firewall-read', 'firewall-change', 'scan-files',
+                    'system-quarantine')
 
     def _root_helper(self, name):
         prefix = Path(__file__).resolve().parents[2]  # /usr for /usr/share/libreward/backends

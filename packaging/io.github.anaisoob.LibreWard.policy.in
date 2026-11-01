@@ -31,6 +31,17 @@
     <annotate key="org.freedesktop.policykit.exec.path">@HELPERDIR@/scan-files</annotate>
   </action>
 
+  <action id="io.github.anaisoob.LibreWard.system-quarantine">
+    <description>Move dangerous files, restore or delete them in the system quarantine</description>
+    <message>LibreWard wants to move, restore or delete dangerous files that your account has no access to.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">@HELPERDIR@/system-quarantine</annotate>
+  </action>
+
   <action id="io.github.anaisoob.LibreWard.internet-protection">
     <description>Turn Internet protection on or off</description>
     <message>LibreWard wants to change Internet protection: the local filter that blocks dangerous and unwanted websites for everyone on this computer.</message>

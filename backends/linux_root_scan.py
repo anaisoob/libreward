@@ -24,7 +24,8 @@ import threading
 MAX_REQUEST = 1024 * 1024
 FOLDERS = ('/usr/bin', '/usr/sbin', '/bin', '/sbin')
 PSEUDO_FILESYSTEMS = ('/proc', '/sys', '/dev')
-OPTIONS = ('--recursive', '--infected', '--no-summary', '--stdout',
+# Not --infected: a line for each file is the only sign of progress.
+OPTIONS = ('--recursive', '--no-summary', '--stdout',
            '--follow-dir-symlinks=0', '--follow-file-symlinks=0')
 
 

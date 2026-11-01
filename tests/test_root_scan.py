@@ -58,6 +58,7 @@ class RequestTests(unittest.TestCase):
         self.assertIn('--follow-dir-symlinks=0', command)
         self.assertIn('--follow-file-symlinks=0', command)
         self.assertFalse([option for option in command if option.startswith(('--remove', '--move', '--copy'))])
+        self.assertNotIn('--infected', command)  # each file's line is the progress
 
     def test_the_program_imports_only_the_standard_library(self):
         tree = ast.parse(Path(root_scan.__file__).read_text())
@@ -214,7 +215,23 @@ class CoreTests(unittest.TestCase):
         result, logged = self.run_check(['/a'], 1, ['/root/a: b: Win.Test-1 FOUND\n', 'noise\n'])
         self.assertEqual(result['infected'], [('/root/a: b', 'Win.Test-1')])
         self.assertTrue(result['complete'])
-        self.assertEqual(len(logged), 2)
+        self.assertIn('noise\n', logged)
+
+    def test_every_file_is_counted_and_shown_as_it_is_checked(self):
+        seen = []
+        def scan(_paths, _database, on_line):
+            for line in ('/root/a: OK\n', '/root/b: c: OK\n', '/root/d: Win.Test-1 FOUND\n', 'noise\n'):
+                on_line(line)
+            return 1, False
+        logged = []
+        with patch.object(core_root_scan, 'backend', Mock(scan_as_root=Mock(side_effect=scan))), \
+                patch.object(core_root_scan, '_first_database_dir', return_value=None):
+            result = core_root_scan.check_as_administrator(['/root'], logged.append,
+                                                           lambda count, path: seen.append((count, path)))
+        self.assertEqual(seen, [(1, '/root/a'), (2, '/root/b: c'), (3, '/root/d')])
+        self.assertEqual(result['files'], 3)
+        self.assertIn('/root/a: OK\n', logged)  # also under Show details
+        self.assertEqual(logged[-1], 'Checked 3 files.')
 
     def test_a_failed_check_is_never_called_clean(self):
         result, _ = self.run_check(['/a'], 2)
@@ -223,12 +240,13 @@ class CoreTests(unittest.TestCase):
         self.assertTrue(core_root_scan.outcome(result)[2])
 
     def test_outcomes_say_what_happened(self):
-        clean = {'infected': [], 'checked': 3, 'complete': True, 'left_out': 0}
+        clean = {'infected': [], 'checked': 3, 'files': 1200, 'complete': True, 'left_out': 0}
         self.assertEqual(core_root_scan.outcome(clean)[0], 'No threats found')
+        self.assertIn('1,200 files in 3 skipped locations', core_root_scan.outcome(clean)[1])
         self.assertFalse(core_root_scan.outcome(clean)[2])
         self.assertIn('2 more', core_root_scan.outcome(dict(clean, left_out=2))[1])
         found = dict(clean, infected=[('/x', 'Eicar')])
-        self.assertIn('cannot quarantine', core_root_scan.outcome(found)[1])
+        self.assertIn('administrator password', core_root_scan.outcome(found)[1])
         # A finding counts even when the check ended early.
         self.assertIn('dangerous', core_root_scan.outcome(dict(found, complete=False))[0])
 

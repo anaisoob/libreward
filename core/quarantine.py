@@ -25,11 +25,10 @@ from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
 
 from backends import backend
+from backends.linux_root_quarantine import HEADER, xor as _xor  # noqa: F401 - one format
 
-# Encoded quarantine files start with this header; files from older versions
-# without it are stored as they were and restored as they are.
-HEADER = b"LibreWard quarantine 1\n"
-KEY = b"LibreWard keeps this file from running or opening."
+# Files from older versions without the header are stored as they were and
+# restored as they are.
 CHUNK = 1024 * 1024
 
 
@@ -55,7 +54,8 @@ def list_quarantined_files() -> list[dict]:
         qpath = _quarantine_path(qdir, quarantine_name)
         if meta_path.name != quarantine_name + ".json":
             continue
-        if qpath is None or not qpath.is_file():
+        # A file in the system quarantine has only this note here.
+        if qpath is None or not (qpath.is_file() or meta.get("system") is True):
             continue
 
         meta["quarantine_name"] = quarantine_name
@@ -280,13 +280,6 @@ def open_file_location(file_path: str) -> str:
 def _safe_name(filename: str) -> str:
     """Replace path-separator-like characters in a filename."""
     return filename.replace("/", "_").replace("\\", "_")
-
-
-def _xor(data: bytes, offset: int) -> bytes:
-    """XOR with KEY, continuing at `offset` bytes into the payload."""
-    key = KEY[offset % len(KEY):] + KEY[:offset % len(KEY)]
-    repeated = (key * (len(data) // len(key) + 1))[:len(data)]
-    return (int.from_bytes(data, "big") ^ int.from_bytes(repeated, "big")).to_bytes(len(data), "big")
 
 
 def _open_regular(path: Path):

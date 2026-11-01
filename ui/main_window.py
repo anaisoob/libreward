@@ -20,6 +20,7 @@ from config import load_config, save_config
 from core.authorization import AuthorizationError
 from core.constants import APP_NAME, APP_VERSION, CLAMAV_HOMEPAGE, CLAMAV_SOURCE
 from core.monitor_agent import monitoring_enabled, read_state
+from core import system_quarantine
 from core.root_scan import check_as_administrator, outcome as administrator_check_outcome
 from core.security_status import old_database_days
 from core.policy import load_policy
@@ -936,16 +937,30 @@ class QtMainWindow(QMainWindow):
     def check_skipped_as_administrator(self):
         paths = list(self.last_result.get('denied_files', []))
         backend.reset_cancellation()
-        if not self.start_task('admin-check', lambda: check_as_administrator(paths, self.task_note),
+        note = backend.password_note()
+        def progress(count, path):
+            self.events.put(('__CALL__', self.show_administrator_check_progress, (count, path)))
+
+        if not self.start_task('admin-check', lambda: check_as_administrator(paths, self.task_note, progress),
                                title='Checking skipped files', on_done=self.administrator_check_finished):
             return
         dialog = self.update_dialog
+        # The first result comes after clamscan has loaded the database, which takes a while.
+        dialog.status.setText(f'Enter the administrator password, then the virus database is loaded. '
+                              f'This takes about a minute before files are checked. {note}'.rstrip())
 
         def stop():
             backend.stop_root_scan()
             dialog.status.setText('Stopping…')
             dialog.cancel_button.setEnabled(False)
         dialog.enable_cancel(stop)
+
+    def show_administrator_check_progress(self, progress):
+        count, path = progress
+        if self.update_dialog:
+            name = os.path.basename(path)
+            name = name if len(name) <= 60 else name[:57] + '…'
+            self.update_dialog.status.setText(f'Checked {count:,} file{"s" if count != 1 else ""}. Now: {name}')
 
     def administrator_check_finished(self, result):
         if result['stopped']:
@@ -1614,7 +1629,7 @@ class QtMainWindow(QMainWindow):
             files = [(self.results.item(row, 0).text(), self.results.item(row, 1).text())
                      for row in self.selected_rows(self.results)]
         # Files already gone (deleted or moved meanwhile) need no question and no error.
-        gone = {path for path, _threat in files if not os.path.lexists(path)}
+        gone = {path for path, _threat in files if system_quarantine.is_gone(path)}
         if gone:
             for row in reversed(range(self.results.rowCount())):
                 if self.results.item(row, 0).text() in gone:
@@ -1626,12 +1641,20 @@ class QtMainWindow(QMainWindow):
         if not files:
             return False
         message = f"Move {len(files)} selected file(s) into quarantine?" if action == "quarantine" else f"Permanently delete {len(files)} selected file(s)? This cannot be undone."
+        administrator = [item for item in files if system_quarantine.needs_administrator(item[0])]
+        if administrator:
+            message += f"\n\n{len(administrator)} of them need the administrator password."
+            if any(backend.installed_by_package(path) for path, _threat in administrator[:20]):
+                message += ("\n\nSome of them belong to installed programs. This is also how false alarms look, and "
+                            "removing such a file can stop the program or the system from working.")
         if not confirmed and not self.confirm("Confirm file action", message):
             return False
 
         def apply():
             results = []
             for path, threat in files:
+                if (path, threat) in administrator:
+                    continue
                 try:
                     msg = quarantine_file(path, threat) if action == "quarantine" else delete_file(path)
                 except OSError as exc:
@@ -1639,6 +1662,10 @@ class QtMainWindow(QMainWindow):
                 success = msg.startswith("Quarantined:") if action == "quarantine" else msg.startswith("Deleted:")
                 self.events.put(msg)
                 results.append((path, success))
+            if administrator:
+                results += self.system_quarantine_results(
+                    lambda: system_quarantine.move(administrator, discard=action == "delete"),
+                    [path for path, _threat in administrator])
             self.events.put(("__QUARANTINE__", list_quarantined_files()))
             return results
 
@@ -1671,7 +1698,7 @@ class QtMainWindow(QMainWindow):
         items = self.selected_quarantine_items()
         if not items or not self.confirm("Restore files", f"Restore {len(items)} selected file(s) to their original locations? Restore only files you trust. Existing files will not be overwritten."):
             return
-        self.quarantine_action(items, restore_file, "Restored:")
+        self.quarantine_action(items, restore_file, "Restored:", system_quarantine.restore)
 
     def refresh_quarantine(self):
         if self.operation == 'scan':  # the full check would replace the scan's status
@@ -1685,12 +1712,17 @@ class QtMainWindow(QMainWindow):
         items = self.selected_quarantine_items()
         if not items or not self.confirm("Delete quarantined files", f"Permanently delete {len(items)} selected quarantined file(s)? This cannot be undone."):
             return
-        self.quarantine_action(items, delete_quarantined_file, "Permanently deleted:")
+        self.quarantine_action(items, delete_quarantined_file, "Permanently deleted:", system_quarantine.delete)
 
-    def quarantine_action(self, items, action, success_prefix):
+    def quarantine_action(self, items, action, success_prefix, system_action):
         def apply():
             results = []
+            names = [item["quarantine_name"] for item in items if item.get("system") is True]
+            if names:
+                results += self.system_quarantine_results(lambda: system_action(names), names)
             for item in items:
+                if item.get("system") is True:
+                    continue
                 try:
                     msg = action(item["quarantine_name"])
                 except OSError as exc:
@@ -1700,6 +1732,20 @@ class QtMainWindow(QMainWindow):
             self.events.put(("__QUARANTINE__", list_quarantined_files()))
             return results
         self.start_task("quarantine-action", apply, on_done=self.report_batch)
+
+    def system_quarantine_results(self, work, items):
+        """[(item, success)] of a step that asks for the password; refusing it is a failure."""
+        note = backend.password_note()
+        if note:
+            self.events.put(note)
+        try:
+            report = work()
+        except (AuthorizationError, OSError, RuntimeError) as exc:
+            self.events.put(str(exc))
+            return [(item, False) for item in items]
+        for _item, _success, message in report:
+            self.events.put(message)
+        return [(item, success) for item, success, _message in report]
 
     def report_batch(self, results):
         failures = sum(not success for _, success in results)
@@ -1718,7 +1764,8 @@ class QtMainWindow(QMainWindow):
         for item in items:
             row = self.quarantine_table.rowCount()
             self.quarantine_table.insertRow(row)
-            for col, value in enumerate((item.get("original_path", ""), item.get("threat_name", ""), item.get("quarantined_at", ""), item.get("original_size", 0))):
+            threat = item.get("threat_name", "") + (" (needs administrator)" if item.get("system") is True else "")
+            for col, value in enumerate((item.get("original_path", ""), threat, item.get("quarantined_at", ""), item.get("original_size", 0))):
                 cell = QTableWidgetItem(str(value))
                 cell.setData(Qt.ItemDataRole.UserRole, item)
                 self.quarantine_table.setItem(row, col, cell)

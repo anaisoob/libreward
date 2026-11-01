@@ -269,6 +269,20 @@ class PlatformBackend(ABC):
     def stop_root_scan(self):
         pass
 
+    def root_quarantine_available(self):
+        return False
+
+    def quarantine_as_root(self, request):
+        """One result for each item; see backends/linux_root_quarantine.py."""
+        raise OSError('The system quarantine is not available on this platform.')
+
+    def installed_by_package(self, path):
+        return False
+
+    def password_note(self):
+        """Said before the system's password window, when that window needs explaining."""
+        return ''
+
     def scan_may_need_admin(self, scan_roots) -> bool:
         """Whether selected targets warrant an optional deeper-scan hint."""
         return False

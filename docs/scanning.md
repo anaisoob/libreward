@@ -200,9 +200,21 @@ those locations, not everything again: `clamscan` running as root reads untruste
 with full rights, so it should read as little as possible. There is deliberately no
 option to run whole scans this way, and parallel scanning could not help them.
 
-The check reads and reports; it changes nothing. A dangerous file found this way is
-listed under Detected files, but your account cannot move it, so it cannot go to
-quarantine: remove it with an administrator account. Symbolic links are not followed.
+The check reads and reports; it changes nothing, and symbolic links are not followed.
+A dangerous file found this way is listed under Detected files. Moving or deleting it
+asks for the administrator password.
+
+Such files go to a system quarantine in `/var/lib/libreward/quarantine`, which only root
+can read; your own quarantine folder keeps a note without the contents, so the Quarantine
+page lists them with *needs administrator*. Restoring and deleting them ask for the
+password, and a restored file gets back its owner, group and permissions (SELinux labels
+and extended attributes are not kept, nor are special privilege bits). Other administrators
+do not see your notes. Before root touches a file, `clamscan` must detect it again from the
+open file, and the path is followed without links, so a program cannot use this to remove
+an arbitrary file. If the file belongs to an installed program, LibreWard says so first.
+
+Run from source the password window names Python instead of LibreWard, because the texts
+of the polkit actions exist only in an installed LibreWard.
 The program is `/usr/libexec/libreward/scan-files` (see
 [Packaging](packaging.md#administrator-rights)); run from source, pkexec starts the
 system's `python3 -I` with the source of `backends/linux_root_scan.py`. Windows does not

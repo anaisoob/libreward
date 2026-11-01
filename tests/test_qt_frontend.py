@@ -1702,8 +1702,80 @@ class QtFrontendTests(unittest.TestCase):
         self.wait_for(lambda: self.warning.called)
         self.assertEqual(self.window.results.item(0, 0).text(), '/root/a')
         self.assertFalse(self.window.findings_card.isHidden())
-        self.assertIn('cannot quarantine', self.warning.call_args.args[2])
+        self.assertIn('administrator password', self.warning.call_args.args[2])
         self.assertEqual(self.window.last_result['denied_files'], [])
+
+    def test_files_for_the_administrator_go_the_system_way_with_one_password(self):
+        self.window.add_findings([('/root/a', 'Eicar'), ('/root/b', 'Eicar'), ('/tmp/own', 'Eicar')])
+        self.window.results.selectAll()
+        self.patch('core.system_quarantine.is_gone', return_value=False)
+        self.patch('core.system_quarantine.needs_administrator', side_effect=lambda path: path.startswith('/root'))
+        self.patch('ui.main_window.backend.installed_by_package', return_value=True)
+        own = self.patch('ui.main_window.quarantine_file', return_value='Quarantined: /tmp/own')
+        move = self.patch('core.system_quarantine.move', return_value=[
+            ('/root/a', True, 'Quarantined: /root/a'), ('/root/b', False, 'Cannot move /root/b: no')])
+        with patch.object(self.window, 'confirm', return_value=True) as confirm:
+            self.window.handle_findings('quarantine')
+        self.wait_idle()
+        move.assert_called_once_with([('/root/a', 'Eicar'), ('/root/b', 'Eicar')], discard=False)
+        own.assert_called_once_with('/tmp/own', 'Eicar')
+        message = confirm.call_args.args[1]
+        self.assertIn('2 of them need the administrator password', message)
+        self.assertIn('belong to installed programs', message)
+        self.assertEqual(self.window.results.rowCount(), 1)
+        self.assertEqual(self.window.results.item(0, 0).text(), '/root/b')
+        self.assertIn('Cannot move /root/b', self.window.log.toPlainText())
+
+    def test_refusing_the_password_keeps_the_files_listed(self):
+        from core.authorization import AuthorizationError
+        self.window.add_findings([('/root/a', 'Eicar')])
+        self.window.results.selectAll()
+        self.patch('core.system_quarantine.is_gone', return_value=False)
+        self.patch('core.system_quarantine.needs_administrator', return_value=True)
+        self.patch('core.system_quarantine.move', side_effect=AuthorizationError('cancelled', 'Cancelled.'))
+        with patch.object(self.window, 'confirm', return_value=True):
+            self.window.handle_findings('delete')
+        self.wait_idle()
+        self.assertEqual(self.window.results.rowCount(), 1)
+        self.wait_for(lambda: self.warning.called)
+
+    def test_a_file_behind_a_closed_folder_is_not_dropped_from_the_list(self):
+        self.window.add_findings([('/root/a', 'Eicar')])
+        self.window.results.selectAll()
+        with patch('os.lstat', side_effect=PermissionError), patch.object(self.window, 'confirm', return_value=False):
+            self.window.handle_findings('quarantine')
+        self.assertEqual(self.window.results.rowCount(), 1)
+
+    def test_quarantine_page_handles_system_items_together_and_marks_them(self):
+        items = [{'quarantine_name': 'a' * 32, 'original_path': '/root/a', 'threat_name': 'T', 'system': True},
+                 {'quarantine_name': 'b' * 32, 'original_path': '/root/b', 'threat_name': 'T', 'system': True},
+                 {'quarantine_name': 'mine', 'original_path': '/home/a', 'threat_name': 'T'}]
+        self.window.show_quarantine(items)
+        self.assertEqual(self.window.quarantine_table.item(0, 1).text(), 'T (needs administrator)')
+        self.assertEqual(self.window.quarantine_table.item(2, 1).text(), 'T')
+        self.window.quarantine_table.selectAll()
+        system = self.patch('core.system_quarantine.delete', return_value=[
+            ('a' * 32, True, 'Permanently deleted: a'), ('b' * 32, True, 'Permanently deleted: b')])
+        own = self.patch('ui.main_window.delete_quarantined_file', return_value='Permanently deleted: mine')
+        with patch.object(self.window, 'confirm', return_value=True):
+            self.window.quarantine_action(items, own, 'Permanently deleted:', system)
+        self.wait_idle()
+        system.assert_called_once_with(['a' * 32, 'b' * 32])
+        own.assert_called_once_with('mine')
+
+    def test_the_check_explains_the_password_window_when_run_from_source(self):
+        self.patch('ui.main_window.backend.password_note', return_value='It names Python.')
+        self.patch('ui.main_window.check_as_administrator', return_value={
+            'checked': 1, 'left_out': 0, 'infected': [], 'stopped': False, 'complete': True})
+        self.window.last_result = {'denied_files': ['/root/a']}
+        self.window.check_skipped_as_administrator()
+        dialog = self.window.update_dialog
+        self.assertIn('It names Python.', dialog.status.text())
+        self.assertIn('virus database', dialog.status.text())
+        self.window.show_administrator_check_progress((1234, '/root/data/report.pdf'))
+        self.assertEqual(dialog.status.text(), 'Checked 1,234 files. Now: report.pdf')
+        self.wait_idle()
+        dialog.close()
 
     def test_a_stopped_check_changes_nothing(self):
         result = {'infected': [], 'errors': [], 'denied_files': ['/root/a']}
