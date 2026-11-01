@@ -1,9 +1,13 @@
 # Security status
 
-**Security status** is the first page of LibreWard. It shows the most important
-protection of the computer in plain words, each part with a button that fixes it
-or opens the page where it is fixed. The page reads the system as your user, needs
-no password and changes nothing by itself. **Check again** reads it anew; it is also
+**Security status** is the first page of LibreWard. The top says in one sentence
+how protected the computer is, when the virus database was updated, when the last
+scan finished and how many files are in quarantine. Its main button fixes the most
+important problem, or runs a Quick scan when there is none. Parts that need
+attention follow as cards, each with a button that fixes it or opens the page where
+it is fixed; the most important is first. All other parts are small tiles, and
+hovering over one explains it. The page reads the system as your user, needs no
+password and changes nothing by itself. **Check again** reads it anew; it is also
 read whenever the page opens.
 
 | Part | Needs attention when | Button |

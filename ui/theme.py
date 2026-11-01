@@ -43,6 +43,15 @@ def stylesheet(dark):
     QFrame#card {{ background: {c['surface']}; border: 1px solid {c['border']}; border-radius: 12px; }}
     QFrame#pendingBar {{ background: {c['selected']}; border: 1px solid {c['accent']}; border-radius: 12px; }}
     QLabel {{ background: transparent; border: none; }}
+    QFrame#hero {{ background: {c['surface']}; border: 1px solid {c['border']}; border-radius: 16px; }}
+    QFrame#hero[severity="warning"] {{ border-color: {'#dfbf79' if dark else '#b7791f'}; }}
+    QFrame#tile {{ background: {c['surface']}; border: 1px solid {c['border']}; border-radius: 10px; }}
+    QLabel#heroTitle {{ font-size: 22px; font-weight: 700; }}
+    QLabel#heroTitle[severity="success"] {{ color: {c['accent']}; }}
+    QLabel#heroTitle[severity="warning"] {{ color: {'#dfbf79' if dark else '#856311'}; }}
+    QLabel#tileName {{ font-weight: 600; }}
+    QLabel#tileMark {{ color: {c['muted']}; font-size: 15px; font-weight: 700; }}
+    QLabel#tileMark[severity="success"] {{ color: {c['accent']}; }}
     QLabel#brand {{ font-size: 21px; font-weight: 700; }}
     QLabel#logo {{ background: #278359; color: white; border-radius: 11px; font-weight: 700; font-size: 14px; }}
     QLabel#pageTitle {{ font-size: 27px; font-weight: 700; }}
@@ -128,6 +137,40 @@ def palette(dark):
     return result
 
 
+def shield_path():
+    """A shield on a grid of 24."""
+    path = QPainterPath(QPointF(12, 3))
+    path.lineTo(20, 6)
+    path.lineTo(19, 13)
+    path.quadTo(18, 18, 12, 21)
+    path.quadTo(6, 18, 5, 13)
+    path.lineTo(4, 6)
+    path.closeSubpath()
+    return path
+
+
+def shield_pixmap(severity, size=72):
+    """Filled shield for the Security status page; legible on light and dark."""
+    pixmap = QPixmap(size * 2, size * 2)
+    pixmap.setDevicePixelRatio(2)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.scale(size / 24, size / 24)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor({'success': '#278359', 'warning': '#b7791f'}.get(severity, '#657d6d')))
+    painter.drawPath(shield_path())
+    painter.setPen(QPen(QColor('#ffffff'), 1.9, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+    if severity == 'success':
+        painter.drawLine(QPointF(8.5, 11.5), QPointF(11, 14))
+        painter.drawLine(QPointF(11, 14), QPointF(15.5, 8.5))
+    elif severity == 'warning':
+        painter.drawLine(QPointF(12, 7.5), QPointF(12, 12.5))
+        painter.drawPoint(QPointF(12, 16))
+    painter.end()
+    return pixmap
+
+
 def navigation_icon(name, color):
     pixmap = QPixmap(48, 48)
     pixmap.fill(Qt.GlobalColor.transparent)
@@ -136,14 +179,7 @@ def navigation_icon(name, color):
     painter.scale(2, 2)
     painter.setPen(QPen(QColor(color), 1.7, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
     if name in ('scan', 'firewall'):
-        path = QPainterPath(QPointF(12, 3))
-        path.lineTo(20, 6)
-        path.lineTo(19, 13)
-        path.quadTo(18, 18, 12, 21)
-        path.quadTo(6, 18, 5, 13)
-        path.lineTo(4, 6)
-        path.closeSubpath()
-        painter.drawPath(path)
+        painter.drawPath(shield_path())
         if name == 'scan':
             painter.drawLine(8, 12, 11, 15)
             painter.drawLine(11, 15, 16, 9)

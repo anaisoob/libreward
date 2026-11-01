@@ -64,6 +64,8 @@ class QtFrontendTests(unittest.TestCase):
                                'screen_lock': True, 'desktop': 'gnome', 'disk_encrypted': True,
                                'administrator': False, 'update_program': ['gnome-software', '--mode=updates']}
         self.patch('ui.security_page.backend.security_facts', side_effect=lambda: dict(self.security_facts))
+        self.patch('ui.security_page.read_state', new=self.monitor_state)
+        self.patch('ui.security_page.backend.system_db_locations', return_value=[])
         self.window = QtMainWindow()
         self.wait_idle()
 
@@ -161,6 +163,65 @@ class QtFrontendTests(unittest.TestCase):
                           not any(entry['key'] == 'screen-lock' and entry['severity'] == 'warning'
                                   for entry in page.items))
         lock.assert_called_once_with('gnome')
+
+    def visible_tiles(self, page):
+        from PySide6.QtWidgets import QFrame
+        return [tile for tile in page.page.findChildren(QFrame, 'tile')]
+
+    def test_security_status_shows_only_problems_large_and_the_most_important_first(self):
+        self.patch('ui.security_page.backend.internet_protection_available', return_value=False)
+        self.security_facts.update(firewall=False, screen_lock=False)
+        page = self.window.security_page
+        page.refresh()
+        self.security_rows()
+        self.assertEqual(page.primary.text(), 'Turn on')  # new downloads come before the firewall
+        self.assertFalse(page.primary.isHidden())
+        with patch.object(self.window, 'switch_page') as switch:
+            page.primary.click()
+        switch.assert_called_once_with('internet')
+        problems = {'files', 'firewall', 'screen-lock'}
+        self.assertEqual(len(self.visible_tiles(page)), len(page.items) - len(problems))
+        shown = [label.text() for label in page.page.findChildren(type(page.summary), 'statusValue')]
+        self.assertEqual(shown, ['!  New downloads are not checked for viruses', '!  Firewall is off',
+                                 '!  Screen does not lock by itself'])
+
+    def test_security_status_without_problems_offers_a_scan(self):
+        self.agent_running.return_value = True
+        self.patch('ui.security_page.backend.internet_protection_available', return_value=False)
+        self.patch('ui.security_page.monitoring_enabled', return_value=True)
+        page = self.window.security_page
+        page.refresh()
+        self.security_rows()
+        self.assertEqual(page.summary.text(), 'This computer is well protected')
+        self.assertEqual(page.primary.text(), 'Run a Quick scan')
+        self.assertEqual(page.page.findChildren(type(page.summary), 'statusValue'), [])
+        self.assertEqual(len(self.visible_tiles(page)), len(page.items))
+        with patch.object(self.window, 'start_quick_scan') as scan:
+            page.primary.click()
+        scan.assert_called_once_with()
+        self.assertEqual(self.window.pages.currentIndex(), self.window.page_indices['scan'])
+
+    def test_security_status_says_what_was_done_lately(self):
+        self.patch('ui.security_page.backend.system_db_locations', return_value=[])
+        page = self.window.security_page
+        page.refresh()
+        self.security_rows()
+        self.assertEqual(page.activity.text(), 'No scan yet')
+        with patch('ui.main_window.time.time', return_value=time.time() - 86400 * 3):
+            self.window.remember_scan()
+        self.window.quarantine_items = 2
+        page.refresh()
+        self.security_rows()
+        self.assertEqual(page.activity.text(), 'Last scan 3 days ago · 2 files in quarantine')
+
+    def test_a_finished_scan_is_remembered_but_a_stopped_one_is_not(self):
+        result = {'infected': [], 'errors': [], 'warnings': [], 'scanned': 1, 'total': 1, 'stopped': True}
+        self.window.events.put(('__SCAN_DONE__', result))
+        self.window.poll_events()
+        self.assertNotIn('last_scan_at', self.window.config)
+        self.window.events.put(('__SCAN_DONE__', dict(result, stopped=False)))
+        self.window.poll_events()
+        self.assertIn('last_scan_at', self.window.config)
 
     def test_security_rows_replaced_on_refresh_never_break_later_tasks(self):
         self.security_facts.update(firewall=False)

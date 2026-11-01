@@ -9,9 +9,34 @@ from pathlib import Path
 from unittest.mock import patch
 
 from backends import linux_security as security
-from core.security_status import security_items, summary
+from core.security_status import FIX_ORDER, activity, attention, security_items, summary
 
 APP = {'websites_available': True, 'websites_on': True, 'files_on': True, 'scanning_ready': True}
+
+
+class OverviewTests(unittest.TestCase):
+    def test_everything_that_can_need_attention_has_a_place_in_the_order(self):
+        facts = {'firewall': False, 'listening_ports': [22], 'last_update': 0, 'screen_lock': False}
+        items = security_items(facts, websites_available=True, websites_on=False, files_on=False,
+                               scanning_ready=False, now=86400 * 100)
+        self.assertEqual([entry['key'] for entry in attention(items)], list(FIX_ORDER))
+
+    def test_every_item_has_a_short_form(self):
+        for firewall, encrypted, administrator in ((True, True, True), (False, False, False)):
+            facts = {'firewall': firewall, 'disk_encrypted': encrypted, 'administrator': administrator,
+                     'screen_lock': firewall, 'automatic_updates': firewall, 'listening_ports': [22]}
+            items = security_items(facts, websites_available=True, websites_on=firewall, files_on=firewall,
+                                   scanning_ready=firewall, now=0)
+            for entry in items:
+                self.assertTrue(entry['label'] and entry['state'], entry)
+
+    def test_activity_line(self):
+        now = 86400 * 10
+        self.assertEqual(activity(None, None, 0, now), 'No scan yet')
+        self.assertEqual(activity(now - 60, now - 86400 * 4, 1, now),
+                         'Virus database updated today · Last scan 4 days ago · 1 file in quarantine')
+        self.assertEqual(activity(now - 86400, None, 3, now),
+                         'Virus database updated yesterday · No scan yet · 3 files in quarantine')
 
 
 class SecurityFactsTests(unittest.TestCase):

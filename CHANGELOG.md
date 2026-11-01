@@ -10,6 +10,10 @@
   administrators can allow or forbid each action with polkit rules. Run from
   source, LibreWard works as before.
 
+- Security status has a new layout: a shield with one sentence, recent activity
+  and one main button at the top, problems as cards with the most important first,
+  and everything else as small tiles. LibreWard now remembers when the last scan
+  from the window finished.
 - Quarantine no longer loses files when another program touches them at the same
   moment: restoring never replaces a file that appeared during the restore,
   temporary files have unique names, so a file of the user's with the old fixed

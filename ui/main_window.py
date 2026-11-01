@@ -1393,6 +1393,14 @@ class QtMainWindow(QMainWindow):
             # Offline, for example: the scan still runs, with the database it has.
             self.events.put('The virus database could not be updated; scanning with the current one.')
 
+    def remember_scan(self):
+        """For Security status; losing this date is harmless, so a failed save stays silent."""
+        self.config = dict(self.config, last_scan_at=time.time())
+        try:
+            save_config(self.config)
+        except OSError:
+            pass
+
     def auto_database_update_finished(self, success, pending):
         if pending:
             return  # another update was running; try again at the next check
@@ -1707,6 +1715,8 @@ class QtMainWindow(QMainWindow):
                 self.findings_card.setVisible(bool(result["infected"]) or bool(self.results.rowCount()))
                 severity = "danger" if result.get("infected") or result.get("infected_found") or result.get("errors") else "warning" if result.get("warnings") else "normal"
                 self.set_status(scan_outcome(result), severity)
+                if not result.get("stopped") and not result.get("errors"):
+                    self.remember_scan()
                 self.current_file.setText("—")
                 count_label = "Processed" if result.get("parallel") else "Scanned"
                 self.summary.setText(f"{scan_outcome(result)}. {count_label}: {result['scanned']:,} / estimated {result['total']:,}. "
